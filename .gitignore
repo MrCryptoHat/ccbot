@@ -1,0 +1,84 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Project specific
+.uv/
+
+# --- Server-specific plugins (private ccbot-plugins overlay) ---
+# Symlinked/checked out here on a configured deployment; NEVER committed to
+# the public tree. Activated via CCBOT_PLUGINS in .env. See ccbot-plugins.
+/src/ccbot/wamcp
+/src/ccbot/tgmcp
+/src/ccbot/mail
+/tests/ccbot/wamcp
+/tests/ccbot/tgmcp
+/tests/ccbot/test_mail_notifier.py
+/tests/ccbot/test_mail_wake.py
+/tests/ccbot/test_mail_plugin.py
+/.claude/rules/wamcp-integration.md
+/.claude/rules/tgmcp-integration.md

@@ -1,0 +1,116 @@
+# Message Handling
+
+The queue, merging, rate-limiting, and voice-mode logic below are **transport-agnostic**: tmux and docker bindings both write to the same JSONL stream that `SessionMonitor` reads, so inbound messages go through the same pipeline regardless of where Claude Code is running. Outbound routing (the transport branch) happens earlier, in `session_manager.send_to_window`.
+
+## Inbound coalescing — split long pastes (`handlers/coalesce.py`)
+
+A paste over 4096 chars is split by the Telegram *client* into several messages, each its own Update (and, under `concurrent_updates`, its own handler). Delivered one by one the agent takes the first as a turn and the rest pile into Claude Code's input queue as separate prompts — it reads only a slice. `coalesce_text` buffers near-ceiling fragments per `(user, thread)` and forwards the reassembled text as one send (message_id order — concurrent handlers arrive scrambled; no separator — the client splits on a raw char boundary). `text_handler`'s bound path runs `_forward_text_to_agent` through it. Trigger is **length** (`NEAR_CEILING`), not a blanket debounce, so ordinary short messages pass through with zero added latency; an all-full-width paste (length an exact multiple of the split size, no short tail) flushes on `FLUSH_TIMEOUT`. Don't switch it to a universal debounce — that adds latency to *every* message (the deliberately-rejected alternative).
+
+## Message Queue Architecture
+
+Per-topic message queues + worker pattern for all send tasks. Queue key is `(user_id, thread_id_or_0)`, so each Telegram topic gets its own worker task; a heavy stream in topic A cannot delay deliveries in the user's other topics.
+
+- Messages within a topic are sent in receive order (FIFO)
+- Across topics of the same user there is no ordering contract — deliveries run in parallel
+
+Flood-control state (`_flood_until`) stays keyed by `user_id` because Telegram's 429 is per-bot: when one topic triggers a ban, every topic for that user pauses together until it expires.
+
+**Message merging**: The worker automatically merges consecutive mergeable content messages on dequeue. Mergeable = same `window_id`, both `task_type == "content"`, neither side `tool_use`/`tool_result`, matching `voice_mode`. Merge cap 3800 chars (`MERGE_MAX_LENGTH`) — past that Telegram would paginate and the editing math gets weird.
+
+## What reaches the chat
+
+**Only the agent's text replies, plus images attached to tool_result blocks.** Everything else is suppressed:
+
+- `tool_use` / `tool_result` content tasks short-circuit at the top of `_process_content_task` (`return` after sending any `image_data`). The rolling `🔧 Bash(...)` status spinner that used to live in the chat is gone — `parse_status_line` output is no longer published by `status_polling`, and the `bot.py` legacy fallback that re-injected tool names as status updates (when `show_tool_calls=false`) is removed.
+- `thinking` is gated by `config.show_thinking` (default off; opt in with `CCBOT_SHOW_THINKING=true`); when sent, it goes through with `disable_notification=True`.
+- Liveness signal is the Telegram `typing…` indicator (kept alive by the 1 s poll's heartbeat, ≥4 s per topic). Tool history lives in `/screenshot` (live pane) and `/commands` (history view).
+- Notification policy is one rule: `text` / `local_command` ring, everything else in `_SILENT_CONTENT_TYPES` (`tool_use` / `tool_result` / `thinking` / `local_command` / `diff` — the first two never reach the send) is silent. Unknown content_type → ring (fail-loud).
+- **Opt-in exception (`/diff`):** the one non-text thing the user can choose to surface. Each edit-tool diff is screenshotted from Claude Code's own pane rendering (native style). See "Edit-diff screenshots" below.
+
+Do not reintroduce a chat-side status spinner without re-reading this section — every patch attempt to "make tool plumbing visible quietly" has ended at the same problem: iOS shows a banner for every silent send, and editing one message across a turn requires `🔧 Bash(...)`-shaped text, which is exactly what the user said he doesn't want in the chat.
+
+`status_polling` still runs at 1 s — it is the **only** source of `is_interactive_ui` detection (AskUserQuestion / ExitPlanMode pictures), dead-window cleanup, orphan-window janitor, and the topic-existence probe. Just don't add publish-status-line calls back to it.
+
+**Reaction-ack** (`handlers/reaction_emit.py`; `session_manager.reaction_ack_enabled`, **default on** via `CCBOT_REACTION_ACK`, runtime toggle `/react`): the bot puts a 👀 on a user message — *armed* on delivery in `deliver_user_text` (shared seam → covers typed **and** voice), but *fired* by the 1 s poll only when that window's input **queue drains** (`terminal_parser.has_queued_messages` returns False) — i.e. when the agent actually takes the message into context, **not** when it was delivered to the pane. Don't "simplify" it to fire on send: for a busy agent the message sits in Claude Code's input queue («Press up to edit queued messages») behind the running turn, and firing on delivery marks it «seen» too early (the bug this design fixes). It uses the queue-hint, **not** `is_claude_working`: the latter only says «a turn is running» — which stays true while the message waits in the queue — so it can't mark the moment *this* message lands. Fits the «no chat-side spinner» rule because a reaction is **not a message** — but a bot reaction **does push to the message author** and Telegram has no silent-reaction flag, so the only way to mute it is the user's client-side reaction-notification setting (or `CCBOT_REACTION_ACK=false`). It's **on by default** — a read-receipt is expected UX; flip the env off if the per-message push reads as noise.
+
+## Block rendering — tables, box-art, long code (`markdown_v2.render_tables_for_chat`)
+
+The agent's text reply is the only source, but three block kinds inside it are
+extracted **before** pagination and delivered out-of-band (Telegram can't render
+them in a chat bubble — a phone wraps anything monospace wider than ~34 chars
+into soup). `render_tables_for_chat` returns `(text, images, files)`: each
+extracted block leaves a NUL placeholder line (`\x00CCBOT_(IMG|FILE):n\x00`,
+short → survives `split_message`), and `message_queue._send_part_with_tables`
+splits each part on `PLACEHOLDER_RE` and sends text / photo / document **in
+source order** (so a table lands between its before- and after-prose, not at the
+end). `MessageTask` carries `table_texts` + `code_files`; such tasks are **not
+merged** (the merged task drops those lists and indices would collide).
+
+- **Pipe tables** → narrow (≤`TABLE_IMAGE_MIN_WIDTH`) stay an inline space-aligned code block (copyable); wide → bordered-grid PNG (`_format_table_grid` → `text_to_image(square=False)`, tight-cropped — see screenshot.py's `square` flag).
+- **Box-art code blocks** (trees/diagrams: `_BOX_ART_CHARS`, NOT the ASCII pipe) → wide ones rendered verbatim as a PNG (it's already drawn). Narrow stay inline.
+- **Long code** (>`CODE_FILE_MAX_CHARS`/`CODE_FILE_MAX_LINES`) → file attachment (`snippet.<ext>` from the fence lang), so it copies/saves whole instead of arriving as `[k/N]`-split re-fenced fragments. Short code stays inline (copy works there). **Code is never imaged** — it's for copying; an image would defeat that.
+
+Deliberately NOT handled here: in-prose diffs (rare — an agent that writes a ```diff fence in its actual reply) and wide non-box code (for copying). Edit-tool diffs *are* surfaced, but on a separate opt-in path (`/diff`, below), not through `render_tables_for_chat`. The fast path returns early when the text has no `|`/```/box-art, so plain replies are untouched. `convert_markdown_tables` (the idempotent send-layer pass) re-emits code blocks verbatim and only inlines stray tables.
+
+## Edit-diff screenshots (`handlers/diff_view.py`, opt-in `/diff`)
+
+Per-topic toggle (`session_manager.diff_mode_topics`, default **off** — keeps the default chat free of tool plumbing). When on, the bot **screenshots Claude Code's own diff rendering** for each edit. The diffs the user sees in the pane are otherwise-suppressed `tool_result` plumbing — this is the one place that suppression opens, for the one sub-category worth seeing (the work product).
+
+- **Capture the native pane, do NOT reconstruct.** `extract_diff_blocks` crops each `● Update/Write(…)` block (header → first blank line / next bullet; only if it has `+`/`-` gutter lines, so an errored edit or bare "Wrote N lines" is skipped) out of a `capture_pane(scrollback_lines=400, with_ansi=True)`, and `screenshot.text_to_image` renders it. Why capture, not rebuild from JSONL: Claude Code already does the red/green backgrounds, **word-level** highlighting, line numbers, AND wraps to the pane width (100 cols) — recreating that drifts from the native look and re-introduces the long-prose-line width blowout (a markdown paragraph is one unwrapped line). The earlier reconstruction approach was scrapped for exactly this. `git diff` run as Bash is **not** caught — only edit-tool blocks.
+- **Trade-off:** Claude Code collapses large diffs in the pane (`⎿ … +N lines (ctrl+o to expand)`); we screenshot that collapsed view rather than driving `ctrl+o` into the live pane (racy, mutates the agent's view).
+- **One screenshot per edit.** Triggered in `handle_new_message` on an edit's `tool_use` event (`tool_name in EDIT_TOOLS`; the ~2 s monitor lag means the diff has rendered by capture time), with a backstop re-scan on the turn's final text (catches the last edit). Dedup is by **block content hash** per window (`_seen` LRU) — a block re-appears in every capture as it scrolls, and both triggers may fire, so each native block is sent exactly once. `/diff` on calls `prime()` (mark on-screen blocks seen) so flipping the toggle doesn't dump the backlog; `/diff` off / unbind calls `reset()`.
+- Sent as `content_type="diff"` through the per-topic queue (stream-rate-limited, **silent** — `/diff` is per-edit and the user opted in; a ping per edit would be noise). Such tasks never merge (the `image_data` guard in `_can_merge_tasks`).
+
+## Rate Limiting
+
+`CcbotRateLimiter` (subclass of PTB's `AIORateLimiter`, `src/ccbot/rate_limiter.py`), built with `max_retries=5, group_max_rate=15, group_time_period=60` + the stock 30/s overall bucket. **Telegram's real limits** (semi-documented): ~1 msg/s & ~20 msg/min *per chat*, ~30 msg/s global; forum topics are **not** known to get independent budgets — the bot treats all topics in one supergroup as sharing the per-chat budget. A 429 on *any* request makes PTB's `AIORateLimiter` set `_retry_after_event`, which pauses **every** in-flight send for the ban window — so the design goal is "never let our own traffic earn a 429 for messages".
+
+**Three traffic classes via two ContextVars** (`_IS_STREAM`, `_IS_BACKGROUND`; default = interactive). Tagging happens at the few architectural boundaries that differentiate them — **no call-site annotations**; asyncio propagates the var into every awaited send.
+- **Stream** — assistant output from the per-topic message-queue worker, which wraps its task body in `stream_context()`. Delegates to the parent **unmodified** — so the group bucket keys on the real `chat_id` (the supergroup), at 15/60 s = Telegram's ~20/min with headroom. *No per-topic split*: that would let N topics × 15/min blow past the real ~20/min per-chat ceiling (which is what tripped 429s when several agents were busy). The trade-off: a flooding topic can delay a sibling topic's sends by a few seconds — that's the real limit asserting itself, not a bug.
+- **Interactive** (default) — slash commands, menu taps, callbacks, interactive-UI photos, status polling: the user is waiting. `chat_id` is stripped from `data` so the parent skips both group and overall buckets — instant. This is why `/screenshot` / the 👾 Агент panel still respond at once while a stream has the chat's budget saturated.
+- **Background** — topic-existence probe, dashboard refreshes: not user-waiting, prone to bursts. Wrapped in `background_context()`. The subclass funnels these through one shared slow lane (`_BG_MIN_INTERVAL` ≈ 0.34 s apart, an `asyncio.Lock` + a `_bg_next_slot` cursor on the instance) and then issues the call **directly** — no limiter buckets, no PTB retry loop — so a stray 429 here surfaces to the caller's own `except` (it logs and moves on) instead of arming `_retry_after_event` and freezing every other send. (Bursting one `reopenForumTopic` per bound topic every minute used to do exactly that, ~25 % of the time.)
+
+**Other rate-budget hygiene**: the `typing…` indicator is sent at most once per ~4 s per topic (`status_polling.TYPING_HEARTBEAT_INTERVAL`) by the 1 s poll's heartbeat *only* — `handle_new_message` no longer fires `send_chat_action` per tool/thinking event (Telegram says "no more than every 5 s"; a tool-heavy agent would otherwise spend a lot of the chat's rate budget on it).
+
+**Safety net**: a 429 *after retries* on a bypassed (interactive) request is logged ERROR with the endpoint — means interactive traffic earned a genuine Telegram limit hit; revisit whether that endpoint should be classed as stream. `max_retries=5` absorbs it at runtime. (Background calls bypass the retry loop entirely, so they never reach this log.)
+
+Status polling interval: 1 second per binding (interactive UI / dead window / orphan window / typing-heartbeat — no chat-message publication; see "What reaches the chat" above). Skips enqueue when that topic's content queue is non-empty — checked per-`(user, thread)` so a busy topic no longer suppresses polling in its siblings.
+
+## Update Dispatch
+
+PTB's `Application` is built with `.concurrent_updates(True)`. Telegram updates from different topics (and different handlers — commands, callbacks, text) are dispatched in parallel; the default `SimpleUpdateProcessor(max_concurrent_updates=1)` was serialising every inbound update globally and making `/screenshot` in one topic wait for the previous handler in another topic to finish. Per-`(user, thread)` state is guarded by its own locks (`_queue_locks`, `_interactive_locks`), and this is a single-user bot, so parallel dispatch has no ordering contract to break. The one shared resource parallel handlers DO contend on is the agent's pane: sending text is chunked typing + pacing + a separate Enter, so every multi-step pane write is serialized by `SessionManager.send_lock(binding)` (held by `send_to_window`/`send_keys`; the restart handlers take it explicitly across `/exit` → relaunch). Don't add a pane writer that bypasses it.
+
+## State Persistence
+
+`SessionManager._save_state()` schedules the JSON write via `utils.schedule_async_json_write`, which submits the `atomic_write_json` call (including its `fsync`) to a single-thread executor. Hot callers like `update_user_window_offset` fire many times per second during active generation; doing the fsync inline would stall the event loop for milliseconds per call. The writer is single-threaded so snapshots submitted later always land on disk after earlier ones (no race between in-flight renames). `post_shutdown` drains the executor via `shutdown_async_writer` so no pending write is lost on exit.
+
+## Performance Optimizations
+
+**mtime cache**: The monitoring loop maintains an in-memory file mtime cache, skipping reads for unchanged files.
+
+**Byte offset incremental reads**: Each tracked session records `last_byte_offset`, reading only new content. File truncation (offset > file_size) is detected and offset is auto-reset.
+
+**Inline-keyboard tap latency** (`handlers/pane_cache.py` + `screenshot.py` + screenshot-path handlers): four composable wins cut the common-case `/screenshot` 🔄 from ~600 ms to <60 ms on cache-hit, well under 1 s on a real upload. (1) Hash-skip — `message_id → sha1(pane_ansi)` dict; if a tap arrives and the pane matches what this Telegram message already shows, skip both `text_to_image` (~220 ms CPU) and `edit_message_media` (~250 ms upload). Telegram's own "not modified" fires too late — we've already paid both. (2) Adaptive wait — `wait_pane_change(prior_hash, max_wait=0.6)` replaces a fixed `asyncio.sleep(0.5)` after every key press: min-settle 150 ms, poll at 120 ms, return the moment `pane_hash(capture) != prior_hash`. Fast redraws exit at ~180 ms; stuck ones bound at 600 ms and then the hash-skip above avoids rendering unchanged content. (3) **`pane_hash → file_id` cache** (LRU, `FILE_ID_CACHE_MAX=256`) — when this exact pane content was uploaded earlier in this bot's lifetime, Telegram's `file_id` for that upload remains valid, so `InputMediaPhoto(media=cached_file_id)` to `editMessageMedia` swaps the photo with **zero bytes uploaded**. Real-world hit rate is high on AskUserQuestion navigation (↓↓↑↑ revisits prior cursor states); on a stale-file_id BadRequest the entry is forgotten and the next call falls back to a real upload. Wired into `interactive_ui._handle_interactive_ui_locked`, `callbacks._handle_screenshot_refresh`, `_handle_screenshot_keys`, and `_cmd_refresh_photo`. (4) Screenshot pipeline tuning in `screenshot.py` — `font_size=28` (sharper glyphs survive Telegram's q≈87 JPEG re-encode better than smaller fonts), strip trailing blank lines before render (tmux returns the full pane geometry even when only the top half carries content), cap long side at 1024 px (iPhone Telegram displays chat photos at ~340 pt = ~1020 px retina; capping cuts source pixel area ~35 % vs the 1280 server cap with no visible quality loss in the served JPEG), NEAREST resize on overflow (LANCZOS' AA halos defeat palette quantize and *grow* PNGs on heavy panes — verified 167→226 KB), `convert("P", ADAPTIVE, 256)` + `optimize=True` before encode (256 colours preserves the AA halo gradient JPEG needs to keep edges crisp; coarser quantizes step the gradient and JPEG misreads it as hard transitions). Aspect follows content (no fixed canvas — square pad produced ugly dead-space tails). Net: a typical pane is ~80 KB upload (down from 167 KB pre-optimization) and Telegram serves ~185 KB JPEG to the iPhone. Plus `query.answer()` moved to the top of `_handle_screenshot_refresh` / `_handle_interactive_key` so the Telegram spinner closes immediately. `interactive_ui.py` also collapses two sequential `capture_pane` round-trips into one (capture with ANSI, strip SGR in-process for the regex check). Handlers log per-tap `TIMING ...` lines at DEBUG (bump level when investigating latency — no extra instrumentation needed).
+
+**PTB HTTP timeouts**: `bot.py`'s `Application.builder()` sets `read_timeout=30`, `write_timeout=30`, `connect_timeout=15`, `media_write_timeout=60`, overriding PTB's stock 5 s defaults. The 5 s default produced a recurring failure mode on a high-latency link: a fresh-start `send_photo` timed out client-side at +5 s while Telegram had **already** committed the upload server-side, leaving `_interactive_msgs[ikey]` unset → the next status-poll tick (~1 s later) sent a duplicate. The bumped values absorb the slow upload without affecting fast-path latency. Belt-and-braces: `_handle_interactive_ui_locked` also stamps `_interactive_last_sent[ikey]` on `send_photo` failure so the 3 s dedup window applies after timeouts too, blocking the immediate retry from the next polling tick.
+
+## Voice Mode (TTS)
+
+When voice mode is enabled for a topic (`/voice` toggle), the message queue worker intercepts assistant text messages before the normal send path:
+- `content_type == "text"` → passed through `voice/hints.split_voice_segments`, which splits the reply on `[chat]...[/chat]` markers into an ordered list of `("voice", str)` / `("chat", str)` segments. Voice segments go to `voice/providers.py:synthesize_speech` and `bot.send_voice()`; chat segments go to `send_with_fallback` as regular markdown text. Segments are delivered in source order, so Claude can interleave spoken explanation and text artifacts (links, code, IDs) freely.
+- `thinking` → still sent as text (when `show_thinking=true`). `tool_use` / `tool_result` are suppressed entirely before voice processing, so they never reach this path.
+- On per-segment TTS failure → that segment is sent as text (with `strip_output_tags`), the remaining segments continue normally
+- `SessionManager.consume_voice_directive` returns `"on"` / `"off"` / `None` per user message; `bot.py` prepends `voice.build_on_directive()` or `voice.OFF_DIRECTIVE` accordingly — the hint is sent **once per session**, anchored on `session_id` (so `/clear` re-announces). The ON directive teaches the `[chat]...[/chat]` protocol; the OFF directive tells Claude to stop using it.
+
+`synthesize_speech` walks every configured provider in priority order (Gemini → ElevenLabs → OpenAI) with a hard `PROVIDER_BUDGET_SEC=45s` per attempt via `asyncio.wait_for`. One slow provider fails fast and the chain advances — text fallback only kicks in if every configured provider fails. Gemini requires `ffmpeg` for PCM→OGG. Input capped at 4096 characters.
+
+Gemini quality knobs via env:
+- `GEMINI_TTS_VOICE` — prebuilt voice name (default `Sulafat` in code; override via env)
+- `GEMINI_TTS_TEMPERATURE` — 0.0-2.0 (default `1.0`)
+- `GEMINI_TTS_LANGUAGE` — BCP-47 (default `ru-RU`)
+- `GEMINI_TTS_MODEL` — default `gemini-3.1-flash-tts-preview`; `gemini-2.5-pro-preview-tts` is available at identical pricing ($1/$20 per 1M in/out tokens) but ~50% slower
+- `GEMINI_TTS_STYLE_PREFIX` — whole-utterance style prefix prepended to every Gemini request inside `GeminiProvider._request`. More reliable than inline pace tags (which burn off after the first phrase). Empty string disables. Default: `"Speak warmly like you're chatting with a close friend, at a brisk natural pace:"`
+
+## No Message Truncation
+
+Historical messages (tool_use summaries, tool_result text, user/assistant messages) are always kept in full — no character-level truncation at the parsing layer. Long text is handled exclusively at the send layer: `split_message` splits by Telegram's 4096-character limit; real-time messages get `[1/N]` text suffixes, history pages get inline keyboard navigation.
