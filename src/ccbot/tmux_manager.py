@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
 import libtmux
 
 from .config import config
+from .utils import is_valid_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -510,9 +512,21 @@ class TmuxManager:
                     pane = window.active_pane
                     if pane:
                         cmd = config.claude_command
-                        cmd = f"{cmd} --name {final_window_name!r}"
-                        if resume_session_id:
+                        # shlex.quote (not repr): this string is typed into the
+                        # pane's shell, and repr() is not shell-safe for a name
+                        # holding both quote kinds. (audit MEDIUM)
+                        cmd = f"{cmd} --name {shlex.quote(final_window_name)}"
+                        # Resume only with a well-formed session id — an
+                        # unvalidated id typed into the shell is a command-
+                        # injection vector. (audit HIGH#1)
+                        if resume_session_id and is_valid_session_id(resume_session_id):
                             cmd = f"{cmd} --resume {resume_session_id}"
+                        elif resume_session_id:
+                            logger.warning(
+                                "Ignoring malformed resume session id for "
+                                "window %s; starting fresh",
+                                final_window_name,
+                            )
                         pane.send_keys(cmd, enter=True)
 
                 logger.info(

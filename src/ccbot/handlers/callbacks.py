@@ -36,6 +36,7 @@ from ..screenshot import text_to_image
 from ..session import session_manager
 from ..terminal_parser import is_claude_working, is_tui_ready
 from ..tmux_manager import tmux_manager
+from ..utils import is_valid_session_id
 from .callback_data import (
     CB_ASK_DOWN,
     CB_ASK_ENTER,
@@ -1325,8 +1326,12 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
         await tmux_manager.send_keys(window_id, "/exit")
         await asyncio.sleep(3)
         cmd = config.claude_command
-        if resume_id:
+        # resume_id is typed into the pane's shell after /exit — only append it
+        # when it is a well-formed session id, else start fresh. (audit HIGH#1)
+        if resume_id and is_valid_session_id(resume_id):
             cmd = f"{cmd} --resume {resume_id}"
+        elif resume_id:
+            logger.warning("Ignoring malformed resume id %r; starting fresh", resume_id)
         await tmux_manager.send_keys(window_id, cmd)
     await _wait_pane_ready(window_id)
     await _cmd_refresh_photo(query, window_id, tab="act")

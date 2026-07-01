@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
+
+from .utils import is_valid_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +32,11 @@ logger = logging.getLogger(__name__)
 # tmux session with this exact name.
 CONTAINER_TMUX_SESSION = "claude"
 
-# Valid Claude session id shape — UUID-ish, bounded. We interpolate this into
-# the ``claude --resume <id>`` argv handed to ``tmux new-session``, which
-# runs its argv through the container's shell; a permissive value would be a
-# container-internal command-injection vector (attacker writes crafted
+# Session-id validation before we interpolate ``claude --resume <id>`` into the
+# argv handed to ``tmux new-session`` (which runs it through the container's
+# shell) uses the shared ``is_valid_session_id`` — a permissive value would be a
+# container-internal command-injection vector (attacker writes a crafted
 # session_id into the hook's session_map, we feed it to /bin/sh -c).
-_RESUME_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 # docker exec adds ~50–100ms per call. The 200-char chunk size matches
 # tmux_manager; tmux's send-keys itself is fine with far larger payloads,
@@ -271,7 +271,7 @@ class DockerDriver:
         """
         cmd = claude_cmd
         if resume_session_id:
-            if not _RESUME_SESSION_ID_RE.match(resume_session_id):
+            if not is_valid_session_id(resume_session_id):
                 logger.error(
                     "docker start_session: refusing to resume malformed session_id "
                     "(container=%s, id=%r) — starting fresh session instead",

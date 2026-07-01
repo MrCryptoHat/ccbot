@@ -39,7 +39,11 @@ from .config import config
 from .docker_driver import docker_driver
 from .tmux_manager import tmux_manager
 from .transcript_parser import TranscriptParser
-from .utils import atomic_write_json, schedule_async_json_write
+from .utils import (
+    atomic_write_json,
+    is_valid_session_id,
+    schedule_async_json_write,
+)
 from .voice.safety import BudgetEvent, VoiceBudget
 from .worktrees import WorktreeMeta
 
@@ -1243,6 +1247,11 @@ class SessionManager:
         sessions: list[ClaudeSession] = []
         for f in jsonl_files:
             if f.stem == "sessions-index":
+                continue
+            # A JSONL filename becomes a `--resume <id>` typed into the shell;
+            # skip anything not UUID-shaped so a crafted `<meta;chars>.jsonl`
+            # can never reach the resume command. (audit HIGH#1)
+            if not is_valid_session_id(f.stem):
                 continue
             if len(sessions) >= 10:
                 break

@@ -15,6 +15,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,26 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 CCBOT_DIR_ENV = "CCBOT_DIR"
+
+# Claude Code session ids are UUID-shaped. This pins them to the same charset
+# docker_driver validates before interpolating `--resume <id>`, so a value read
+# from session_map.json or a JSONL filename can never smuggle shell
+# metacharacters into the tmux launch command that gets typed into the host
+# pane (which, after `/exit`, is a bare shell). See audit HIGH#1.
+# `\Z` (not `$`): `$` also matches just before a trailing newline, which would
+# let "id\n" through and send a spurious early Enter into the pane.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9-]{8,64}\Z")
+
+
+def is_valid_session_id(session_id: str | None) -> bool:
+    """True if ``session_id`` is safe to interpolate into a ``--resume`` command.
+
+    Rejects empty/None and anything outside ``[A-Za-z0-9-]{8,64}`` — the guard
+    that keeps an attacker-influenceable session id (poisoned session_map.json
+    or a crafted ``<name>.jsonl``) from reaching a host shell verbatim.
+    """
+    return bool(session_id) and _SESSION_ID_RE.match(session_id) is not None
+
 
 # Single-thread executor dedicated to background JSON writes. Single-threaded
 # on purpose: writes submitted later land on disk later, so a newer snapshot

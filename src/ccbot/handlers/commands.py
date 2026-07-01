@@ -73,6 +73,7 @@ from ..session import session_manager
 from ..terminal_parser import is_claude_working
 from ..tmux_manager import tmux_manager
 from ..transcript_parser import TranscriptParser
+from ..utils import is_valid_session_id
 from ..voice import providers as voice_providers
 
 logger = logging.getLogger(__name__)
@@ -1523,8 +1524,14 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await asyncio.sleep(3)
 
         cmd = config.claude_command
-        if session_id:
+        # session_id is typed into the pane's shell after /exit — only append it
+        # when it is a well-formed session id, else start fresh. (audit HIGH#1)
+        if session_id and is_valid_session_id(session_id):
             cmd = f"{cmd} --resume {session_id}"
+        elif session_id:
+            logger.warning(
+                "Ignoring malformed resume id %r; starting fresh", session_id
+            )
         await tmux_manager.send_keys(target_window.window_id, cmd)
 
     await asyncio.sleep(8)

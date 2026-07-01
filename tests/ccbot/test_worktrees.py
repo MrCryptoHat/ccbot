@@ -105,6 +105,12 @@ class TestDecideDeleteSafety:
     def test_dirty_wins_over_unmerged(self):
         assert wt.decide_delete_safety(self._status(dirty=True, ahead=2)) == "dirty"
 
+    def test_indeterminate_ahead_fails_closed_to_unmerged(self):
+        # ahead=None means count_unmerged could not determine merge status
+        # (no candidate base ref resolved). Must NOT be treated as clean, else
+        # a headless teardown would `git branch -D` committed work. (audit HIGH#2)
+        assert wt.decide_delete_safety(self._status(ahead=None)) == "unmerged"
+
 
 class TestSeedCommands:
     def test_uv_for_python(self, tmp_path: Path):

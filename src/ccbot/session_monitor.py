@@ -287,13 +287,28 @@ class SessionMonitor:
                             new_entries.append(data)
                             safe_offset = await f.tell()
                         elif line.strip():
-                            # Partial JSONL line — don't advance offset past it
-                            logger.warning(
-                                "Partial JSONL line in session %s, "
-                                "will retry next cycle",
-                                session.session_id,
-                            )
-                            break
+                            if line.endswith("\n"):
+                                # Complete line the parser rejected (corrupt
+                                # record, or an entry type it skips). Advance
+                                # past it — otherwise it stalls ALL downstream
+                                # output for this session forever, silently.
+                                # The trailing newline is the completeness
+                                # signal: a partial write hasn't got one yet.
+                                # (audit MEDIUM)
+                                logger.warning(
+                                    "Skipping unparseable JSONL line in session %s",
+                                    session.session_id,
+                                )
+                                safe_offset = await f.tell()
+                            else:
+                                # No trailing newline → a partial write still in
+                                # flight; stop and retry the same offset.
+                                logger.warning(
+                                    "Partial JSONL line in session %s, "
+                                    "will retry next cycle",
+                                    session.session_id,
+                                )
+                                break
                         else:
                             # Empty line — safe to skip
                             safe_offset = await f.tell()

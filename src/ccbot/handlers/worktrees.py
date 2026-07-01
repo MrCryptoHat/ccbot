@@ -341,7 +341,20 @@ async def teardown_worktree(
 
     ok, msg = await wtc.remove_worktree(repo, wt_path, force=force)
     if ok:
-        await wtc.delete_branch(repo, meta.branch, force=True)
+        # Always `-D`: reaching teardown means either the user explicitly
+        # consented (interactive 🧨/🗑) or decide_delete_safety classified the
+        # branch clean via count_unmerged's patch-id + multi-base check — which
+        # already recognises squash/rebase/direct-push merges. git's own `-d`
+        # judges merge by commit-ANCESTRY, a different (stricter) predicate that
+        # would false-refuse exactly those integrated branches and leave them
+        # orphaned, without ever catching a wrong "clean". The real guard
+        # against destroying unmerged work is count_unmerged failing CLOSED to
+        # None → "unmerged" → this path is never taken. (audit HIGH#2)
+        deleted, derr = await wtc.delete_branch(repo, meta.branch, force=True)
+        if not deleted:
+            logger.warning(
+                "branch %s not deleted after teardown: %s", meta.branch, derr
+            )
     else:
         logger.warning("worktree remove failed for %s: %s", wt_path, msg)
     await wtc.prune_worktrees(repo)
@@ -387,8 +400,14 @@ async def handle_worktree_topic_close(
     bullets: list[str] = []
     if status.dirty:
         bullets.append(tr("wt.bullet_dirty", count=status.dirty_files))
-    if status.ahead > 0:
-        bullets.append(tr("wt.bullet_ahead", count=status.ahead, base=meta.base_branch))
+    if status.ahead is None or status.ahead > 0:
+        bullets.append(
+            tr(
+                "wt.bullet_ahead",
+                count="?" if status.ahead is None else status.ahead,
+                base=meta.base_branch,
+            )
+        )
     text = (
         tr("wt.close_guard_header", title=meta.task_title)
         + "\n".join(bullets)
@@ -498,8 +517,10 @@ async def _handle_wt_del(
         bits: list[str] = []
         if status.dirty:
             bits.append(tr("wt.bits_dirty", count=status.dirty_files))
-        if status.ahead > 0:
-            bits.append(tr("wt.bits_ahead", count=status.ahead))
+        if status.ahead is None or status.ahead > 0:
+            bits.append(
+                tr("wt.bits_ahead", count="?" if status.ahead is None else status.ahead)
+            )
         caption = tr(
             "wt.del_confirm_dirty", title=meta.task_title, bits=", ".join(bits)
         )

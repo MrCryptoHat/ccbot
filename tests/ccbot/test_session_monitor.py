@@ -75,6 +75,62 @@ class TestReadNewLinesOffsetRecovery:
         assert session.last_byte_offset == jsonl_file.stat().st_size
 
     @pytest.mark.asyncio
+    async def test_complete_unparseable_line_is_skipped(
+        self, monitor, tmp_path, make_jsonl_entry
+    ):
+        """A complete-but-unparseable line is skipped, not stalled forever.
+
+        Guards audit MEDIUM: a corrupt/rejected line ending in a newline must
+        advance the offset so downstream content still reaches the user, rather
+        than blocking every later line for the session's lifetime.
+        """
+        jsonl_file = tmp_path / "session.jsonl"
+        entry1 = make_jsonl_entry(msg_type="assistant", content="before")
+        entry2 = make_jsonl_entry(msg_type="assistant", content="after")
+        jsonl_file.write_text(
+            json.dumps(entry1)
+            + "\n"
+            + "@@@ not json @@@\n"  # complete garbage line (has newline)
+            + json.dumps(entry2)
+            + "\n",
+            encoding="utf-8",
+        )
+        session = TrackedSession(
+            session_id="test-session",
+            file_path=str(jsonl_file),
+            last_byte_offset=0,
+        )
+
+        result = await monitor._read_new_lines(session, jsonl_file)
+
+        # Both good lines delivered ('after' proves it did not stall), and the
+        # offset advanced fully past everything.
+        assert len(result) == 2
+        assert session.last_byte_offset == jsonl_file.stat().st_size
+
+    @pytest.mark.asyncio
+    async def test_partial_line_without_newline_retries(
+        self, monitor, tmp_path, make_jsonl_entry
+    ):
+        """A trailing line with no newline is an in-flight write — retry it."""
+        jsonl_file = tmp_path / "session.jsonl"
+        entry1 = make_jsonl_entry(msg_type="assistant", content="done")
+        good = json.dumps(entry1) + "\n"
+        jsonl_file.write_text(good + '{"partial": tru', encoding="utf-8")  # no \n
+        session = TrackedSession(
+            session_id="test-session",
+            file_path=str(jsonl_file),
+            last_byte_offset=0,
+        )
+
+        result = await monitor._read_new_lines(session, jsonl_file)
+
+        # Only the complete line delivered; offset stops before the partial so
+        # the next cycle re-reads it once the write finishes.
+        assert len(result) == 1
+        assert session.last_byte_offset == len(good.encode("utf-8"))
+
+    @pytest.mark.asyncio
     async def test_truncation_detection(self, monitor, tmp_path, make_jsonl_entry):
         """Detect file truncation and reset offset."""
         jsonl_file = tmp_path / "session.jsonl"

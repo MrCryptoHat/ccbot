@@ -75,6 +75,31 @@ async def test_full_lifecycle(repo: Path, tmp_path: Path):
     assert "hero" not in await wt.taken_slugs(repo, "proj")
 
 
+async def test_count_unmerged_fails_closed_when_base_unresolvable(
+    repo: Path, tmp_path: Path
+):
+    """A worktree with committed work whose base ref no longer resolves must
+    classify as unmerged, never clean — else headless teardown force-deletes it.
+
+    Guards audit HIGH#2: count_unmerged returns None (indeterminate) and
+    decide_delete_safety fails closed to "unmerged".
+    """
+    wt_path = tmp_path / "wt" / "hero"
+    ok, msg = await wt.add_worktree(repo, wt_path, "wt/hero", "main")
+    assert ok, msg
+    (wt_path / "app.py").write_text("print('changed')\n")
+    _git(wt_path, "add", "app.py")
+    _git(wt_path, "commit", "-m", "committed work")
+
+    # Base ref does not resolve (deleted/renamed base, never pushed): no local
+    # ref, no origin/<base>, no upstream → the count is genuinely unknown.
+    assert await wt.count_unmerged(repo, "ghost-base", "wt/hero") is None
+
+    st = await wt.worktree_status(repo, wt_path, "ghost-base", "wt/hero")
+    assert st.ahead is None
+    assert wt.decide_delete_safety(st) == "unmerged"
+
+
 async def test_direct_push_to_base_reads_as_merged(repo: Path, tmp_path: Path):
     """Work integrated by pushing straight onto the remote base (no merge, no
     branch upstream) must read as merged — the local base lags behind but the

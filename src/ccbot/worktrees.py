@@ -218,7 +218,7 @@ class WorktreeStatus:
 
     dirty: bool  # real uncommitted work after subtracting seeded artifacts
     dirty_files: int
-    ahead: int  # commits on the branch not integrated into ANY candidate base
+    ahead: int | None  # unmerged commits; None = indeterminate (fail-closed)
     base_branch: str
     exists: bool  # the worktree dir + .git link are still present
 
@@ -260,7 +260,10 @@ def decide_delete_safety(status: WorktreeStatus) -> DeleteSafety:
     """
     if status.dirty:
         return "dirty"
-    if status.ahead > 0:
+    # ahead is None when merge status is indeterminate (no candidate base ref
+    # resolved AND the rev-list fallback failed). Fail CLOSED: treat unknown as
+    # unmerged, so a worktree we cannot vouch for is never auto-torn-down.
+    if status.ahead is None or status.ahead > 0:
         return "unmerged"
     return "clean"
 
@@ -369,7 +372,7 @@ async def _ref_exists(repo: Path, ref: str) -> bool:
     return rc == 0
 
 
-async def count_unmerged(repo: Path, base_branch: str, branch: str) -> int:
+async def count_unmerged(repo: Path, base_branch: str, branch: str) -> int | None:
     """Count commits on ``branch`` not integrated into ANY candidate base ref.
 
     A plain ``rev-list --count <base>..<branch>`` against the *local* base raises
@@ -385,7 +388,9 @@ async def count_unmerged(repo: Path, base_branch: str, branch: str) -> int:
     resolvable candidate base — the local base, ``origin/<base>``, and the
     configured upstreams of both base and branch — and taking the MINIMUM
     ``+``-count: integrated anywhere ⇒ integrated. Falls back to a plain
-    ``rev-list --count`` against the local base when no candidate resolves.
+    ``rev-list --count`` against the local base when no candidate resolves, and
+    to ``None`` when even that fails — the caller must read ``None`` as "cannot
+    determine, treat as unmerged" (fail-closed), never as merged.
     """
     seen: set[str] = set()
     counts: list[int] = []
@@ -405,10 +410,17 @@ async def count_unmerged(repo: Path, base_branch: str, branch: str) -> int:
             counts.append(sum(1 for ln in out.splitlines() if ln.startswith("+")))
     if counts:
         return min(counts)
+    # No candidate base ref resolved. Try the local rev-list as a last resort;
+    # if even that fails (e.g. the base branch no longer exists), we genuinely
+    # cannot tell whether the branch is merged — return None so callers fail
+    # CLOSED (treat as unmerged) instead of reporting a false 0 that would let a
+    # headless teardown `git branch -D` committed work. (audit HIGH#2)
     rc, out, _ = await _git(
         "-C", str(repo), "rev-list", "--count", f"{base_branch}..{branch}"
     )
-    return int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
+    if rc == 0 and out.strip().isdigit():
+        return int(out.strip())
+    return None
 
 
 async def worktree_status(

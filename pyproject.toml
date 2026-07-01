@@ -13,7 +13,13 @@ dependencies = [
     "aiofiles>=24.0.0",
     "telegramify-markdown>=0.5.0,<1.0.0",
     "mistletoe>=1.0",
-    "aiohttp>=3.10.0",
+    # aiohttp floor tracks security fixes: <3.14.1 ships 11 known CVEs
+    # (request smuggling / parser). Only used by the local-uid inject socket,
+    # but pinned so `pip-audit` stays clean. (audit LOW/dependency)
+    "aiohttp>=3.14.1",
+    # idna floor: <3.15 is CVE-flagged (PYSEC-2026-215); a transitive dep, so
+    # pinned here to force the fixed version at lock time.
+    "idna>=3.15",
 ]
 
 [project.scripts]

