@@ -82,3 +82,4 @@ venv.bak/
 /tests/ccbot/test_mail_plugin.py
 /.claude/rules/wamcp-integration.md
 /.claude/rules/tgmcp-integration.md
+/.claude/rules/plugin-development.md
