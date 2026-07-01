@@ -13,7 +13,10 @@ TMUX_SESSION="${TMUX_SESSION_NAME:-}"
 if [ -z "$TMUX_SESSION" ]; then
     for _envf in "$PROJECT_DIR/.env" "${CCBOT_DIR:-$HOME/.ccbot}/.env"; do
         [ -f "$_envf" ] || continue
-        _v="$(grep -E '^[[:space:]]*TMUX_SESSION_NAME=' "$_envf" | tail -1)"
+        # `|| true`: under `set -e`+pipefail a no-match grep (var absent from
+        # this .env — the documented default case) would otherwise abort the
+        # whole script silently before we fall through to the "ccbot" default.
+        _v="$(grep -E '^[[:space:]]*TMUX_SESSION_NAME=' "$_envf" | tail -1 || true)"
         _v="${_v#*=}"                     # value after first =
         _v="${_v%%#*}"                    # drop inline comment
         _v="${_v//[[:space:]]/}"          # drop whitespace
