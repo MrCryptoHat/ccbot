@@ -122,6 +122,24 @@ tolerates a missing package, so the core always runs standalone. The plugin
 hook contract (i18n, commands, handlers, startup/shutdown) is documented in
 [`src/ccbot/plugins.py`](src/ccbot/plugins.py).
 
+## Writing a plugin
+
+Extensions that don't belong in core (a new gateway, a notification bus, …)
+live as self-contained `ccbot.<name>` packages: drop `src/ccbot/<name>/` into
+your checkout, list `<name>` in `CCBOT_PLUGINS`, and the loader picks it up at
+startup. Core never references specific plugins — new plugins are pure
+additions, no core edit needed.
+
+A plugin package optionally exposes: `STRINGS` (i18n catalog merges),
+`bot_commands()`, `register_handlers(app)`, `async on_startup(app)`,
+`async on_shutdown()`. If it has secrets, put them in a `config.py` submodule
+that reads env at import — the plugin loader imports it before the tmux server
+spawns, so tokens get captured and scrubbed cleanly.
+
+Full contract with docstrings: [`src/ccbot/plugins.py`](src/ccbot/plugins.py).
+Missing/broken plugin names are logged and skipped, so a config referencing an
+uninstalled plugin never crashes the bot.
+
 ## Hook setup
 
 ```bash

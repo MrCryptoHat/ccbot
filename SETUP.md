@@ -7,7 +7,8 @@ Linux/macOS host with tmux, the `claude` CLI, and `uv`.
 ## 1. Prerequisites
 
 - **tmux** — `tmux -V` should print a version.
-- **Claude Code** — the `claude` CLI on your `PATH`.
+- **Claude Code** — the `claude` CLI on your `PATH`
+  (install: https://claude.com/claude-code).
 - **uv** — https://docs.astral.sh/uv/ (installs Python + deps).
 - **ffmpeg** — only if you want Gemini voice replies (PCM→OGG); skip otherwise.
 
