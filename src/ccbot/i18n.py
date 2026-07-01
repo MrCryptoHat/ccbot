@@ -235,6 +235,10 @@ STRINGS.update(
             "ru": "✅ Папка `{dir}` — новая сессия создана\\.",
             "en": "✅ Folder `{dir}` — new session created\\.",
         },
+        "commands.autobind_resumed": {
+            "ru": "✅ Папка `{dir}` — продолжаю прошлый разговор\\.",
+            "en": "✅ Folder `{dir}` — resuming the last session\\.",
+        },
         "commands.autobind_window_failed": {
             "ru": "❌ Не удалось создать окно для `{dir}`: {err}",
             "en": "❌ Failed to create a window for `{dir}`: {err}",

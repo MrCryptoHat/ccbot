@@ -440,6 +440,17 @@ class Config:
             os.getenv("CCBOT_REACTION_ACK", "true").lower() != "false"
         )
 
+        # Transparent session resume on auto-bind/rebind. OFF by default (the
+        # interactive session picker is the norm). When ON, a topic auto-binding
+        # to a folder that already has Claude history silently continues the most
+        # recent session instead of showing a picker — for non-technical users
+        # in agent topics (e.g. an in-container ccbot driving agents as tmux
+        # windows) whose sessions would otherwise restart fresh after a
+        # container/tmux restart dropped the window. See _auto_bind_to_directory.
+        self.auto_resume_agents: bool = (
+            os.getenv("CCBOT_AUTO_RESUME_AGENTS", "false").lower() == "true"
+        )
+
         # --- Server-layout knobs (portability) -------------------------------
         # These default to this server's layout but every one is overridable
         # so the bot runs unchanged on a plain host. Friends without the

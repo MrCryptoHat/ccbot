@@ -1924,7 +1924,23 @@ async def _auto_bind_to_directory(
     shown = _display_home_path(matching_dir)
     sessions = await session_manager.list_sessions_for_directory(str(matching_dir))
 
-    if sessions:
+    resume_id: str | None = None
+    if sessions and config.auto_resume_agents:
+        # Transparent resume (no picker): a non-technical user in an agent topic
+        # won't tap a session picker, so on rebind — e.g. after a container/tmux
+        # restart dropped the window — silently continue the most recent session
+        # for this folder. Opt-in via CCBOT_AUTO_RESUME_AGENTS (default off). The
+        # session_id is validated at list_sessions_for_directory (JSONL stem) and
+        # again in create_window before it can reach the shell.
+        resume_id = sessions[0].session_id
+        logger.info(
+            "Auto-bind: resuming newest session %s for %s (user=%d, thread=%d)",
+            resume_id,
+            shown,
+            user_id,
+            thread_id,
+        )
+    elif sessions:
         # Existing Claude history in this folder — let the user pick.
         # State below is the same shape _handle_session_{select,new,cancel}
         # already consume, so the picker callbacks Just Work without changes.
@@ -1947,9 +1963,10 @@ async def _auto_bind_to_directory(
         )
         return True
 
-    # No existing sessions — create a fresh tmux window and bind right away.
+    # No sessions (fresh window) or auto-resume enabled (continue the newest
+    # session) — create the window and bind right away.
     success, message, created_wname, created_wid = await tmux_manager.create_window(
-        str(matching_dir)
+        str(matching_dir), resume_session_id=resume_id
     )
     if not success:
         logger.warning(
@@ -1965,10 +1982,35 @@ async def _auto_bind_to_directory(
             pass
         return True
 
-    await session_manager.wait_for_session_map_entry(created_wid, timeout=5.0)
+    hook_ok = await session_manager.wait_for_session_map_entry(
+        created_wid, timeout=15.0 if resume_id else 5.0
+    )
     session_manager.bind_thread(
         user_id, thread_id, created_wid, window_name=created_wname
     )
+    if resume_id:
+        # `--resume` makes the SessionStart hook report a NEW session_id while
+        # messages keep writing to the ORIGINAL JSONL — pin window_state to the
+        # resumed id so the monitor tracks the right transcript. Mirrors the
+        # resume override in bot._create_and_bind_window, INCLUDING the hook-
+        # timeout branch: the in-container SessionStart hook is exactly what's
+        # flaky in the deployment this flag targets, so a timeout here is the
+        # expected path, not an edge case.
+        ws = session_manager.get_window_state(created_wid)
+        if not hook_ok:
+            logger.warning(
+                "Hook timed out for resume window %s — pinning session_id=%s cwd=%s",
+                created_wid,
+                resume_id,
+                matching_dir,
+            )
+            ws.session_id = resume_id
+            ws.cwd = str(matching_dir)
+            ws.window_name = created_wname
+            session_manager._save_state()
+        elif ws.session_id != resume_id:
+            ws.session_id = resume_id
+            session_manager._save_state()
     logger.info(
         "Auto-bound thread %d to tmux window %s at %s (user=%d)",
         thread_id,
@@ -1996,7 +2038,9 @@ async def _auto_bind_to_directory(
         await safe_reply(
             msg,
             tr(
-                "commands.autobind_new_session",
+                "commands.autobind_resumed"
+                if resume_id
+                else "commands.autobind_new_session",
                 dir=_display_home_path(matching_dir),
             ),
         )
