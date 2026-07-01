@@ -144,12 +144,18 @@ UI_PATTERNS: list[UIPattern] = [
         # OAuth login screen (`/login`, or a fresh `claude` needing auth). The
         # long sign-in URL is the payload — surfaced as a clickable link by
         # interactive_ui via parse_login_url, the photo is just context.
+        # No-bottom mode (extends to last non-empty line): the previous bottom
+        # marker `^\s*Esc to cancel` matched Claude Code up to v2.1.196 but
+        # was removed from the login-URL screen in v2.1.197 — the classifier
+        # then silently returned None and the URL was never surfaced. Relying
+        # on the two top markers (both very specific to this exact screen) is
+        # robust enough on its own.
         name="LoginPrompt",
         top=(
             re.compile(r"Use the url below to sign in"),
             re.compile(r"Paste code here if prompted"),
         ),
-        bottom=(re.compile(r"^\s*Esc to cancel"),),
+        bottom=(),
         min_gap=1,
     ),
 ]

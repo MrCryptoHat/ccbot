@@ -612,3 +612,22 @@ class TestLoginPromptDetection:
         content = extract_interactive_content(pane)
         assert content is not None
         assert content.name == "LoginPrompt"
+
+    def test_detected_without_esc_to_cancel_hint(self):
+        """Regression: Claude Code v2.1.197 dropped the trailing
+        `Esc to cancel` hint from the OAuth URL screen. The old classifier
+        keyed on it as the bottom marker and silently returned None, so the
+        URL was never surfaced. The pattern now uses top markers only
+        (no-bottom mode) and this new-shape screen classifies correctly.
+        """
+        pane = (
+            "  Browser didn't open? Use the url below to sign in (c to copy)\n"
+            "\n"
+            f"{_wrap(_LOGIN_URL)}\n"
+            "\n"
+            "  Paste code here if prompted >\n"
+        )
+        content = extract_interactive_content(pane)
+        assert content is not None
+        assert content.name == "LoginPrompt"
+        assert parse_login_url(pane) == _LOGIN_URL
