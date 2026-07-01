@@ -34,6 +34,29 @@ def _plugin_names() -> list[str]:
     return [n.strip() for n in os.getenv("CCBOT_PLUGINS", "").split(",") if n.strip()]
 
 
+def preload_configs() -> None:
+    """Import each plugin's ``.config`` submodule at process start, BEFORE
+    core ``Config()`` runs its scrub. Each plugin's config module reads its
+    own token(s) from ``os.environ`` and pops them at module top — plugin-
+    owned end-to-end. This ordering ensures the plugin *captures* its token
+    before core scrubs anything, and the token is still gone from
+    ``os.environ`` by the time the tmux server spawns. Plugins without a
+    ``.config`` (e.g. the mail plugin has nothing to scrub) are silently
+    skipped, as are absent plugin packages.
+
+    Called from core ``config.py`` at module scope, so it runs before any
+    importer of ``ccbot.config`` sees the module-level ``config`` singleton.
+    """
+    for name in _plugin_names():
+        try:
+            importlib.import_module(f".{name}.config", __package__)
+        except ModuleNotFoundError:
+            # plugin package absent, or plugin has no .config submodule
+            pass
+        except Exception:
+            logger.exception("plugin %r config preload failed", name)
+
+
 def loaded() -> list[ModuleType]:
     """Import and cache the configured plugin modules; skip absent/broken ones.
 

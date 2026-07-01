@@ -16,6 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from . import plugins as _plugins
 from .utils import ccbot_dir
 
 logger = logging.getLogger(__name__)
@@ -575,5 +576,37 @@ class Config:
             return []
         return list(self.docker_agents)
 
+
+def _preload_dotenv() -> None:
+    """Load `.env` files into `os.environ` at module import.
+
+    Duplicates the load done inside `Config.__init__` (cheap, idempotent with
+    `load_dotenv`'s default `override=False`) so plugin `.config` submodules,
+    which we import BEFORE `Config()` runs (see below), can see their tokens
+    in `os.environ`. Kept inside `Config.__init__` too so tests that construct
+    a `Config()` directly (in a fresh process without our module-level pass)
+    still get `.env` loading.
+    """
+    local_env = Path(".env")
+    global_env = ccbot_dir() / ".env"
+    if local_env.is_file():
+        load_dotenv(local_env)
+    if global_env.is_file():
+        load_dotenv(global_env)
+
+
+# Ordering matters:
+#   1. Load `.env` into `os.environ`.
+#   2. Give plugins a chance to capture their own tokens: each plugin's
+#      `.config` submodule reads its tokens at import time and pops them
+#      (plugin-owned scrub). Doing this BEFORE `Config()` guarantees the
+#      plugin captures its token even when the deployment lists that token
+#      in `CCBOT_SENSITIVE_EXTRA`.
+#   3. `Config()` then reads the rest and scrubs its own list.
+# After steps 2 + 3, `os.environ` is clean and any subsequently-spawned tmux
+# server inherits no secrets. `plugins` doesn't import `config`, so no
+# circular import risk.
+_preload_dotenv()
+_plugins.preload_configs()
 
 config = Config()
