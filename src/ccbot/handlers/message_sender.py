@@ -23,7 +23,7 @@ import logging
 from typing import Any
 
 from telegram import Bot, InputMediaPhoto, LinkPreviewOptions, Message
-from telegram.error import BadRequest, RetryAfter
+from telegram.error import BadRequest, NetworkError, RetryAfter
 
 from ..markdown_v2 import convert_markdown
 from ..transcript_parser import TranscriptParser
@@ -78,9 +78,36 @@ async def send_with_fallback(
     """Send message with MarkdownV2, falling back to plain text on failure.
 
     Returns the sent Message on success, None on failure.
-    RetryAfter is re-raised for caller handling.
+    RetryAfter and NetworkError (incl. TimedOut) are re-raised for caller
+    handling: after a client-side timeout the send may or may not have been
+    committed by Telegram (the exact race the bumped photo timeouts in
+    bot.py exist for) — an immediate plain-text resend here used to produce
+    a duplicate. The queue worker retries these with a bounded backoff
+    instead; the plain-text fallback stays reserved for what it was built
+    for, formatting/entity BadRequests.
     """
     kwargs.setdefault("link_preview_options", NO_LINK_PREVIEW)
+
+    async def _plain_fallback(primary_exc: Exception) -> Message | None:
+        if is_topic_gone_error(primary_exc):
+            raise primary_exc  # plain retry fails the same way; worker purges
+        try:
+            return await bot.send_message(
+                chat_id=chat_id, text=strip_sentinels(text), **kwargs
+            )
+        except RetryAfter:
+            raise
+        except BadRequest as e:
+            if is_topic_gone_error(e):
+                raise
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+            return None
+        except NetworkError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+            return None
+
     try:
         return await bot.send_message(
             chat_id=chat_id,
@@ -90,20 +117,15 @@ async def send_with_fallback(
         )
     except RetryAfter:
         raise
+    # ORDER MATTERS: in PTB, BadRequest is a SUBCLASS of NetworkError — a
+    # bare `except NetworkError` first would swallow every parse error and
+    # kill both the plain-text fallback and topic-gone detection.
+    except BadRequest as primary_exc:
+        return await _plain_fallback(primary_exc)
+    except NetworkError:
+        raise
     except Exception as primary_exc:
-        if is_topic_gone_error(primary_exc):
-            raise  # plain-text retry would fail the same way; let the worker purge
-        try:
-            return await bot.send_message(
-                chat_id=chat_id, text=strip_sentinels(text), **kwargs
-            )
-        except RetryAfter:
-            raise
-        except Exception as e:
-            if is_topic_gone_error(e):
-                raise
-            logger.error(f"Failed to send message to {chat_id}: {e}")
-            return None
+        return await _plain_fallback(primary_exc)
 
 
 async def send_photo(
@@ -230,6 +252,21 @@ async def safe_reply(message: Message, text: str, **kwargs: Any) -> Message:
         )
     except RetryAfter:
         raise
+    # BadRequest before NetworkError — it's a subclass (see send_with_fallback).
+    except BadRequest:
+        try:
+            return await message.reply_text(strip_sentinels(text), **kwargs)
+        except RetryAfter:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to reply: {e}")
+            raise
+    except NetworkError as e:
+        # Ambiguous outcome (the reply may have been committed server-side);
+        # a plain-text resend here would risk a duplicate for a one-off
+        # interactive reply — surface the failure instead.
+        logger.warning("Reply failed with a network error: %s", e)
+        raise
     except Exception:
         try:
             return await message.reply_text(strip_sentinels(text), **kwargs)
@@ -280,9 +317,24 @@ async def safe_send(
         )
     except RetryAfter:
         raise
-    except Exception as primary_exc:
+    # BadRequest before NetworkError — it's a subclass (see send_with_fallback).
+    except BadRequest as primary_exc:
         if is_topic_gone_error(primary_exc):
             raise
+        try:
+            await bot.send_message(
+                chat_id=chat_id, text=strip_sentinels(text), **kwargs
+            )
+        except RetryAfter:
+            raise
+        except Exception as e:
+            if is_topic_gone_error(e):
+                raise
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+    except NetworkError as e:
+        # See safe_reply: don't risk a duplicate on an ambiguous outcome.
+        logger.warning("Send to %s failed with a network error: %s", chat_id, e)
+    except Exception:
         try:
             await bot.send_message(
                 chat_id=chat_id, text=strip_sentinels(text), **kwargs

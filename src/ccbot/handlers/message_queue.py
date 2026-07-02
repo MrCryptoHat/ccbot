@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
 
 from telegram import Bot
-from telegram.error import BadRequest, RetryAfter
+from telegram.error import BadRequest, NetworkError, RetryAfter
 
 from ..i18n import tr
 from ..links import extract_urls, format_links_block
@@ -125,6 +125,11 @@ _flood_until: dict[int, float] = {}
 
 # Max seconds to wait for flood control before dropping tasks
 FLOOD_CONTROL_MAX_WAIT = 10
+
+# Pause before retrying a content task whose send died on a NetworkError
+# (client timeout / connection reset). Short and fixed: PTB's HTTPX layer
+# already did its own connect retries; this only spaces our re-attempts.
+NETWORK_RETRY_DELAY_SEC = 3.0
 
 
 def get_message_queue(
@@ -339,11 +344,50 @@ async def _dispatch_task(
             queue.task_done()
     try:
         await _process_content_task(bot, user_id, merged_task)
-    except RetryAfter:
+    except BadRequest:
+        raise  # topic-gone etc. — no requeue; subclass of NetworkError in PTB
+    except (RetryAfter, NetworkError):
         # Keep the unsent content (the task trims already-delivered
-        # parts before re-raising); the worker waits out the ban.
+        # parts before re-raising); the worker waits out the ban /
+        # network hiccup. Both retry kinds share the flood_requeues
+        # bound so a dead network can't loop a task forever.
         await _requeue_content_task(queue, lock, merged_task)
         raise
+
+
+async def _handle_task_error(
+    bot: Bot, user_id: int, thread_id_or_0: int, task: MessageTask, e: Exception
+) -> None:
+    """Terminal (non-retryable) task failure: purge a deleted topic or log.
+
+    A send bouncing with topic-gone is the authoritative, immediate signal
+    that the user deleted this topic (the periodic probe is only a backstop
+    for idle topics) — tear it down.
+    """
+    if is_topic_gone_error(e):
+        from .cleanup import purge_deleted_topic
+
+        try:
+            await purge_deleted_topic(
+                bot,
+                user_id,
+                thread_id_or_0,
+                task.window_id or "",
+            )
+        except Exception as purge_exc:
+            logger.warning(
+                "purge_deleted_topic failed (user=%d thread=%d): %s",
+                user_id,
+                thread_id_or_0,
+                purge_exc,
+            )
+    else:
+        logger.error(
+            "Error processing message task (user=%d thread=%d): %s",
+            user_id,
+            thread_id_or_0,
+            e,
+        )
 
 
 async def _message_queue_worker(bot: Bot, key: QueueKey) -> None:
@@ -391,34 +435,27 @@ async def _message_queue_worker(bot: Bot, key: QueueKey) -> None:
                         retry_secs,
                     )
                     await asyncio.sleep(retry_secs)
-            except Exception as e:
-                if is_topic_gone_error(e):
-                    # A send bounced because the user deleted this topic — the
-                    # authoritative, immediate signal (the periodic probe is
-                    # only a backstop for idle topics). Tear it down.
-                    from .cleanup import purge_deleted_topic
-
-                    try:
-                        await purge_deleted_topic(
-                            bot,
-                            user_id,
-                            thread_id_or_0,
-                            task.window_id or "",
-                        )
-                    except Exception as purge_exc:
-                        logger.warning(
-                            "purge_deleted_topic failed (user=%d thread=%d): %s",
-                            user_id,
-                            thread_id_or_0,
-                            purge_exc,
-                        )
+            except NetworkError as e:
+                if isinstance(e, BadRequest):
+                    # PTB quirk: BadRequest subclasses NetworkError. Not
+                    # transport trouble — generic handling (incl. the
+                    # topic-gone purge) applies.
+                    await _handle_task_error(bot, user_id, thread_id_or_0, task, e)
                 else:
-                    logger.error(
-                        "Error processing message task (user=%d thread=%d): %s",
+                    # Transient network trouble (incl. client-side TimedOut).
+                    # The task was already requeued with its delivered parts
+                    # trimmed (see _dispatch_task); back off briefly and let
+                    # the loop retry — flood_requeues bounds total attempts.
+                    logger.warning(
+                        "Network error delivering to user %d thread %d, "
+                        "retrying shortly: %s",
                         user_id,
                         thread_id_or_0,
                         e,
                     )
+                    await asyncio.sleep(NETWORK_RETRY_DELAY_SEC)
+            except Exception as e:
+                await _handle_task_error(bot, user_id, thread_id_or_0, task, e)
             finally:
                 queue.task_done()
         except asyncio.CancelledError:
@@ -993,10 +1030,18 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                 if menu_markup is not None and task.thread_id:
                     session_manager.mark_menu_shown(user_id, task.thread_id)
                     menu_markup = None
-    except RetryAfter:
+    except BadRequest:
+        # Incl. topic-gone — not transport trouble; the worker's generic
+        # handler purges/logs. (BadRequest is a NetworkError subclass in
+        # PTB, so it must be caught before the clause below.)
+        raise
+    except (RetryAfter, NetworkError):
         # Drop the parts already delivered so the requeue in
         # _dispatch_task retries only from the in-flight part — no
-        # duplicates after the flood ban.
+        # duplicates after the flood ban / network retry. For NetworkError
+        # the in-flight part itself is ambiguous (may have committed
+        # server-side); retrying it is the deliberate choice — a rare
+        # duplicate beats silently losing a chunk of the agent's reply.
         task.parts = task.parts[part_idx:]
         raise
     # All parts delivered: a RetryAfter from the images below must not
