@@ -191,31 +191,6 @@ def _parse_docker_agents(env: Mapping[str, str], home: Path) -> list[DockerAgent
     return agents
 
 
-def _parse_rclone_mounts(raw: str, home: Path) -> list[tuple[str, str]]:
-    """Parse ``name:path,name:path`` into ``[(remote, expanded_path), …]``.
-
-    Consumed by ``/status`` (mount health) and ``/mount|/umount|/remount``.
-    Empty string → ``[]`` (a plain host with no rclone remotes, i.e. every
-    deployment that isn't this server). ``~`` at the start of a path is
-    expanded against *home* so the function stays pure/testable (no
-    ``Path.home()`` side effect). Malformed items (no ``:``, empty half)
-    are skipped rather than raising — a bad mount line must not crash boot.
-    """
-    out: list[tuple[str, str]] = []
-    for item in raw.split(","):
-        item = item.strip()
-        if not item or ":" not in item:
-            continue
-        name, _, path = item.partition(":")
-        name, path = name.strip(), path.strip()
-        if not name or not path:
-            continue
-        if path.startswith("~"):
-            path = str(home) + path[1:]
-        out.append((name, path))
-    return out
-
-
 class Config:
     """Application configuration loaded from environment variables."""
 
@@ -374,10 +349,10 @@ class Config:
         self.tts_voice: str = os.getenv("OPENAI_TTS_VOICE", "nova")
         self.tts_model: str = os.getenv("OPENAI_TTS_MODEL", "tts-1")
 
-        # chat_id of a supergroup used for cross-cutting notices and the
-        # live-dashboard topic (see live_dashboard_target). Unset → those
-        # features are disabled; the core bot doesn't need it. Optional
-        # plugins (e.g. mail) may also read it.
+        # chat_id of a supergroup used for cross-cutting notices (voice
+        # budget alerts today). Unset → those features are disabled; the
+        # core bot doesn't need it. Optional plugins (mail, fleet's live
+        # dashboards) also read it.
         notif_raw = os.getenv("NOTIFICATIONS_CHAT_ID", "").strip()
         self.notifications_chat_id: int | None
         if notif_raw:
@@ -389,33 +364,6 @@ class Config:
                 ) from e
         else:
             self.notifications_chat_id = None
-
-        # Live-dashboard topic — thread_id (within NOTIFICATIONS_CHAT_ID) of
-        # a single shared topic where every isolated docker agent's browser
-        # screenshot lives as one always-edited message. Decouples the live
-        # view from the agent's own topic so new chat doesn't bury it. The
-        # topic is created by hand (right-click group → New Topic), id is
-        # read from the URL. Disabled when either var is unset.
-        live_thread_raw = os.getenv("LIVE_DASHBOARD_THREAD_ID", "").strip()
-        self.live_dashboard_thread_id: int | None
-        if live_thread_raw:
-            try:
-                self.live_dashboard_thread_id = int(live_thread_raw)
-            except ValueError as e:
-                raise ValueError(
-                    f"LIVE_DASHBOARD_THREAD_ID must be an integer "
-                    f"(got {live_thread_raw!r})"
-                ) from e
-        else:
-            self.live_dashboard_thread_id = None
-
-        # Optional deep-link rendered as "🔗 Tailscale" in every live-dashboard
-        # caption. Used so the user can tap the VPN open before tapping VNC —
-        # the VNC link only resolves while Tailscale is connected. Empty string
-        # disables the link.
-        self.live_dashboard_tailscale_url: str | None = (
-            os.getenv("LIVE_DASHBOARD_TAILSCALE_URL", "").strip() or None
-        )
 
         # Reaction-to-confirm: 👍 on an agent-originated topic message means
         # "yes, go ahead" — press Enter on an interactive prompt, or type «да»
@@ -460,16 +408,13 @@ class Config:
 
         # --- Server-layout knobs (portability) -------------------------------
         # These default to this server's layout but every one is overridable
-        # so the bot runs unchanged on a plain host. Friends without the
-        # external `preview` CLI / Caddy fleet get graceful degradation: the
-        # registry file simply won't exist and the helpers return nothing.
+        # so the bot runs unchanged on a plain host.
 
-        # Base domain for preview-server URLs (`preview-<slug>.<domain>`),
-        # surfaced in /status, the Live board, and worktree welcome messages.
-        self.preview_domain: str = os.getenv("CCBOT_PREVIEW_DOMAIN", "").strip()
         # Path to the external `preview` CLI binary and its registry file
-        # (written by that CLI). Consolidated here so worktrees.py and
-        # preview.py share one source of truth.
+        # (written by that CLI). Core keeps these two ONLY for the worktree
+        # teardown's best-effort `preview down` (handlers/worktrees.py) —
+        # everything display-related about previews lives in the fleet
+        # plugin. Missing binary/registry → teardown just skips the step.
         self.preview_bin: Path = Path(
             os.getenv(
                 "CCBOT_PREVIEW_BIN", str(Path.home() / ".local" / "bin" / "preview")
@@ -481,11 +426,6 @@ class Config:
                 str(Path.home() / ".local" / "state" / "preview" / "registry.json"),
             )
         ).expanduser()
-        # Directory of Caddy app-host configs scanned by the Live board.
-        # Missing dir → no app-hosts listed (already graceful).
-        self.caddy_apps_dir: Path = Path(
-            os.getenv("CCBOT_CADDY_APPS_DIR", "/etc/caddy/apps.d")
-        ).expanduser()
         # Roots (relative to $HOME) for name-based topic auto-bind: a topic
         # named "foo" binds to ~/<root>/foo, first root wins. Default matches
         # this server's ~/projects + ~/agents layout.
@@ -493,14 +433,6 @@ class Config:
         self.topic_dir_roots: tuple[str, ...] = tuple(
             r.strip() for r in _roots_raw.split(",") if r.strip()
         ) or ("projects", "agents")
-        # rclone remotes shown in /status and driven by /mount|/umount|/remount.
-        # Empty by default (rclone mounts are inherently host-specific — a
-        # non-empty default would show a phantom "down" mount everywhere else);
-        # set CCBOT_RCLONE_MOUNTS="name:~/path,…" on a host that has them.
-        self.rclone_mounts: list[tuple[str, str]] = _parse_rclone_mounts(
-            os.getenv("CCBOT_RCLONE_MOUNTS", ""),
-            Path.home(),
-        )
 
         # Docker-agent integration (optional). When DOCKER_AGENTS_ENABLED=true,
         # topic bindings of the form "docker:<name>" route to containers
@@ -543,23 +475,6 @@ class Config:
     def is_user_allowed(self, user_id: int) -> bool:
         """Check if a user is in the allowed list."""
         return user_id in self.allowed_users
-
-    def live_dashboard_target(self) -> tuple[int, int] | None:
-        """Return (chat_id, thread_id) for the live-dashboard topic, or None.
-
-        Both NOTIFICATIONS_CHAT_ID and LIVE_DASHBOARD_THREAD_ID must be set;
-        otherwise the dashboard is disabled and ``browser_live_loop`` idles.
-        """
-        if self.notifications_chat_id is None or self.live_dashboard_thread_id is None:
-            return None
-        return self.notifications_chat_id, self.live_dashboard_thread_id
-
-    def preview_host(self, slug: str) -> str:
-        """Preview hostname for a slug: ``preview-<slug>.<preview_domain>``.
-
-        Bare host (no scheme) — callers add ``https://`` where they need it.
-        """
-        return f"preview-{slug}.{self.preview_domain}"
 
     def _load_docker_agents(self) -> list[DockerAgentConfig]:
         """Read docker-agent configs from process environment.

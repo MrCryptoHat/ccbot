@@ -291,47 +291,11 @@ class TestParseInjectConfig:
         assert cfg.socket_path == Path("/run/custom.sock")
 
 
-class TestParseRcloneMounts:
-    """`_parse_rclone_mounts` — pure ``name:path,…`` parser for /status +
-    /mount. Empty on any host without rclone remotes."""
-
-    def test_empty_returns_empty(self) -> None:
-        from ccbot.config import _parse_rclone_mounts
-
-        assert _parse_rclone_mounts("", Path("/home/u")) == []
-
-    def test_single_mount_expands_leading_tilde(self) -> None:
-        from ccbot.config import _parse_rclone_mounts
-
-        out = _parse_rclone_mounts("drive:~/mnt/drive", Path("/home/u"))
-        assert out == [("drive", "/home/u/mnt/drive")]
-
-    def test_multiple_and_absolute_path(self) -> None:
-        from ccbot.config import _parse_rclone_mounts
-
-        out = _parse_rclone_mounts("a:~/x, b:/srv/y", Path("/home/u"))
-        assert out == [("a", "/home/u/x"), ("b", "/srv/y")]
-
-    def test_malformed_items_skipped(self) -> None:
-        from ccbot.config import _parse_rclone_mounts
-
-        # no colon / empty name / empty path → each dropped, valid one kept
-        out = _parse_rclone_mounts("nocolon, :nopath, name:, ok:/p", Path("/home/u"))
-        assert out == [("ok", "/p")]
-
-
 @pytest.mark.usefixtures("_base_env")
 class TestPortabilityKnobs:
     """Server-layout knobs default to this server's values but are all
-    overridable (CCBOT_PREVIEW_DOMAIN / _TOPIC_DIR_ROOTS / _RCLONE_MOUNTS)."""
-
-    def test_preview_domain_empty_by_default(self, monkeypatch):
-        monkeypatch.delenv("CCBOT_PREVIEW_DOMAIN", raising=False)
-        assert Config().preview_domain == ""
-
-    def test_preview_host_domain_override(self, monkeypatch):
-        monkeypatch.setenv("CCBOT_PREVIEW_DOMAIN", "example.dev")
-        assert Config().preview_host("blog") == "preview-blog.example.dev"
+    overridable (CCBOT_TOPIC_DIR_ROOTS; preview paths for the worktree
+    teardown hook)."""
 
     def test_topic_dir_roots_default(self, monkeypatch):
         monkeypatch.delenv("CCBOT_TOPIC_DIR_ROOTS", raising=False)
@@ -340,14 +304,3 @@ class TestPortabilityKnobs:
     def test_topic_dir_roots_override_trims_blanks(self, monkeypatch):
         monkeypatch.setenv("CCBOT_TOPIC_DIR_ROOTS", "repos, work ,")
         assert Config().topic_dir_roots == ("repos", "work")
-
-    def test_rclone_mounts_default_empty(self, monkeypatch):
-        monkeypatch.delenv("CCBOT_RCLONE_MOUNTS", raising=False)
-        assert Config().rclone_mounts == []
-
-    def test_rclone_mounts_override(self, monkeypatch):
-        monkeypatch.setenv("CCBOT_RCLONE_MOUNTS", "drive:~/mnt/drive")
-        m = Config().rclone_mounts
-        assert len(m) == 1
-        assert m[0][0] == "drive"
-        assert m[0][1].endswith("/mnt/drive") and "~" not in m[0][1]

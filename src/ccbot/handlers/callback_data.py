@@ -53,7 +53,6 @@ CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
 
 # /status inline buttons
 CB_STATUS_REFRESH = "st:ref"
-CB_STATUS_REMOUNT = "st:remount"
 
 # Agent panel inline keyboard (cm: prefix). The panel has two tabs —
 # "nav" (raw key presses: arrows, Space, Tab, Esc, ^C, Enter, "/") and
@@ -80,7 +79,6 @@ CB_CMD_FRESH = (
     "cm:fresh:"  # restart Claude with a brand-new session_id (old one stays in /resume)
 )
 CB_CMD_KILL = "cm:kill:"
-CB_CMD_DRIVE = "cm:drive:"
 CB_CMD_REFRESH = "cm:ref:"  # cm:ref:<tab>:<window_id>
 CB_CMD_TAB = "cm:tab:"  # cm:tab:<tab>:<window_id>
 CB_CMD_CONFIRM = "cm:cfm:"  # cm:cfm:<action>:<window_id>

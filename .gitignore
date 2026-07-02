@@ -75,11 +75,15 @@ venv.bak/
 /src/ccbot/wamcp
 /src/ccbot/tgmcp
 /src/ccbot/mail
+/src/ccbot/drive
+/src/ccbot/fleet
 /tests/ccbot/wamcp
 /tests/ccbot/tgmcp
 /tests/ccbot/test_mail_notifier.py
 /tests/ccbot/test_mail_wake.py
 /tests/ccbot/test_mail_plugin.py
+/tests/ccbot/test_drive.py
+/tests/ccbot/test_fleet_live_board.py
 /.claude/rules/wamcp-integration.md
 /.claude/rules/tgmcp-integration.md
 /.claude/rules/plugin-development.md

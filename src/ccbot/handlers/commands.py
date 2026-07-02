@@ -6,7 +6,6 @@ forwarding unknown /commands to Claude Code via tmux.
 
 import asyncio
 import io
-import json
 import logging
 import os
 import re
@@ -51,7 +50,6 @@ from .callback_data import (
     CB_CMD_WIPE_INPUT,
     CB_KEYS_PREFIX,
     CB_STATUS_REFRESH,
-    CB_STATUS_REMOUNT,
     CB_WT_DEL,
     CB_WT_NEW,
 )
@@ -68,7 +66,7 @@ from ..screenshot import text_to_image
 from ..config import config
 from ..docker_driver import docker_driver
 from ..hook import hook_installed_in_settings
-from .. import i18n, plugins, preview
+from .. import i18n, plugins
 from ..i18n import tr
 from ..session import session_manager
 from ..terminal_parser import is_claude_working
@@ -494,19 +492,6 @@ def build_bot_commands() -> list[BotCommand]:
     Rebuilt (not cached) so /lang can re-publish it in the new language —
     keep this in sync with the CommandHandler registrations in bot.py.
     """
-    # The rclone /mount|/umount|/remount trio is host-specific plumbing —
-    # advertise it only when mounts are actually configured, so a fresh
-    # install's command menu isn't padded with dead entries. The handlers
-    # stay registered either way (a typed /mount still answers).
-    mount_cmds = (
-        [
-            BotCommand("remount", tr("cmd.remount")),
-            BotCommand("mount", tr("cmd.mount")),
-            BotCommand("umount", tr("cmd.umount")),
-        ]
-        if config.rclone_mounts
-        else []
-    )
     return [
         BotCommand("start", tr("cmd.start")),
         BotCommand("status", tr("cmd.status")),
@@ -520,7 +505,6 @@ def build_bot_commands() -> list[BotCommand]:
         BotCommand("diff", tr("cmd.diff")),
         BotCommand("lang", tr("cmd.lang")),
         BotCommand("menu", tr("cmd.menu")),
-        *mount_cmds,
         *plugins.bot_commands(),
     ]
 
@@ -724,39 +708,16 @@ async def _build_status_text() -> str:
     """Compose the full /status message body. Pure string output, no send.
 
     The heavy lifting happens in _build_status_text_sync inside
-    asyncio.to_thread: the body runs seven subprocess calls and touches
-    the rclone FUSE mount — doing that on the event loop froze every
-    topic for seconds, and a hung mount froze the whole bot (including
-    /remount, the only way out).
+    asyncio.to_thread: the body runs several subprocess calls (and plugin
+    sections may probe mounts/filesystems) — doing that on the event loop
+    froze every topic for seconds, and a hung filesystem froze the whole
+    bot.
     """
     try:
         windows = await tmux_manager.list_windows()
     except Exception:
         windows = []
     return await asyncio.to_thread(_build_status_text_sync, windows)
-
-
-def _check_mount_alive(path: str, timeout: float = 3.0) -> bool:
-    """ismount + listdir bounded by a timeout.
-
-    A hung FUSE mount blocks listdir in D-state forever; run it on a
-    throwaway thread and give up after ``timeout`` (the stuck thread is
-    leaked — unavoidable, but it's one per manual /status on an already
-    broken mount, and the report stays truthful).
-    """
-    import concurrent.futures
-
-    def _probe() -> bool:
-        return os.path.ismount(path) and bool(os.listdir(path))
-
-    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        return ex.submit(_probe).result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        logger.warning("Mount check timed out for %s — mount looks hung", path)
-        return False
-    finally:
-        ex.shutdown(wait=False)
 
 
 def _build_status_text_sync(windows: list) -> str:
@@ -906,40 +867,6 @@ def _build_status_text_sync(windows: list) -> str:
     except Exception:
         pass
 
-    # --- Preview servers --------------------------------------------------
-    try:
-        if os.path.exists(preview.REGISTRY_PATH):
-            with open(preview.REGISTRY_PATH) as f:
-                registry = json.load(f)
-            if registry:
-                pv_lines = [f"🌐 Preview · {len(registry)}"]
-                for slug, entry in sorted(registry.items()):
-                    port = entry.get("port", 0)
-                    ttl = entry.get("ttl", "?")
-                    started = entry.get("started", "")
-                    try:
-                        tmux_alive = (
-                            subprocess.run(
-                                ["tmux", "has-session", "-t", f"preview-{slug}"],
-                                capture_output=True,
-                                timeout=2,
-                            ).returncode
-                            == 0
-                        )
-                    except Exception:
-                        tmux_alive = False
-                    healthy = tmux_alive and preview.port_listening(port)
-                    emoji = "🟢" if healthy else "🔴"
-                    if not healthy:
-                        warnings.append(f"preview {slug}")
-                    remaining = preview.ttl_remaining(started, ttl)
-                    pv_lines.append(
-                        f"  {emoji} {slug} · {remaining} · {config.preview_host(slug)}"
-                    )
-                sections.append("\n".join(pv_lines))
-    except Exception:
-        pass
-
     # --- Resources (disk + RAM with bars) --------------------------------
     # Label widths chosen to keep the bar column aligned across both rows
     # ("Диск" is 4 chars cyr, "RAM" is 3 chars latin) — padding to 5 in
@@ -992,22 +919,13 @@ def _build_status_text_sync(windows: list) -> str:
     # --- Mounts -----------------------------------------------------------
     # Vertical list under the header, same shape as agents/docker — user
     # prefers a consistent visual rhythm across sections.
-    mount_items: list[tuple[str, bool]] = []
-    for name, path in config.rclone_mounts:
-        try:
-            if _check_mount_alive(path):
-                mount_items.append((f"🟢 {name}", True))
-            else:
-                mount_items.append((tr("commands.status_mount_down", name=name), False))
-                warnings.append(f"маунт {name}")
-        except Exception:
-            mount_items.append((tr("commands.status_mount_error", name=name), False))
-            warnings.append(f"маунт {name}")
-    if mount_items:
-        ok = sum(1 for (_, healthy) in mount_items if healthy)
-        m_lines = [tr("commands.status_mounts", ok=ok, total=len(mount_items))]
-        m_lines.extend(_tree_list([label for (label, _) in mount_items]))
-        sections.append("\n".join(m_lines))
+
+    # --- Plugin sections (mounts, preview fleets, …) ----------------------
+    # Host-specific integrations contribute their own blocks + warnings here
+    # (see plugins.status_sections). We're already on the worker thread.
+    plugin_sections, plugin_warnings = plugins.status_sections()
+    sections.extend(plugin_sections)
+    warnings.extend(plugin_warnings)
 
     # --- Cron schedule (expandable blockquote for detail) ----------------
     try:
@@ -1079,25 +997,20 @@ def _build_status_text_sync(windows: list) -> str:
 
 
 def _status_keyboard() -> InlineKeyboardMarkup:
-    # «Fix Drive» drives the rclone remount — host-specific plumbing, shown
-    # only when mounts are configured (same gate as the /mount command trio).
+    # Host-specific integrations (e.g. the drive plugin's «Fix Drive») add
+    # their buttons via plugins.status_buttons(); the core row is Refresh only.
     row = [
         InlineKeyboardButton(
             tr("commands.status_refresh"), callback_data=CB_STATUS_REFRESH
         )
     ]
-    if config.rclone_mounts:
-        row.append(
-            InlineKeyboardButton(
-                tr("commands.status_fix_drive"), callback_data=CB_STATUS_REMOUNT
-            )
-        )
+    row.extend(plugins.status_buttons())
     return InlineKeyboardMarkup([row])
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show server status: agents, Docker, services, preview, resources,
-    mounts, cron schedule. Includes inline keyboard for refresh/remount."""
+    """Show server status: agents, Docker, services, resources, cron
+    schedule + plugin sections. Includes the refresh inline keyboard."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -1588,198 +1501,6 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             update.message,
             tr("commands.restart_maybe_failed", name=agent_name),
         )
-
-
-# rclone mount points: (remote_name, mount_path). From CCBOT_RCLONE_MOUNTS;
-# defaults to this server's Google-Drive agent mount, empty on a plain host.
-_RCLONE_MOUNTS: list[tuple[str, str]] = config.rclone_mounts
-
-
-async def mount_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Mount all rclone remotes that aren't already mounted."""
-    user = update.effective_user
-    if not user or not is_user_allowed(user.id):
-        return
-    if not update.message:
-        return
-    msg = update.message
-    if not _RCLONE_MOUNTS:
-        await safe_reply(msg, tr("commands.mount_none"))
-        return
-
-    results: list[str] = []
-    for remote, path in _RCLONE_MOUNTS:
-        name = remote
-        if os.path.ismount(path):
-            results.append(tr("commands.mount_already", name=name))
-            continue
-        os.makedirs(path, exist_ok=True)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "rclone",
-                "mount",
-                f"{remote}:",
-                path,
-                "--daemon",
-                "--vfs-cache-mode",
-                "full",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode == 0:
-                results.append(tr("commands.mount_mounted", name=name))
-            else:
-                err = stderr.decode().strip()
-                results.append(tr("commands.mount_error", name=name, err=err[:100]))
-        except asyncio.TimeoutError:
-            # rclone mount --daemon returns after fork, but may take a moment
-            if os.path.ismount(path):
-                results.append(tr("commands.mount_mounted", name=name))
-            else:
-                results.append(tr("commands.mount_started", name=name))
-        except Exception as e:
-            results.append(f"  ❌ {name} — {e}")
-
-    await safe_reply(update.message, "🗄 *Mount:*\n" + "\n".join(results))
-
-
-async def umount_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Unmount all rclone remotes."""
-    user = update.effective_user
-    if not user or not is_user_allowed(user.id):
-        return
-    if not update.message:
-        return
-    msg = update.message
-    if not _RCLONE_MOUNTS:
-        await safe_reply(msg, tr("commands.mount_none"))
-        return
-
-    results: list[str] = []
-    for remote, path in _RCLONE_MOUNTS:
-        name = remote
-        if not os.path.ismount(path):
-            results.append(tr("commands.umount_not_mounted", name=name))
-            continue
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "fusermount",
-                "-u",
-                path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode == 0:
-                results.append(tr("commands.umount_unmounted", name=name))
-            else:
-                err = stderr.decode().strip()
-                results.append(f"  ❌ {name} — {err[:100]}")
-        except Exception as e:
-            results.append(f"  ❌ {name} — {e}")
-
-    await safe_reply(update.message, "🗄 *Umount:*\n" + "\n".join(results))
-
-
-async def remount_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Force-remount rclone remotes. Use when a mount went stale —
-    kills lingering rclone processes, unmounts, and mounts fresh."""
-    user = update.effective_user
-    if not user or not is_user_allowed(user.id):
-        return
-    # effective_message, not update.message: the /status «Починить Drive»
-    # button calls this with a callback update, where update.message is
-    # None — the reply then lands in the /status message's topic.
-    reply_msg = update.effective_message
-    if not reply_msg:
-        return
-    if not _RCLONE_MOUNTS:
-        await safe_reply(reply_msg, tr("commands.mount_none"))
-        return
-
-    results: list[str] = []
-    for remote, path in _RCLONE_MOUNTS:
-        # 1. Kill any lingering rclone process for this remote
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "pkill",
-                "-f",
-                f"rclone mount {remote}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-        except Exception:
-            pass
-
-        # 2. Lazy unmount — handles stale "transport endpoint not connected" too
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "fusermount",
-                "-uz",
-                path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=5)
-        except Exception:
-            pass
-
-        await asyncio.sleep(2)
-        os.makedirs(path, exist_ok=True)
-
-        # 3. Mount fresh
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "rclone",
-                "mount",
-                f"{remote}:",
-                path,
-                "--daemon",
-                "--vfs-cache-mode",
-                "writes",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-        except asyncio.TimeoutError:
-            pass
-        except Exception as e:
-            results.append(f"  ❌ {remote} — {e}")
-            continue
-
-        # Mount call returns immediately with --daemon; give it a moment to settle
-        await asyncio.sleep(3)
-        if os.path.ismount(path):
-            results.append(tr("commands.remount_done", remote=remote))
-        else:
-            results.append(tr("commands.remount_failed", remote=remote))
-
-    # Restart docker agents so their bind-mounts pick up the new FUSE
-    # snapshot — without this the container keeps seeing the stale mount
-    # and reading workspace files via a dangling fd.
-    for agent in config.active_docker_agents():
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "restart",
-                agent.container,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            if proc.returncode == 0:
-                results.append(tr("commands.remount_docker_restarted", name=agent.name))
-            else:
-                msg = stderr.decode(errors="replace").strip() or "exit nonzero"
-                results.append(f"  ❌ docker {agent.name} — {msg}")
-        except asyncio.TimeoutError:
-            results.append(tr("commands.remount_docker_timeout", name=agent.name))
-        except Exception as e:
-            results.append(f"  ❌ docker {agent.name} — {e}")
-
-    await safe_reply(reply_msg, "🔄 *Remount:*\n" + "\n".join(results))
 
 
 async def topic_closed_handler(

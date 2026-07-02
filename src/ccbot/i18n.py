@@ -141,10 +141,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "show edits as images: on/off",
     },
     "cmd.lang": {"ru": "язык интерфейса (ru/en)", "en": "interface language (ru/en)"},
-    "cmd.remount": {"ru": "пересмонтировать Drive", "en": "remount Drive"},
     "cmd.menu": {"ru": "показать клавиатуру меню", "en": "show the menu keyboard"},
-    "cmd.mount": {"ru": "смонтировать Drive", "en": "mount Drive"},
-    "cmd.umount": {"ru": "размонтировать Drive", "en": "unmount Drive"},
 }
 
 
@@ -253,14 +250,6 @@ STRINGS.update(
         "cb.refresh_failed": {"ru": "Не удалось обновить", "en": "Couldn't refresh"},
         "cb.refreshed": {"ru": "Обновил", "en": "Refreshed"},
         "cb.refreshing": {"ru": "Обновляю…", "en": "Refreshing…"},
-        "cb.remounting_drive": {
-            "ru": "🔧 Перемонтирую Drive…",
-            "en": "🔧 Remounting Drive…",
-        },
-        "cb.remounting_drive_plain": {
-            "ru": "Перемонтирую Drive…",
-            "en": "Remounting Drive…",
-        },
         "cb.restarting_toast": {"ru": "🔄 Перезапускаю…", "en": "🔄 Restarting…"},
         "cb.session_ended_docker": {
             "ru": "⏹ Сессия `{display}` завершена.\nПерезапустить — `/restart` или 🔄 Рестарт в панели агента.",
@@ -398,26 +387,6 @@ STRINGS.update(
             "ru": "⛔ Прервано (Escape + Ctrl+C)",
             "en": "⛔ Interrupted (Escape + Ctrl+C)",
         },
-        "commands.mount_already": {
-            "ru": "  🟢 {name} — уже смонтирован",
-            "en": "  🟢 {name} — already mounted",
-        },
-        "commands.mount_error": {
-            "ru": "  ❌ {name} — ошибка: {err}",
-            "en": "  ❌ {name} — error: {err}",
-        },
-        "commands.mount_mounted": {
-            "ru": "  ✅ {name} — смонтирован",
-            "en": "  ✅ {name} — mounted",
-        },
-        "commands.mount_started": {
-            "ru": "  ⏳ {name} — запущен, проверь /status",
-            "en": "  ⏳ {name} — started, check /status",
-        },
-        "commands.mount_none": {
-            "ru": "🗄 Нет настроенных rclone-маунтов (задай `CCBOT_RCLONE_MOUNTS` в `.env`).",
-            "en": "🗄 No rclone mounts configured (set `CCBOT_RCLONE_MOUNTS` in `.env`).",
-        },
         "commands.no_session_in_topic": {
             "ru": "❌ Нет сессии в этом топике.",
             "en": "❌ No session in this topic.",
@@ -436,22 +405,6 @@ STRINGS.update(
             "en": "👀 Receipt mark on\\.\nThe bot will put 👀 on your message once the agent picks it up\\.\nTo silence the push — turn off reaction notifications in Telegram settings\\.",
         },
         "commands.refresh": {"ru": "📸 Обновить", "en": "📸 Refresh"},
-        "commands.remount_docker_restarted": {
-            "ru": "  ✅ docker {name} — перезапущен",
-            "en": "  ✅ docker {name} — restarted",
-        },
-        "commands.remount_docker_timeout": {
-            "ru": "  ❌ docker {name} — timeout на restart",
-            "en": "  ❌ docker {name} — restart timeout",
-        },
-        "commands.remount_done": {
-            "ru": "  ✅ {remote} — пересмонтирован",
-            "en": "  ✅ {remote} — remounted",
-        },
-        "commands.remount_failed": {
-            "ru": "  ❌ {remote} — не смонтировался, проверь логи",
-            "en": "  ❌ {remote} — failed to mount, check logs",
-        },
         "commands.restart_busy": {
             "ru": "⚠️ {name} сейчас работает — перезапуск отправил бы команды ему в строку ввода. Останови его (⎋ в панели 👾 Агент), потом перезапускай.",
             "en": "⚠️ {name} is working right now — a restart would type the commands into its input line. Stop it (⎋ in the 👾 Agent panel), then restart.",
@@ -482,22 +435,9 @@ STRINGS.update(
             "en": "⚙️ Background · {n}/{n}",
         },
         "commands.status_disk": {"ru": "Диск", "en": "Disk"},
-        "commands.status_fix_drive": {"ru": "🔧 Починить Drive", "en": "🔧 Fix Drive"},
         "commands.status_header": {
             "ru": "📊 Статус сервера · {summary}",
             "en": "📊 Server status · {summary}",
-        },
-        "commands.status_mount_down": {
-            "ru": "🔴 {name} (не смонтирован/завис)",
-            "en": "🔴 {name} (not mounted/hung)",
-        },
-        "commands.status_mount_error": {
-            "ru": "🔴 {name} (ошибка)",
-            "en": "🔴 {name} (error)",
-        },
-        "commands.status_mounts": {
-            "ru": "📦 Маунты · {ok}/{total}",
-            "en": "📦 Mounts · {ok}/{total}",
         },
         "commands.status_n_tasks": {
             "ru": "{name} — {n} задач",
@@ -515,14 +455,6 @@ STRINGS.update(
         "commands.tab_act": {"ru": "🛠 Действия", "en": "🛠 Actions"},
         "commands.tab_nav": {"ru": "⌨️ Клавиши", "en": "⌨️ Keys"},
         "commands.tab_ses": {"ru": "⚙️ Сессия", "en": "⚙️ Session"},
-        "commands.umount_not_mounted": {
-            "ru": "  ⚪ {name} — не смонтирован",
-            "en": "  ⚪ {name} — not mounted",
-        },
-        "commands.umount_unmounted": {
-            "ru": "  ✅ {name} — размонтирован",
-            "en": "  ✅ {name} — unmounted",
-        },
         "commands.uptime_days": {"ru": "{n} дн.", "en": "{n}d"},
         "commands.uptime_hours": {"ru": "{n} ч.", "en": "{n}h"},
         "commands.uptime_mins": {"ru": "{n} мин.", "en": "{n}m"},
@@ -562,22 +494,6 @@ STRINGS.update(
             "en": "🔐 *Sign in to Claude*\n\nOpen the link, sign in to your account, then send the code here if asked.\n\n`{url}`",
         },
         # -- lboard --
-        "lboard.header": {
-            "ru": "📡 <b>Поднято сейчас</b> · обновлено {time}\n\n{body}",
-            "en": "📡 <b>Up right now</b> · updated {time}\n\n{body}",
-        },
-        "lboard.nothing_up": {
-            "ru": "Сейчас ничего не поднято.",
-            "en": "Nothing is up right now.",
-        },
-        "lboard.section_apps": {
-            "ru": "🔗 Постоянные app-хосты",
-            "en": "🔗 Permanent app hosts",
-        },
-        "lboard.section_previews": {
-            "ru": "🌐 Preview-серверы",
-            "en": "🌐 Preview servers",
-        },
         # -- links --
         "links.header": {"ru": "🔗 Ссылки", "en": "🔗 Links"},
         "links.overflow": {"ru": "… и ещё {extra}", "en": "… and {extra} more"},

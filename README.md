@@ -110,21 +110,18 @@ unless you turn it on, so a plain deployment carries no dead code paths.
 | Voice transcription / TTS  | a provider key (`DEEPGRAM_/OPENAI_/GEMINI_/ELEVENLABS_…`) |
 | Docker agents              | `DOCKER_AGENTS_ENABLED=true` + `DOCKER_AGENTS` |
 | 👍-to-confirm reactions     | `REACTION_CONFIRM_ENABLED` (on by default)   |
-| Live browser dashboard     | `NOTIFICATIONS_CHAT_ID` + `LIVE_DASHBOARD_THREAD_ID` |
 | Task-injection socket      | `CCBOT_INJECT_TOKEN`                          |
 
-The task-injection socket plus the `preview`/Caddy/rclone integrations are
-**server-specific**: they're generic automation hooks that wire into one
-particular host's extra infrastructure and stay dormant unless configured.
-Their defaults (a domain, some XDG paths) are overridable via env so the bot
-runs unchanged anywhere — see the `SERVER-SPECIFIC` section of `.env.example`.
-
-Heavier server-specific integrations (an inter-agent mail bus, external chat
-gateways) live as separate `ccbot.<name>` **plugin packages** rather than in
-the core tree — the public repo ships none. List the ones you want in
+Everything **server-specific** lives as separate `ccbot.<name>` **plugin
+packages** rather than in the core tree — the public repo ships none. The
+reference deployment runs an inter-agent mail bus, external chat gateways,
+`drive` (rclone mounts: `/mount`/`/umount`/`/remount`, a Mounts section and
+Fix-Drive button in `/status`) and `fleet` (a preview-server fleet + live
+browser dashboards for docker agents). List the ones you have in
 `CCBOT_PLUGINS` (comma-separated) and they load at startup; the loader
 tolerates a missing package, so the core always runs standalone. The plugin
-hook contract (i18n, commands, handlers, startup/shutdown) is documented in
+hook contract (i18n, commands, handlers, startup/shutdown, `/status`
+sections/buttons, callback dispatch) is documented in
 [`src/ccbot/plugins.py`](src/ccbot/plugins.py).
 
 ## Writing a plugin
@@ -137,7 +134,9 @@ additions, no core edit needed.
 
 A plugin package optionally exposes: `STRINGS` (i18n catalog merges),
 `bot_commands()`, `register_handlers(app)`, `async on_startup(app)`,
-`async on_shutdown()`. If it has secrets, put them in a `config.py` submodule
+`async on_shutdown()`, `status_sections()` / `status_buttons()` (contribute
+to `/status`), and `callback_dispatch()` (own inline-button prefixes). If it
+has secrets, put them in a `config.py` submodule
 that reads env at import — the plugin loader imports it before the tmux server
 spawns, so tokens get captured and scrubbed cleanly.
 

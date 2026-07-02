@@ -30,6 +30,7 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from . import get_thread_id
+from .. import plugins
 from ..config import config
 from ..i18n import tr
 from ..screenshot import text_to_image
@@ -52,7 +53,6 @@ from .callback_data import (
     CB_CMD_COMPACT,
     CB_CMD_CONFIRM,
     CB_CMD_CONTEXT,
-    CB_CMD_DRIVE,
     CB_CMD_EFFORT,
     CB_CMD_FRESH,
     CB_CMD_KILL,
@@ -78,7 +78,6 @@ from .callback_data import (
     CB_SESSION_NEW,
     CB_SESSION_SELECT,
     CB_STATUS_REFRESH,
-    CB_STATUS_REMOUNT,
     CB_WIN_BIND,
     CB_WIN_CANCEL,
     CB_WIN_NEW,
@@ -1243,25 +1242,6 @@ async def _handle_cmd_wipe_input(
     await _cmd_refresh_photo(query, window_id, tab="nav")
 
 
-async def _handle_cmd_drive(
-    query: CallbackQuery,
-    data: str,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user: User,
-) -> None:
-    """Trigger rclone remount and refresh the screenshot afterwards."""
-    from .commands import remount_command
-
-    await query.answer(tr("cb.remounting_drive"))
-    try:
-        await remount_command(update, context)
-    except Exception as e:
-        logger.warning("remount from commands menu failed: %s", e)
-    window_id = _parse_cmd_payload(data, CB_CMD_DRIVE)
-    await _cmd_refresh_photo(query, window_id, tab="act")
-
-
 async def _handle_cmd_refresh(
     query: CallbackQuery,
     data: str,
@@ -1602,32 +1582,6 @@ async def _handle_status_refresh(
         logger.warning("status refresh edit failed: %s", e)
 
 
-async def _handle_status_remount(
-    query: CallbackQuery,
-    data: str,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user: User,
-) -> None:
-    """Trigger the remount flow, then refresh the status view."""
-    from .commands import _build_status_text, _status_keyboard, remount_command
-    from .message_sender import safe_edit
-
-    await query.answer(tr("cb.remounting_drive_plain"))
-    # remount_command replies via update.effective_message (the /status
-    # message), so the callback update works as-is. We then refresh the
-    # original /status.
-    try:
-        await remount_command(update, context)
-    except Exception as e:
-        logger.warning("remount from /status failed: %s", e)
-    text = await _build_status_text()
-    try:
-        await safe_edit(query, text, reply_markup=_status_keyboard())
-    except Exception as e:
-        logger.warning("status remount-refresh edit failed: %s", e)
-
-
 # --- Dispatch table ---
 # Each entry: (prefix, handler, is_startswith)
 # Order matters: longer/more-specific prefixes first for startswith matching.
@@ -1640,7 +1594,6 @@ _EXACT_DISPATCH: dict[str, Any] = {
     CB_SESSION_BROWSE: _handle_session_browse,
     CB_SESSION_CANCEL: _handle_session_cancel,
     CB_STATUS_REFRESH: _handle_status_refresh,
-    CB_STATUS_REMOUNT: _handle_status_remount,
     CB_WIN_NEW: _handle_win_new,
     CB_WIN_CANCEL: _handle_win_cancel,
     "noop": _handle_noop,
@@ -1686,7 +1639,6 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     (CB_CMD_WIPE_INPUT, _handle_cmd_wipe_input),
     (CB_CMD_RESTART, _handle_cmd_restart),
     (CB_CMD_FRESH, _handle_cmd_fresh),
-    (CB_CMD_DRIVE, _handle_cmd_drive),
     (CB_CMD_TAB, _handle_cmd_tab),
     (CB_CMD_REFRESH, _handle_cmd_refresh),
     (CB_CMD_CONFIRM, _handle_cmd_confirm),
@@ -1728,6 +1680,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     # Try prefix match
     for prefix, handler in _PREFIX_DISPATCH:
+        if data.startswith(prefix):
+            await handler(query, data, update, context, user)
+            return
+
+    # Plugin-contributed buttons (see plugins.callback_dispatch)
+    for prefix, handler in plugins.callback_dispatch():
         if data.startswith(prefix):
             await handler(query, data, update, context, user)
             return

@@ -54,11 +54,8 @@ from .handlers.commands import (
     menu_button_dispatcher,
     bind_command,
     menu_command,
-    mount_command,
     react_command,
-    remount_command,
     restart_command,
-    umount_command,
     screenshot_command,
     start_command,
     status_command,
@@ -111,10 +108,8 @@ from .handlers.message_sender import (
     safe_send,
     send_with_fallback,
 )
-from .handlers.browser_live import browser_live_loop
 from .handlers.diff_view import EDIT_TOOLS
 from .handlers.diff_view import capture_and_send as capture_and_send_diffs
-from .handlers.live_board import live_board_loop
 from .handlers.reaction_confirm import handle_message_reaction
 from .handlers.response_builder import build_response_parts
 from .handlers.status_polling import status_poll_loop
@@ -147,13 +142,6 @@ session_monitor: SessionMonitor | None = None
 
 # Status polling task
 _status_poll_task: asyncio.Task | None = None
-
-# Browser live-view polling task (docker agents only; quiet if none active)
-_browser_live_task: asyncio.Task | None = None
-
-# Live-topic "what's up right now" dashboard task (quiet if Live-topic unset)
-_live_board_task: asyncio.Task | None = None
-
 
 # /inject unix-socket server runner (None when CCBOT_INJECT_TOKEN is unset).
 _inject_runner: _AiohttpAppRunner | None = None
@@ -1095,22 +1083,8 @@ async def post_init(application: Application) -> None:
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     logger.info("Status polling task started")
 
-    # Live dashboards (browser screenshots + preview/app board) only run when
-    # the Live topic is configured — no task is spawned otherwise, so a plain
-    # host doesn't carry two loops that would just warn-and-idle.
-    global _browser_live_task, _live_board_task
-    if config.live_dashboard_target() is not None:
-        _browser_live_task = asyncio.create_task(browser_live_loop(application.bot))
-        _live_board_task = asyncio.create_task(live_board_loop(application.bot))
-        logger.info("Live-dashboard tasks started")
-    else:
-        logger.info(
-            "Live dashboards disabled "
-            "(NOTIFICATIONS_CHAT_ID / LIVE_DASHBOARD_THREAD_ID unset)"
-        )
-
-    # Optional plugins declared in CCBOT_PLUGINS (mail bus, gateways, …).
-    # Each starts its own servers/tasks; absent ones are skipped.
+    # Optional plugins declared in CCBOT_PLUGINS (mail bus, gateways, live
+    # dashboards, …). Each starts its own servers/tasks; absent ones skipped.
     await plugins.on_startup(application)
 
     # /inject unix-socket listener — only started when CCBOT_INJECT_TOKEN is
@@ -1130,7 +1104,7 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    global _status_poll_task, _browser_live_task, _live_board_task
+    global _status_poll_task
 
     await plugins.on_shutdown()
 
@@ -1142,24 +1116,6 @@ async def post_shutdown(application: Application) -> None:
             pass
         _status_poll_task = None
         logger.info("Status polling stopped")
-
-    if _browser_live_task:
-        _browser_live_task.cancel()
-        try:
-            await _browser_live_task
-        except asyncio.CancelledError:
-            pass
-        _browser_live_task = None
-        logger.info("Browser-live task stopped")
-
-    if _live_board_task:
-        _live_board_task.cancel()
-        try:
-            await _live_board_task
-        except asyncio.CancelledError:
-            pass
-        _live_board_task = None
-        logger.info("Live-board task stopped")
 
     global _inject_runner
     if _inject_runner is not None:
@@ -1261,9 +1217,6 @@ def create_bot() -> Application:
     application.add_handler(CommandHandler("diff", diff_command))
     application.add_handler(CommandHandler("lang", lang_command))
     application.add_handler(CommandHandler("bind", bind_command))
-    application.add_handler(CommandHandler("mount", mount_command))
-    application.add_handler(CommandHandler("umount", umount_command))
-    application.add_handler(CommandHandler("remount", remount_command))
     application.add_handler(CommandHandler("menu", menu_command))
     plugins.register_handlers(application)
     application.add_handler(CallbackQueryHandler(callback_handler))
