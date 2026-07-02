@@ -168,6 +168,37 @@ async def _validate_media_context(
     return wid, None
 
 
+async def _deliver_media_text(
+    update: Update,
+    user_id: int,
+    thread_id: int | None,
+    wid: str,
+    text_to_send: str,
+) -> tuple[str, str]:
+    """Deliver a media marker through the shared text pipeline.
+
+    Returns ("ok", ""), ("blocked", "") after telling the user what to do,
+    or ("error", detail). "routed" (marker typed into an open
+    AskUserQuestion's free-text option) counts as ok — answering a
+    question with a photo/file is legitimate.
+    """
+    status, detail = await deliver_user_text(
+        user_id,
+        thread_id,
+        wid,
+        text_to_send,
+        ack_chat_id=update.message.chat.id if update.message else None,
+        ack_message_id=update.message.message_id if update.message else None,
+    )
+    if status in ("routed", "sent"):
+        return "ok", ""
+    if status in ("blocked_no_text_option", "blocked_widget"):
+        if update.message:
+            await safe_reply(update.message, tr("media.blocked_widget"))
+        return "blocked", ""
+    return "error", detail
+
+
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle photos sent by the user: download and forward path to Claude Code."""
     user = update.effective_user
@@ -207,9 +238,17 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await update.message.chat.send_action(ChatAction.TYPING)
 
-    success, message = await session_manager.send_to_window(wid, text_to_send)
-    if not success:
-        await safe_reply(update.message, f"❌ {message}")
+    # Same pre-send pipeline as typed text: with an interactive widget on
+    # screen a raw send_to_window would type the marker into the widget and
+    # press Enter — i.e. activate the highlighted option (on a permission
+    # prompt: grant it). The file is already saved; only delivery waits.
+    status, detail = await _deliver_media_text(
+        update, user.id, thread_id, wid, text_to_send
+    )
+    if status == "blocked":
+        return
+    if status == "error":
+        await safe_reply(update.message, f"❌ {detail}")
         return
 
     await safe_reply(update.message, tr("media.image_sent"))
@@ -281,9 +320,14 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await update.message.chat.send_action(ChatAction.TYPING)
 
-    success, message = await session_manager.send_to_window(wid, text_to_send)
-    if not success:
-        await safe_reply(update.message, f"❌ {message}")
+    # Same widget guard as photos — see photo_handler.
+    status, detail = await _deliver_media_text(
+        update, user.id, thread_id, wid, text_to_send
+    )
+    if status == "blocked":
+        return
+    if status == "error":
+        await safe_reply(update.message, f"❌ {detail}")
         return
 
     if is_archive:

@@ -627,6 +627,10 @@ STRINGS.update(
             "ru": "📎 Файл «{name}» передал агенту.",
             "en": "📎 File '{name}' sent to Claude Code.",
         },
+        "media.blocked_widget": {
+            "ru": "⚠ Агент сейчас ждёт ответа в диалоге (фото с кнопками выше). Файл я сохранил — ответьте на вопрос и пришлите его ещё раз.",
+            "en": "⚠ The agent is waiting for an answer in a dialog (the photo with buttons above). The file is saved — answer the question, then send it again.",
+        },
         "media.voice_needs_key": {
             "ru": "⚠ Для распознавания голоса нужен API-ключ.\nДобавьте `DEEPGRAM_API_KEY` или `OPENAI_API_KEY` в `.env` и перезапустите бота.",
             "en": "⚠ Voice transcription requires an API key.\nSet `DEEPGRAM_API_KEY` or `OPENAI_API_KEY` in your `.env` file and restart the bot.",

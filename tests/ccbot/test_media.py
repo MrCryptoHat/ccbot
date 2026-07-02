@@ -49,3 +49,45 @@ class TestSafeFilenameComponent:
 
     def test_mixed_separator_then_basename(self) -> None:
         assert _safe_filename_component("a/b\\c.txt") == "c.txt"
+
+
+class TestMediaWidgetGuard:
+    """Photo/document markers must go through deliver_user_text: a raw
+    send_to_window with an interactive widget open types the marker into
+    the widget and presses Enter — on a permission prompt that GRANTS it."""
+
+    async def test_blocked_widget_stops_delivery_and_tells_user(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from ccbot.handlers.media import _deliver_media_text
+
+        update = MagicMock()
+        update.message.chat.id = -100123
+        update.message.message_id = 7
+
+        with (
+            patch(
+                "ccbot.handlers.media.deliver_user_text",
+                new=AsyncMock(return_value=("blocked_widget", "PermissionPrompt")),
+            ),
+            patch("ccbot.handlers.media.safe_reply", new=AsyncMock()) as reply,
+        ):
+            status, _ = await _deliver_media_text(
+                update, 1, 42, "@5", "(image attached: /x.jpg)"
+            )
+        assert status == "blocked"
+        reply.assert_awaited_once()
+
+    async def test_sent_and_routed_count_as_ok(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from ccbot.handlers.media import _deliver_media_text
+
+        for outcome in ("sent", "routed"):
+            update = MagicMock()
+            with patch(
+                "ccbot.handlers.media.deliver_user_text",
+                new=AsyncMock(return_value=(outcome, "")),
+            ):
+                status, _ = await _deliver_media_text(update, 1, 42, "@5", "x")
+            assert status == "ok"
