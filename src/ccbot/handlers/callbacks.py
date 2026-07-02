@@ -1648,6 +1648,64 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
 ]
 
 
+# Prefixes whose payload is exactly the window_id — and MUST match the
+# topic's current binding before the action runs. tmux window ids (@N) are
+# reused after a tmux-server restart: an old panel message in the chat can
+# silently point at a *different* project's agent, and a tap on 🧹/⏹ there
+# would clear or kill someone else's session. Splitting is prefix-strip
+# (never rsplit) because docker binding values embed a colon
+# ("docker:<agent>").
+_WID_GUARD_SIMPLE: tuple[str, ...] = (
+    CB_ASK_UP,
+    CB_ASK_DOWN,
+    CB_ASK_LEFT,
+    CB_ASK_RIGHT,
+    CB_ASK_ESC,
+    CB_ASK_ENTER,
+    CB_ASK_SPACE,
+    CB_ASK_TAB,
+    CB_ASK_REFRESH,
+    CB_SCREENSHOT_REFRESH,
+    CB_CMD_CLEAR,
+    CB_CMD_COMPACT,
+    CB_CMD_MODEL,
+    CB_CMD_MCP,
+    CB_CMD_RESUME,
+    CB_CMD_CONTEXT,
+    CB_CMD_MODE_CYCLE,
+    CB_CMD_EFFORT,
+    CB_CMD_WIPE_INPUT,
+    CB_CMD_RESTART,
+    CB_CMD_FRESH,
+    CB_CMD_KILL,
+    CB_WT_NEW,
+    CB_WT_DEL,
+)
+# Prefixes with one routing field before the window_id
+# (kb:<key>:<wid>, cm:ref:<tab>:<wid>, cm:tab:<tab>:<wid>, cm:cfm:<action>:<wid>).
+# cm:can: is deliberately NOT guarded: a legacy cancel payload has no tab
+# field (ambiguous parse for docker ids) and cancelling repaints only.
+_WID_GUARD_ONE_FIELD: tuple[str, ...] = (
+    CB_KEYS_PREFIX,
+    CB_CMD_REFRESH,
+    CB_CMD_TAB,
+    CB_CMD_CONFIRM,
+)
+
+
+def _guarded_wid(data: str) -> str | None:
+    """Extract the window_id from guarded callback payloads, else None."""
+    for prefix in _WID_GUARD_SIMPLE:
+        if data.startswith(prefix):
+            return data[len(prefix) :] or None
+    for prefix in _WID_GUARD_ONE_FIELD:
+        if data.startswith(prefix):
+            rest = data[len(prefix) :]
+            _, sep, wid = rest.partition(":")
+            return wid if sep and wid else None
+    return None
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Main callback query dispatcher — routes to specific handlers."""
     query = update.callback_query
@@ -1666,6 +1724,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     chat = update.effective_chat
     if chat and chat.type in ("group", "supergroup"):
         session_manager.set_group_chat_id(user.id, cb_thread_id, chat.id)
+
+    # Stale-panel guard: the tapped button must target the agent this topic
+    # is CURRENTLY bound to. On mismatch, disarm the stale keyboard instead
+    # of acting on whatever agent now owns the recycled window id.
+    guarded = _guarded_wid(data)
+    if guarded is not None:
+        bound = session_manager.resolve_window_for_thread(user.id, cb_thread_id)
+        if bound != guarded:
+            logger.info(
+                "Stale panel tap: data=%s bound=%s (user=%d thread=%s)",
+                data,
+                bound,
+                user.id,
+                cb_thread_id,
+            )
+            await query.answer(tr("cb.stale_panel"), show_alert=True)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception as e:
+                logger.debug("stale panel keyboard clear failed: %s", e)
+            return
 
     # Try exact match first
     handler = _EXACT_DISPATCH.get(data)

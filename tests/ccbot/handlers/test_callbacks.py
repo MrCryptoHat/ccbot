@@ -151,3 +151,102 @@ class TestRestartBusyGuard:
             # No --resume appended; the payload never reaches the shell line.
             assert sent == ["/exit", "claude"]
             assert all("curl evil" not in s for s in sent)
+
+
+class TestGuardedWid:
+    """_guarded_wid must recover the window_id from every guarded payload
+    shape — including docker binding values, whose id embeds a colon."""
+
+    def test_simple_tmux(self):
+        from ccbot.handlers.callbacks import _guarded_wid
+
+        assert _guarded_wid("cm:clear:@5") == "@5"
+        assert _guarded_wid("aq:enter:@12") == "@12"
+        assert _guarded_wid("ss:ref:@0") == "@0"
+        assert _guarded_wid("wt:del:@3") == "@3"
+
+    def test_simple_docker(self):
+        from ccbot.handlers.callbacks import _guarded_wid
+
+        assert _guarded_wid("cm:kill:docker:assistant") == "docker:assistant"
+        assert _guarded_wid("aq:up:docker:assistant") == "docker:assistant"
+
+    def test_one_field_shapes(self):
+        from ccbot.handlers.callbacks import _guarded_wid
+
+        assert _guarded_wid("kb:esc:@5") == "@5"
+        assert _guarded_wid("cm:tab:ses:@5") == "@5"
+        assert _guarded_wid("cm:ref:act:docker:assistant") == "docker:assistant"
+        assert _guarded_wid("cm:cfm:clear:@7") == "@7"
+
+    def test_unguarded_payloads_pass(self):
+        from ccbot.handlers.callbacks import _guarded_wid
+
+        assert _guarded_wid("cm:can:act:@5") is None  # cancel: repaint-only
+        assert _guarded_wid("db:sel:3") is None
+        assert _guarded_wid("rs:new") is None
+        assert _guarded_wid("hp:0:@5:0:100") is None
+
+
+class TestStalePanelGuard:
+    """A tap on a panel whose window_id no longer matches the topic's
+    binding must be refused — tmux ids are recycled across restarts, so
+    the old button could otherwise /clear a different project's agent."""
+
+    def _update(self, data: str):
+        update = MagicMock()
+        query = MagicMock()
+        query.data = data
+        query.answer = AsyncMock()
+        query.edit_message_reply_markup = AsyncMock()
+        update.callback_query = query
+        update.effective_user = MagicMock()
+        update.effective_user.id = 1
+        update.effective_chat = MagicMock()
+        update.effective_chat.type = "supergroup"
+        update.effective_chat.id = -100123
+        update.effective_message = MagicMock()
+        update.effective_message.message_thread_id = 42
+        update.effective_message.is_topic_message = True
+        return update, query
+
+    @pytest.mark.asyncio
+    async def test_mismatched_wid_is_blocked(self):
+        from ccbot.handlers.callbacks import callback_handler
+
+        update, query = self._update("cm:clear:@5")
+        with (
+            patch("ccbot.handlers.callbacks.session_manager") as sm,
+            patch("ccbot.handlers.callbacks.config") as cfg,
+        ):
+            cfg.is_user_allowed.return_value = True
+            sm.resolve_window_for_thread.return_value = "@9"  # rebound elsewhere
+            await callback_handler(update, MagicMock())
+        query.answer.assert_awaited_once()
+        assert query.answer.await_args.kwargs.get("show_alert") is True
+        query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+
+    @pytest.mark.asyncio
+    async def test_matching_wid_dispatches(self):
+        # _PREFIX_DISPATCH holds direct function refs (bound at import), so
+        # the handler can't be patched away — instead assert the guard did
+        # NOT fire: no stale alert, no keyboard disarm (reply_markup=None).
+        from ccbot.handlers.callbacks import callback_handler
+
+        update, query = self._update("cm:tab:act:@5")
+        with (
+            patch("ccbot.handlers.callbacks.session_manager") as sm,
+            patch("ccbot.handlers.callbacks.config") as cfg,
+        ):
+            cfg.is_user_allowed.return_value = True
+            sm.resolve_window_for_thread.return_value = "@5"
+            sm.get_display_name.return_value = "proj"
+            await callback_handler(update, MagicMock())
+        disarms = [
+            c
+            for c in query.edit_message_reply_markup.await_args_list
+            if c.kwargs.get("reply_markup") is None
+        ]
+        assert not disarms
+        alerts = [c for c in query.answer.await_args_list if c.kwargs.get("show_alert")]
+        assert not alerts

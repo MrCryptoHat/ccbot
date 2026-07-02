@@ -264,6 +264,10 @@ STRINGS.update(
         "cb.agent_header": {"ru": "👾 *Агент:* {name}", "en": "👾 *Agent:* {name}"},
         "cb.agent_unavailable": {"ru": "Агент недоступен", "en": "Agent unavailable"},
         "cb.cancelled": {"ru": "Отменено", "en": "Cancelled"},
+        "cb.stale_panel": {
+            "ru": "Эта панель устарела и относится к другому агенту. Откройте новую: кнопка 👾 Агент.",
+            "en": "This panel is stale and points at a different agent. Open a fresh one: 👾 Agent button.",
+        },
         "cb.confirm_action": {"ru": "Подтверди действие", "en": "Confirm the action"},
         "cb.container_not_running": {
             "ru": "Контейнер не запущен",
