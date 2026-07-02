@@ -1079,18 +1079,20 @@ def _build_status_text_sync(windows: list) -> str:
 
 
 def _status_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    tr("commands.status_refresh"), callback_data=CB_STATUS_REFRESH
-                ),
-                InlineKeyboardButton(
-                    tr("commands.status_fix_drive"), callback_data=CB_STATUS_REMOUNT
-                ),
-            ]
-        ]
-    )
+    # «Fix Drive» drives the rclone remount — host-specific plumbing, shown
+    # only when mounts are configured (same gate as the /mount command trio).
+    row = [
+        InlineKeyboardButton(
+            tr("commands.status_refresh"), callback_data=CB_STATUS_REFRESH
+        )
+    ]
+    if config.rclone_mounts:
+        row.append(
+            InlineKeyboardButton(
+                tr("commands.status_fix_drive"), callback_data=CB_STATUS_REMOUNT
+            )
+        )
+    return InlineKeyboardMarkup([row])
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
