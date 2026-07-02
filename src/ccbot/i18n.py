@@ -102,9 +102,12 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     # -- Common --------------------------------------------------------
     "common.topics_only": {"ru": "⚠ Только в топиках.", "en": "⚠ Topics only."},
+    # Shown to strangers AND to the owner with a misconfigured ALLOWED_USERS —
+    # the id in the text lets the owner fix .env without hunting for
+    # @userinfobot (the most common friend-install failure).
     "common.not_authorized": {
-        "ru": "You are not authorized to use this bot.",
-        "en": "You are not authorized to use this bot.",
+        "ru": "⛔ Доступ не настроен. Ваш Telegram id: {uid} — если это ваш бот, добавьте id в ALLOWED_USERS в .env и перезапустите бота.",
+        "en": "⛔ Access not configured. Your Telegram id: {uid} — if this is your bot, add the id to ALLOWED_USERS in .env and restart the bot.",
     },
     # -- Context-fill alert (session_monitor) --------------------------
     "ctx.alert": {
@@ -153,6 +156,54 @@ STRINGS: dict[str, dict[str, str]] = {
 STRINGS.update(
     {
         # -- bot --
+        "bot.use_picker_above": {
+            "ru": "⬆️ Выберите вариант в меню выше или нажмите «Отмена».",
+            "en": "⬆️ Please use the picker above, or tap Cancel.",
+        },
+        "bot.use_named_topic": {
+            "ru": "❌ Пишите в отдельном топике: один топик — одна сессия. Создайте новый топик, чтобы начать.",
+            "en": "❌ Please write in a named topic: one topic is one session. Create a new topic to start.",
+        },
+        "bot.private_start": {
+            "ru": "👋 Я мост между Telegram и Claude Code, работаю в группе с топиками.\n\n1. Создайте группу и включите в её настройках *Темы* (Topics).\n2. Добавьте меня в группу и сделайте админом.\n3. Создайте топик с названием папки проекта — и просто пишите.\n\nПодробная инструкция — SETUP.md в репозитории.",
+            "en": "👋 I bridge Telegram and Claude Code, and I work in a group with topics.\n\n1. Create a group and enable *Topics* in its settings.\n2. Add me to the group and make me an admin.\n3. Create a topic named after a project folder — and just write.\n\nFull walkthrough — SETUP.md in the repository.",
+        },
+        "bot.enable_topics_hint": {
+            "ru": "⚠️ В этой группе не включены Темы (Topics), а без них я не работаю. Настройки группы → Темы → включить, затем создайте топик.",
+            "en": "⚠️ Topics are not enabled in this group, and I can't work without them. Group settings → Topics → enable, then create a topic.",
+        },
+        "bot.docker_agent_down": {
+            "ru": "❌ Агент `{name}` не запущен, привязка снята.\nКогда контейнер поднимется — отправьте `/bind {name}`.",
+            "en": "❌ Docker agent `{name}` is not running; binding removed.\nRun `/bind {name}` once the container is up.",
+        },
+        "bot.window_gone": {
+            "ru": "❌ Окно `{name}` больше не существует, привязка снята.\nОтправьте сообщение, чтобы начать новую сессию.",
+            "en": "❌ Window `{name}` no longer exists; binding removed.\nSend a message to start a new session.",
+        },
+        "bot.window_ready": {
+            "ru": "✅ Новая сессия в `{dir}`. Пишите сюда — сообщения уходят агенту.",
+            "en": "✅ New session in `{dir}`. Messages here go straight to the agent.",
+        },
+        "bot.window_resumed": {
+            "ru": "✅ Продолжаю прошлый разговор в `{dir}`. Пишите сюда — сообщения уходят агенту.",
+            "en": "✅ Resumed the last session in `{dir}`. Messages here go straight to the agent.",
+        },
+        "bot.bound_to_window": {
+            "ru": "✅ Привязано к окну `{name}`.",
+            "en": "✅ Bound to window `{name}`.",
+        },
+        "bot.pending_send_failed": {
+            "ru": "❌ Не удалось передать сообщение агенту: {err}",
+            "en": "❌ Failed to forward your message to the agent: {err}",
+        },
+        "bot.hook_missing": {
+            "ru": "⚠️ Хук отслеживания сессий не установлен — ответы агента не будут приходить в чат.\nВыполните на сервере: `uv run ccbot hook --install`, затем перезапустите агента.",
+            "en": "⚠️ The session-tracking hook is not installed — the agent's replies will NOT reach this chat.\nOn the server run: `uv run ccbot hook --install`, then restart the agent.",
+        },
+        "bot.start_welcome": {
+            "ru": "🤖 *Claude Code в Telegram*\n\nКаждый топик — отдельная сессия. Создайте новый топик, чтобы начать.",
+            "en": "🤖 *Claude Code Monitor*\n\nEach topic is a session. Create a new topic to start.",
+        },
         "bot.agent_waiting_in_dialog": {
             "ru": "⚠️ Агент ждёт ответа в диалоге \\(фото выше\\)\\. Сначала выбери вариант кнопками ↑↓⏎, потом отправь сообщение ещё раз\\.",
             "en": "⚠️ The agent is waiting for a reply in the dialog \\(photo above\\)\\. First pick an option with the ↑↓⏎ buttons, then send your message again\\.",
@@ -175,6 +226,23 @@ STRINGS.update(
             "en": "Container not running",
         },
         "cb.done": {"ru": "Готово", "en": "Done"},
+        "cb.failed": {"ru": "Не получилось", "en": "Failed"},
+        "cb.invalid_data": {"ru": "Некорректные данные", "en": "Invalid data"},
+        "cb.page_updated": {"ru": "Страница обновлена", "en": "Page updated"},
+        "cb.list_changed": {
+            "ru": "Список изменился, обновите",
+            "en": "List changed, please refresh",
+        },
+        "cb.dir_not_found": {"ru": "Папка не найдена", "en": "Directory not found"},
+        "cb.session_not_found": {"ru": "Сессия не найдена", "en": "Session not found"},
+        "cb.not_in_topic": {"ru": "Не в топике", "en": "Not in a topic"},
+        "cb.bound": {"ru": "Привязано", "en": "Bound"},
+        "cb.unknown_key": {"ru": "Неизвестная клавиша", "en": "Unknown key"},
+        "cb.not_authorized_toast": {"ru": "Нет доступа", "en": "Not authorized"},
+        "cb.stale_ui": {
+            "ru": "Эти кнопки из другого топика",
+            "en": "These buttons belong to another topic",
+        },
         "cb.input_wiped": {"ru": "🧽 Набранный текст стёрт", "en": "🧽 Input cleared"},
         "cb.kill_failed": {
             "ru": "Не удалось завершить сессию",
@@ -445,7 +513,8 @@ STRINGS.update(
         "commands.status_stopped": {"ru": "остановлен", "en": "stopped"},
         "commands.status_warnings": {"ru": "⚠️ {n} предупр.", "en": "⚠️ {n} warnings"},
         "commands.tab_act": {"ru": "🛠 Действия", "en": "🛠 Actions"},
-        "commands.tab_nav": {"ru": "⌨️ Навигация", "en": "⌨️ Navigation"},
+        "commands.tab_nav": {"ru": "⌨️ Клавиши", "en": "⌨️ Keys"},
+        "commands.tab_ses": {"ru": "⚙️ Сессия", "en": "⚙️ Session"},
         "commands.umount_not_mounted": {
             "ru": "  ⚪ {name} — не смонтирован",
             "en": "  ⚪ {name} — not mounted",

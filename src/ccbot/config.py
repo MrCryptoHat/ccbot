@@ -237,6 +237,13 @@ class Config:
         self.telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN") or ""
         if not self.telegram_bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
+        if self.telegram_bot_token == "your_bot_token_here":
+            # The literal from .env.example — a copied-but-unedited config.
+            # PTB would otherwise fail much later with a cryptic InvalidToken.
+            raise ValueError(
+                "TELEGRAM_BOT_TOKEN is still the placeholder from .env.example — "
+                "replace it with your real bot token from @BotFather"
+            )
 
         allowed_users_str = os.getenv("ALLOWED_USERS", "")
         if not allowed_users_str:

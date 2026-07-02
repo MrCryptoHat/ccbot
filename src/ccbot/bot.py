@@ -36,6 +36,7 @@ from telegram.ext import (
 from . import i18n
 from . import plugins
 from .config import config
+from .hook import hook_installed_in_settings
 from .rate_limiter import CcbotRateLimiter
 from .handlers import get_thread_id, is_user_allowed
 from .handlers.coalesce import coalesce_text
@@ -200,7 +201,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
-            await safe_reply(update.message, i18n.tr("common.not_authorized"))
+            await safe_reply(
+                update.message,
+                i18n.tr("common.not_authorized", uid=user.id if user else "?"),
+            )
         return
 
     if not update.message or not update.message.text:
@@ -228,17 +232,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _STATE_CHECKS: list[tuple[str, str, object]] = [
         (
             STATE_SELECTING_WINDOW,
-            "Please use the window picker above, or tap Cancel.",
+            i18n.tr("bot.use_picker_above"),
             clear_window_picker_state,
         ),
         (
             STATE_BROWSING_DIRECTORY,
-            "Please use the directory browser above, or tap Cancel.",
+            i18n.tr("bot.use_picker_above"),
             clear_browse_state,
         ),
         (
             STATE_SELECTING_SESSION,
-            "Please use the session picker above, or tap Cancel.",
+            i18n.tr("bot.use_picker_above"),
             clear_session_picker_state,
         ),
     ]
@@ -257,10 +261,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Must be in a named topic
     if thread_id is None:
-        await safe_reply(
-            update.message,
-            "❌ Please use a named topic. Create a new topic to start a session.",
-        )
+        # «Create a topic» is impossible advice in a DM or a non-forum group —
+        # point at the actual next step instead.
+        if chat and chat.type == "private":
+            await safe_reply(update.message, i18n.tr("bot.private_start"))
+        elif chat and not getattr(chat, "is_forum", False):
+            await safe_reply(update.message, i18n.tr("bot.enable_topics_hint"))
+        else:
+            await safe_reply(update.message, i18n.tr("bot.use_named_topic"))
         return
 
     wid = session_manager.get_window_for_thread(user.id, thread_id)
@@ -433,9 +441,7 @@ async def _forward_text_to_agent(
             session_manager.unbind_thread(user_id, thread_id)
             await safe_reply(
                 update.message,
-                f"❌ Docker agent '{agent_name}' is not running\\. "
-                "Binding removed\\.\n"
-                "Try `/bind <agent>` once the container is up\\.",
+                i18n.tr("bot.docker_agent_down", name=agent_name),
             )
             return
     else:
@@ -451,8 +457,7 @@ async def _forward_text_to_agent(
             session_manager.unbind_thread(user_id, thread_id)
             await safe_reply(
                 update.message,
-                f"❌ Window '{display}' no longer exists. Binding removed.\n"
-                "Send a message to start a new session.",
+                i18n.tr("bot.window_gone", name=display),
             )
             return
 
@@ -700,11 +705,30 @@ async def _create_and_bind_window(
             except Exception as e:
                 logger.debug(f"Failed to rename topic: {e}")
 
-            status = "Resumed" if resume_session_id else "Created"
+            shown_dir = str(selected_path)
+            home_prefix = str(Path.home())
+            if shown_dir.startswith(home_prefix):
+                shown_dir = "~" + shown_dir[len(home_prefix) :]
             await safe_edit(
                 query,
-                f"✅ {message}\n\n{status}. Send messages here.",
+                i18n.tr(
+                    "bot.window_resumed" if resume_session_id else "bot.window_ready",
+                    dir=shown_dir,
+                ),
             )
+
+            # First-run trap: without the SessionStart hook the monitor never
+            # learns this window's session_id, so the agent's replies silently
+            # never reach the chat. Warn in-topic only when the hook is
+            # definitively absent from settings.json (a merely-slow hook that
+            # missed the wait window above must not raise a false alarm).
+            if not hook_ok and not hook_installed_in_settings():
+                await safe_send(
+                    context.bot,
+                    resolved_chat,
+                    i18n.tr("bot.hook_missing"),
+                    message_thread_id=pending_thread_id,
+                )
 
             pending_text = (
                 context.user_data.get("_pending_thread_text")
@@ -736,7 +760,7 @@ async def _create_and_bind_window(
                     await safe_send(
                         context.bot,
                         resolved_chat,
-                        f"❌ Failed to send pending message: {send_msg}",
+                        i18n.tr("bot.pending_send_failed", err=send_msg),
                         message_thread_id=pending_thread_id,
                     )
             elif context.user_data is not None:
@@ -748,7 +772,7 @@ async def _create_and_bind_window(
         if pending_thread_id is not None and context.user_data is not None:
             context.user_data.pop("_pending_thread_id", None)
             context.user_data.pop("_pending_thread_text", None)
-    await query.answer("Created" if success else "Failed")
+    await query.answer(i18n.tr("cb.done") if success else i18n.tr("cb.failed"))
 
 
 # callback_handler is imported from handlers.callbacks

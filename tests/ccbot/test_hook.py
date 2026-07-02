@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import ccbot.hook as hook
 from ccbot.hook import (
     _UUID_RE,
     _count_claude_ancestors,
@@ -87,6 +88,108 @@ class TestIsHookInstalled:
             }
         }
         assert _is_hook_installed(settings) is True
+
+
+class TestHookInstalledInSettings:
+    """The file-reading wrapper used by the boot/bind-time first-run check."""
+
+    def test_missing_file_is_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", tmp_path / "settings.json")
+        assert hook.hook_installed_in_settings() is False
+
+    def test_invalid_json_is_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "settings.json"
+        f.write_text("{not json")
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        assert hook.hook_installed_in_settings() is False
+
+    def test_non_dict_json_is_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        f = tmp_path / "settings.json"
+        f.write_text('["a list"]')
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        assert hook.hook_installed_in_settings() is False
+
+    @staticmethod
+    def _write_settings(tmp_path: Path, command: str) -> Path:
+        f = tmp_path / "settings.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {"hooks": [{"type": "command", "command": command}]}
+                        ]
+                    }
+                }
+            )
+        )
+        return f
+
+    def test_installed_hook_detected(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        exe = tmp_path / "bin" / "ccbot"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        f = self._write_settings(tmp_path, f"{exe} hook")
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        assert hook.hook_installed_in_settings() is True
+
+    def test_stale_executable_path_counts_as_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The recorded venv path died (repo renamed/moved) — the hook is
+        # present in settings but can never run; must NOT count as installed.
+        f = self._write_settings(tmp_path, f"{tmp_path}/gone/.venv/bin/ccbot hook")
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        assert hook.hook_installed_in_settings() is False
+
+    def test_bare_name_resolves_via_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        f = self._write_settings(tmp_path, "ccbot hook")
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        monkeypatch.setattr(hook.shutil, "which", lambda _name: "/usr/bin/ccbot")
+        assert hook.hook_installed_in_settings() is True
+        monkeypatch.setattr(hook.shutil, "which", lambda _name: None)
+        assert hook.hook_installed_in_settings() is False
+
+
+class TestInstallHookRepair:
+    def test_stale_path_is_repaired_in_place(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        f = TestHookInstalledInSettings._write_settings(
+            tmp_path, "/old/gone/.venv/bin/ccbot hook"
+        )
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        monkeypatch.setattr(hook, "_find_ccbot_path", lambda: "/new/venv/bin/ccbot")
+        assert hook._install_hook() == 0
+        saved = json.loads(f.read_text())
+        commands = [
+            h["command"]
+            for entry in saved["hooks"]["SessionStart"]
+            for h in entry["hooks"]
+        ]
+        assert commands == ["/new/venv/bin/ccbot hook"]
+
+    def test_healthy_install_untouched(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        exe = tmp_path / "bin" / "ccbot"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        f = TestHookInstalledInSettings._write_settings(tmp_path, f"{exe} hook")
+        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        before = f.read_text()
+        assert hook._install_hook() == 0
+        assert f.read_text() == before
 
 
 def _fake_proc(tmp_path: Path, chain: list[tuple[int, str, int]]) -> Path:

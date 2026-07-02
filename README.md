@@ -1,5 +1,7 @@
 # ccbot
 
+[![Tests](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg)](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml)
+
 Control Claude Code from Telegram — monitor, drive, and manage AI coding
 sessions running in **tmux** (or, optionally, in Docker containers), one
 Telegram Forum **topic** per session.
@@ -48,7 +50,8 @@ truth and you never lose the ability to switch back.
 
 **Optional (off unless configured):**
 
-- **Docker agents** — route a topic to Claude Code inside a container.
+- **Docker agents** — route a topic to Claude Code inside a container
+  (advanced, bring-your-own-container — see [docs/docker-agents.md](docs/docker-agents.md)).
 - **Worktree agents** — fork a repo into a `git worktree` + branch and run a
   parallel agent, all from Telegram.
 - **Reaction controls** — 👍-to-confirm and 👀 read-acks, both **on by default** (turn off via `REACTION_CONFIRM_ENABLED=false` / `CCBOT_REACTION_ACK=false`, or toggle at runtime with `/react`).
@@ -92,6 +95,8 @@ never commit real tokens.
 
 > On a headless VPS with no terminal to approve permissions:
 > `CLAUDE_COMMAND=claude --dangerously-skip-permissions`
+> ⚠️ This lets the agent run shell commands and edit files without asking —
+> use it only on a host where that's acceptable.
 
 ## Core vs optional
 
@@ -166,6 +171,10 @@ directory (or resume an existing session); text/voice then flow to Claude and
 its replies come back to the topic. Close the topic to kill the window. Any
 unrecognized `/command` (e.g. `/clear`, `/compact`, `/review`) is forwarded to
 Claude Code as-is.
+
+The persistent menu keyboard (🖥️ Server / 👾 Agent) attaches automatically to
+each topic's bind confirmation or first reply (Telegram scopes reply keyboards
+per forum topic); `/menu` re-attaches it if dismissed.
 
 ## Architecture & internals
 

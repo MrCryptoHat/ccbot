@@ -30,7 +30,7 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from telegram import Bot
 from telegram.error import BadRequest, RetryAfter
@@ -738,6 +738,7 @@ async def _send_part_with_tables(
     silent: bool,
     user_id: int,
     tid: int,
+    reply_markup: Any = None,
 ) -> int | None:
     """Send one text part, rendering embedded placeholders in source order:
     IMG → image (wide table / box-art), FILE → document (long code). Returns
@@ -745,7 +746,8 @@ async def _send_part_with_tables(
     was out-of-band/empty only.
 
     With no placeholders this is exactly one ``send_with_fallback`` — the
-    common case is unchanged.
+    common case is unchanged. ``reply_markup`` (the persistent menu keyboard
+    backstop) is attached to the first text send only.
     """
     last_msg_id: int | None = None
     # PLACEHOLDER_RE has two capture groups, so re.split yields
@@ -755,15 +757,20 @@ async def _send_part_with_tables(
     while i < len(segments):
         text_segment = segments[i].strip("\n")
         if text_segment.strip():
+            extra: dict[str, Any] = {}
+            if reply_markup is not None:
+                extra["reply_markup"] = reply_markup
             sent = await send_with_fallback(
                 bot,
                 chat_id,
                 text_segment,
+                **extra,
                 **_send_kwargs(task.thread_id, silent=silent),  # type: ignore[arg-type]
             )
             if sent:
                 last_msg_id = sent.message_id
                 note_topic_message(chat_id, sent.message_id, user_id, tid)
+                reply_markup = None
         if i + 2 < len(segments):
             kind, ref = segments[i + 1], int(segments[i + 2])
             if kind == "IMG" and 0 <= ref < len(task.table_texts):
@@ -954,6 +961,19 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
 
     # 3. Send content messages
     silent = _is_silent_content_type(task.content_type)
+    # Menu-keyboard backstop: Telegram scopes reply keyboards per forum topic,
+    # so a topic whose bind path couldn't carry the markup (picker flows edit
+    # an inline-keyboard message; worktree welcome carries its own inline
+    # keyboard) gets it attached to the first delivered text reply instead.
+    menu_markup = None
+    if (
+        task.content_type == "text"
+        and task.thread_id
+        and not session_manager.is_menu_shown(user_id, task.thread_id)
+    ):
+        from .commands import menu_keyboard
+
+        menu_markup = menu_keyboard()
     last_msg_id: int | None = None
     part_idx = 0
     try:
@@ -966,9 +986,13 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                 silent=silent,
                 user_id=user_id,
                 tid=tid,
+                reply_markup=menu_markup if part_idx == 0 else None,
             )
             if sent_id is not None:
                 last_msg_id = sent_id
+                if menu_markup is not None and task.thread_id:
+                    session_manager.mark_menu_shown(user_id, task.thread_id)
+                    menu_markup = None
     except RetryAfter:
         # Drop the parts already delivered so the requeue in
         # _dispatch_task retries only from the in-flight part — no

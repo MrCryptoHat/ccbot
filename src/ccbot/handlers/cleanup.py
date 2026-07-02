@@ -47,9 +47,10 @@ async def clear_topic_state(
     # Clear interactive UI state (also deletes message from chat)
     await clear_interactive_msg(user_id, bot, thread_id)
 
-    # Clear voice mode for this topic
+    # Clear voice mode and menu-keyboard flag for this topic
     key = f"{user_id}:{thread_id}"
     session_manager.voice_mode_topics.discard(key)
+    session_manager.menu_shown_topics.discard(key)
 
     # Clear pending thread state from user_data
     if user_data is not None:

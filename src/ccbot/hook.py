@@ -103,10 +103,12 @@ def _find_ccbot_path() -> str:
     return "ccbot"
 
 
-def _is_hook_installed(settings: dict) -> bool:
-    """Check if ccbot hook is already installed in the settings.
+def _find_hook_entry(settings: dict) -> dict | None:
+    """Return the ccbot SessionStart hook dict from settings, or None.
 
-    Detects both 'ccbot hook' and full paths like '/path/to/ccbot hook'.
+    Matches both 'ccbot hook' and full paths like '/path/to/ccbot hook'.
+    Returned dict is the live object inside ``settings`` so callers can
+    repair its ``command`` in place.
     """
     hooks = settings.get("hooks", {})
     session_start = hooks.get("SessionStart", [])
@@ -121,8 +123,52 @@ def _is_hook_installed(settings: dict) -> bool:
             cmd = h.get("command", "")
             # Match 'ccbot hook' or paths ending with 'ccbot hook'
             if cmd == _HOOK_COMMAND_SUFFIX or cmd.endswith("/" + _HOOK_COMMAND_SUFFIX):
-                return True
-    return False
+                return h
+    return None
+
+
+def _is_hook_installed(settings: dict) -> bool:
+    """Check if ccbot hook is already installed in the settings."""
+    return _find_hook_entry(settings) is not None
+
+
+def _hook_command_runnable(command: str) -> bool:
+    """Can the installed hook command actually execute?
+
+    The command is ``<executable> hook``. An absolute executable must exist
+    on disk (the recorded path goes stale when the repo/venv is moved or
+    renamed — the exact failure this check exists to catch); a bare name
+    must resolve via PATH. A stale path means Claude Code silently runs a
+    dead hook: session_map is never written and replies stop reaching chat.
+    """
+    executable = command[: -len(" " + "hook")].strip()
+    if not executable:
+        return False
+    if os.path.isabs(executable):
+        return Path(executable).exists()
+    return shutil.which(executable) is not None
+
+
+def hook_installed_in_settings() -> bool:
+    """True if a *runnable* ccbot SessionStart hook is in ~/.claude/settings.json.
+
+    Used by the bot as a first-run check: without the hook, session_map.json
+    is never written and agent replies silently never reach the chat.
+    Unreadable/absent settings count as "not installed", and so does an
+    entry whose recorded executable no longer exists (repo/venv moved or
+    renamed) — that hook is just as dead as a missing one.
+    ``ccbot hook --install`` repairs a stale path in place.
+    """
+    try:
+        settings = json.loads(_CLAUDE_SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(settings, dict):
+        return False
+    entry = _find_hook_entry(settings)
+    if entry is None:
+        return False
+    return _hook_command_runnable(entry.get("command", ""))
 
 
 def _install_hook() -> int:
@@ -143,25 +189,34 @@ def _install_hook() -> int:
             print(f"Error reading {settings_file}: {e}", file=sys.stderr)
             return 1
 
-    # Check if already installed
-    if _is_hook_installed(settings):
-        logger.info("Hook already installed in %s", settings_file)
-        print(f"Hook already installed in {settings_file}")
-        return 0
-
     # Find the full path to ccbot
     ccbot_path = _find_ccbot_path()
     hook_command = f"{ccbot_path} hook"
-    hook_config = {"type": "command", "command": hook_command, "timeout": 5}
-    logger.info("Installing hook command: %s", hook_command)
 
-    # Install the hook
-    if "hooks" not in settings:
-        settings["hooks"] = {}
-    if "SessionStart" not in settings["hooks"]:
-        settings["hooks"]["SessionStart"] = []
+    # Already installed? Healthy → done; stale executable path (repo/venv
+    # moved or renamed since install) → repair the command in place instead
+    # of reporting success on a dead hook.
+    existing = _find_hook_entry(settings)
+    if existing is not None:
+        if _hook_command_runnable(existing.get("command", "")):
+            logger.info("Hook already installed in %s", settings_file)
+            print(f"Hook already installed in {settings_file}")
+            return 0
+        old_command = existing.get("command", "")
+        existing["command"] = hook_command
+        logger.info("Repairing stale hook command: %r -> %r", old_command, hook_command)
+        print(f"Repairing stale hook path: {old_command} -> {hook_command}")
+    else:
+        hook_config = {"type": "command", "command": hook_command, "timeout": 5}
+        logger.info("Installing hook command: %s", hook_command)
 
-    settings["hooks"]["SessionStart"].append({"hooks": [hook_config]})
+        # Install the hook
+        if "hooks" not in settings:
+            settings["hooks"] = {}
+        if "SessionStart" not in settings["hooks"]:
+            settings["hooks"]["SessionStart"] = []
+
+        settings["hooks"]["SessionStart"].append({"hooks": [hook_config]})
 
     # Write back
     try:

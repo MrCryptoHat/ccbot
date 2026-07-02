@@ -174,7 +174,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
-            await safe_reply(update.message, tr("common.not_authorized"))
+            await safe_reply(
+                update.message,
+                tr("common.not_authorized", uid=user.id if user else "?"),
+            )
         return
 
     if not update.message or not update.message.photo:
@@ -218,7 +221,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
-            await safe_reply(update.message, tr("common.not_authorized"))
+            await safe_reply(
+                update.message,
+                tr("common.not_authorized", uid=user.id if user else "?"),
+            )
         return
 
     if not update.message or not update.message.document:
@@ -297,7 +303,10 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
-            await safe_reply(update.message, tr("common.not_authorized"))
+            await safe_reply(
+                update.message,
+                tr("common.not_authorized", uid=user.id if user else "?"),
+            )
         return
 
     if not update.message or not update.message.voice:

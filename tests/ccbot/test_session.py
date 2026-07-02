@@ -14,6 +14,32 @@ def mgr(monkeypatch) -> SessionManager:
     return SessionManager()
 
 
+class TestMenuShownTopics:
+    """Per-topic menu-keyboard exactly-once flag (see menu_shown_topics)."""
+
+    def test_default_not_shown(self, mgr: SessionManager) -> None:
+        assert mgr.is_menu_shown(100, 42) is False
+
+    def test_none_thread_not_shown(self, mgr: SessionManager) -> None:
+        assert mgr.is_menu_shown(100, None) is False
+
+    def test_mark_and_check(self, mgr: SessionManager) -> None:
+        mgr.mark_menu_shown(100, 42)
+        assert mgr.is_menu_shown(100, 42) is True
+        # A different topic of the same user stays unmarked.
+        assert mgr.is_menu_shown(100, 43) is False
+
+    def test_mark_is_idempotent(self, mgr: SessionManager) -> None:
+        mgr.mark_menu_shown(100, 42)
+        mgr.mark_menu_shown(100, 42)
+        assert mgr.menu_shown_topics == {"100:42"}
+
+    def test_clear(self, mgr: SessionManager) -> None:
+        mgr.mark_menu_shown(100, 42)
+        mgr.clear_menu_shown(100, 42)
+        assert mgr.is_menu_shown(100, 42) is False
+
+
 class TestThreadDirectoryMemory:
     """Learned topic→directory memory (auto-rebind by permanent thread_id)."""
 

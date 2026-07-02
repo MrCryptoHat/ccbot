@@ -127,6 +127,13 @@ class SessionManager:
     # red/green screenshot, one image per agent turn. Off by default — the
     # default chat stays free of tool plumbing. See handlers/diff_view.py.
     diff_mode_topics: set[str] = field(default_factory=set)
+    # Topics that already received the persistent menu ReplyKeyboard
+    # ("user_id:thread_id" keys). Telegram scopes reply keyboards per forum
+    # topic, so each topic needs one message carrying the markup; this set
+    # makes that exactly-once — bind confirmations and the first delivered
+    # reply (message_queue backstop) attach the keyboard only when the
+    # topic isn't marked yet. /menu re-attaches unconditionally.
+    menu_shown_topics: set[str] = field(default_factory=set)
     # Global toggle (/react): bot puts a 👀 reaction on a user message the
     # moment the agent takes it into context. Default from CCBOT_REACTION_ACK
     # (on); /react overrides at runtime (persisted in state.json).
@@ -269,6 +276,7 @@ class SessionManager:
             "group_chat_ids": self.group_chat_ids,
             "voice_mode_topics": sorted(self.voice_mode_topics),
             "diff_mode_topics": sorted(self.diff_mode_topics),
+            "menu_shown_topics": sorted(self.menu_shown_topics),
             "reaction_ack_enabled": self.reaction_ack_enabled,
             "ui_language": self.ui_language,
             "voice_announced_sessions": sorted(self.voice_announced_sessions),
@@ -377,6 +385,7 @@ class SessionManager:
                 }
                 self.voice_mode_topics = set(state.get("voice_mode_topics", []))
                 self.diff_mode_topics = set(state.get("diff_mode_topics", []))
+                self.menu_shown_topics = set(state.get("menu_shown_topics", []))
                 self.reaction_ack_enabled = bool(
                     state.get("reaction_ack_enabled", config.reaction_ack_default)
                 )
@@ -432,6 +441,7 @@ class SessionManager:
                 self.group_chat_ids = {}
                 self.voice_mode_topics = set()
                 self.diff_mode_topics = set()
+                self.menu_shown_topics = set()
                 self.reaction_ack_enabled = config.reaction_ack_default
                 self.ui_language = config.default_lang
                 i18n.set_language(self.ui_language)
@@ -753,6 +763,26 @@ class SessionManager:
         self.diff_mode_topics.add(key)
         self._save_state()
         return True
+
+    def is_menu_shown(self, user_id: int, thread_id: int | None) -> bool:
+        """Has this topic already received the persistent menu keyboard?"""
+        if thread_id is None:
+            return False
+        return f"{user_id}:{thread_id}" in self.menu_shown_topics
+
+    def mark_menu_shown(self, user_id: int, thread_id: int) -> None:
+        """Record that the menu keyboard was delivered to this topic."""
+        key = f"{user_id}:{thread_id}"
+        if key not in self.menu_shown_topics:
+            self.menu_shown_topics.add(key)
+            self._save_state()
+
+    def clear_menu_shown(self, user_id: int, thread_id: int) -> None:
+        """Forget the menu-keyboard flag (topic closed/deleted)."""
+        key = f"{user_id}:{thread_id}"
+        if key in self.menu_shown_topics:
+            self.menu_shown_topics.discard(key)
+            self._save_state()
 
     def is_reaction_ack_enabled(self) -> bool:
         """Global: does the bot mark ingested user messages with 👀? (/react)."""

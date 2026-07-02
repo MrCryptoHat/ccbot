@@ -35,12 +35,16 @@ def main() -> None:
         config_dir = ccbot_dir()
         env_path = config_dir / ".env"
         print(f"Error: {e}\n")
-        print(f"Create {env_path} with the following content:\n")
+        print(
+            "Create a .env file (in the repo root, or at "
+            f"{env_path}) with the following content:\n"
+        )
         print("  TELEGRAM_BOT_TOKEN=your_bot_token_here")
         print("  ALLOWED_USERS=your_telegram_user_id")
         print()
         print("Get your bot token from @BotFather on Telegram.")
         print("Get your user ID from @userinfobot on Telegram.")
+        print("See SETUP.md for the full first-run walkthrough.")
         sys.exit(1)
 
     # Rotating file log next to the config dir: the process runs inside a
@@ -81,6 +85,18 @@ def main() -> None:
 
     logger.info("Allowed users: %s", config.allowed_users)
     logger.info("Claude projects path: %s", config.claude_projects_path)
+
+    # First-run trap: without the SessionStart hook, session_map.json is never
+    # written, so agent replies silently never reach the chat. Warn loudly at
+    # boot; the bind-time in-topic warning (bot.hook_missing) is the backstop.
+    from .hook import hook_installed_in_settings
+
+    if not hook_installed_in_settings():
+        logger.warning(
+            "Claude Code SessionStart hook is NOT installed — agent replies "
+            "will not be delivered to Telegram. Run: ccbot hook --install "
+            "(or `uv run ccbot hook --install`)."
+        )
 
     # Ensure tmux session exists
     session = tmux_manager.get_or_create_session()

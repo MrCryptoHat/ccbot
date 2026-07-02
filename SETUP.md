@@ -8,7 +8,10 @@ Linux/macOS host with tmux, the `claude` CLI, and `uv`.
 
 - **tmux** — `tmux -V` should print a version.
 - **Claude Code** — the `claude` CLI on your `PATH`
-  (install: https://claude.com/claude-code).
+  (install: https://claude.com/claude-code). Run `claude` once and complete
+  the sign-in before the first session — otherwise the first topic you open
+  will greet you with an OAuth screen (the bot detects it and sends you the
+  sign-in link, so it's recoverable, but logging in beforehand is smoother).
 - **uv** — https://docs.astral.sh/uv/ (installs Python + deps).
 - **ffmpeg** — only if you want Gemini voice replies (PCM→OGG); skip otherwise.
 
@@ -25,7 +28,7 @@ Linux/macOS host with tmux, the `claude` CLI, and `uv`.
 ## 3. Install
 
 ```bash
-git clone <this-repo-url> ccbot
+git clone https://github.com/MrCryptoHat/ccbot.git
 cd ccbot
 uv sync
 ```
@@ -50,6 +53,11 @@ extra infra and does nothing unless configured.
 
 Set `CCBOT_DEFAULT_LANG=ru` if you'd rather the bot's own UI be in Russian
 (default is English; a `/lang` switch is available at runtime either way).
+
+On a headless VPS with no terminal to approve tool permissions you may want
+`CLAUDE_COMMAND=claude --dangerously-skip-permissions`. **Understand the
+trade-off first**: the agent then runs shell commands and edits files without
+asking — only do this on a host where that's acceptable.
 
 ## 5. Install the session-tracking hook
 
@@ -82,11 +90,30 @@ To run in the foreground instead: `uv run ccbot`.
    forwarded.
 4. From then on, text/voice in that topic goes to Claude; its replies come
    back to the topic. Closing the topic kills the window.
+5. The persistent menu keyboard (🖥️ Server / 👾 Agent) appears automatically
+   with the bind confirmation or the first reply — Telegram scopes reply
+   keyboards per topic. If you ever dismiss it, `/menu` brings it back.
+
+## 8. Start on boot (optional)
+
+`restart.sh` is idempotent and self-healing, so the simplest autostart is a
+`@reboot` cron entry (run `crontab -e`):
+
+```cron
+@reboot sleep 10 && /home/YOU/ccbot/scripts/restart.sh >> /tmp/ccbot-boot.log 2>&1
+```
+
+(The `sleep` gives the network a moment to come up.) Without this, the bot
+stays down after a server reboot until you run `restart.sh` by hand.
 
 ## Troubleshooting
 
 - **Bot doesn't respond** — confirm it's an admin in the group and your id is
   in `ALLOWED_USERS`. Check the pane: `tmux attach -t ccbot`.
+- **Messages go out, but no replies come back** — the `SessionStart` hook is
+  probably missing (step 5): run `uv run ccbot hook --install` and restart the
+  agent's session. The bot also warns about this at startup (log) and in the
+  topic when it detects the hook is absent.
 - **No directory browser / auto-bind** — the topic must be created while the
   bot is online; a topic renamed after creation falls back to the browser on
   first message.
