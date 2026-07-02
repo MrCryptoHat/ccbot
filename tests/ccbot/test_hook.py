@@ -96,7 +96,7 @@ class TestHookInstalledInSettings:
     def test_missing_file_is_not_installed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", tmp_path / "settings.json")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         assert hook.hook_installed_in_settings() is False
 
     def test_invalid_json_is_not_installed(
@@ -104,7 +104,7 @@ class TestHookInstalledInSettings:
     ) -> None:
         f = tmp_path / "settings.json"
         f.write_text("{not json")
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         assert hook.hook_installed_in_settings() is False
 
     def test_non_dict_json_is_not_installed(
@@ -112,7 +112,7 @@ class TestHookInstalledInSettings:
     ) -> None:
         f = tmp_path / "settings.json"
         f.write_text('["a list"]')
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         assert hook.hook_installed_in_settings() is False
 
     @staticmethod
@@ -137,8 +137,8 @@ class TestHookInstalledInSettings:
         exe = tmp_path / "bin" / "ccbot"
         exe.parent.mkdir()
         exe.write_text("#!/bin/sh\n")
-        f = self._write_settings(tmp_path, f"{exe} hook")
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        self._write_settings(tmp_path, f"{exe} hook")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         assert hook.hook_installed_in_settings() is True
 
     def test_stale_executable_path_counts_as_not_installed(
@@ -146,15 +146,15 @@ class TestHookInstalledInSettings:
     ) -> None:
         # The recorded venv path died (repo renamed/moved) — the hook is
         # present in settings but can never run; must NOT count as installed.
-        f = self._write_settings(tmp_path, f"{tmp_path}/gone/.venv/bin/ccbot hook")
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        self._write_settings(tmp_path, f"{tmp_path}/gone/.venv/bin/ccbot hook")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         assert hook.hook_installed_in_settings() is False
 
     def test_bare_name_resolves_via_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        f = self._write_settings(tmp_path, "ccbot hook")
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        self._write_settings(tmp_path, "ccbot hook")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         monkeypatch.setattr(hook.shutil, "which", lambda _name: "/usr/bin/ccbot")
         assert hook.hook_installed_in_settings() is True
         monkeypatch.setattr(hook.shutil, "which", lambda _name: None)
@@ -168,7 +168,7 @@ class TestInstallHookRepair:
         f = TestHookInstalledInSettings._write_settings(
             tmp_path, "/old/gone/.venv/bin/ccbot hook"
         )
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         monkeypatch.setattr(hook, "_find_ccbot_path", lambda: "/new/venv/bin/ccbot")
         assert hook._install_hook() == 0
         saved = json.loads(f.read_text())
@@ -186,10 +186,80 @@ class TestInstallHookRepair:
         exe.parent.mkdir()
         exe.write_text("#!/bin/sh\n")
         f = TestHookInstalledInSettings._write_settings(tmp_path, f"{exe} hook")
-        monkeypatch.setattr(hook, "_CLAUDE_SETTINGS_FILE", f)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         before = f.read_text()
         assert hook._install_hook() == 0
         assert f.read_text() == before
+
+
+class TestClaudeSettingsFileResolution:
+    def test_default_is_home_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        assert hook._claude_settings_file() == Path.home() / ".claude" / "settings.json"
+
+    def test_honours_claude_config_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "variant"))
+        assert hook._claude_settings_file() == tmp_path / "variant" / "settings.json"
+
+    def test_expands_tilde(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/claude-variant")
+        assert (
+            hook._claude_settings_file()
+            == Path.home() / "claude-variant" / "settings.json"
+        )
+
+
+class TestSpacePathQuoting:
+    """Paths with spaces (macOS «My Projects», iCloud dirs) must be quoted —
+    unquoted they split at the space in the shell and the hook silently dies."""
+
+    def test_install_quotes_path_with_space(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import shlex
+
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        exe = tmp_path / "My Projects" / "bin" / "ccbot"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(hook, "_find_ccbot_path", lambda: str(exe))
+        assert hook._install_hook() == 0
+        saved = json.loads((tmp_path / "settings.json").read_text())
+        commands = [
+            h["command"]
+            for entry in saved["hooks"]["SessionStart"]
+            for h in entry["hooks"]
+        ]
+        assert commands == [f"{shlex.quote(str(exe))} hook"]
+        # The quoted form must be recognised as installed and runnable.
+        assert hook.hook_installed_in_settings() is True
+
+    def test_legacy_unquoted_space_path_is_repaired_in_place(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import shlex
+
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        exe = tmp_path / "Old Projects" / "ccbot"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        # A pre-fix install wrote the path unquoted: broken at runtime even
+        # though the executable exists — must NOT count as installed…
+        TestHookInstalledInSettings._write_settings(tmp_path, f"{exe} hook")
+        assert hook.hook_installed_in_settings() is False
+        # …and --install must repair the entry in place, not stack a second.
+        monkeypatch.setattr(hook, "_find_ccbot_path", lambda: str(exe))
+        assert hook._install_hook() == 0
+        saved = json.loads((tmp_path / "settings.json").read_text())
+        commands = [
+            h["command"]
+            for entry in saved["hooks"]["SessionStart"]
+            for h in entry["hooks"]
+        ]
+        assert commands == [f"{shlex.quote(str(exe))} hook"]
+        assert hook.hook_installed_in_settings() is True
 
 
 def _fake_proc(tmp_path: Path, chain: list[tuple[int, str, int]]) -> Path:

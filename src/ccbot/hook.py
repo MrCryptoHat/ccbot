@@ -2,7 +2,8 @@
 
 Called by Claude Code's SessionStart hook to maintain a window↔session
 mapping in <CCBOT_DIR>/session_map.json. Also provides `--install` to
-auto-configure the hook in ~/.claude/settings.json.
+auto-configure the hook in Claude Code's settings.json (honours
+CLAUDE_CONFIG_DIR, default ~/.claude).
 
 This module must NOT import config.py (which requires TELEGRAM_BOT_TOKEN),
 since hooks run inside tmux panes where bot env vars are not set.
@@ -17,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,10 +29,21 @@ logger = logging.getLogger(__name__)
 # Validate session_id looks like a UUID
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
-_CLAUDE_SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
-
-# The hook command suffix for detection
+# The hook command suffix for legacy (unquoted) entry detection
 _HOOK_COMMAND_SUFFIX = "ccbot hook"
+
+
+def _claude_settings_file() -> Path:
+    """Resolve Claude Code's settings.json, honouring CLAUDE_CONFIG_DIR.
+
+    Claude Code relocates its whole config dir (settings.json included) when
+    CLAUDE_CONFIG_DIR is set; installing/checking the hook against a
+    hardcoded ~/.claude would silently target a file that Claude never reads
+    — and suppress every "hook missing" warning while replies fail to arrive.
+    """
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "")
+    base = Path(config_dir).expanduser() if config_dir else Path.home() / ".claude"
+    return base / "settings.json"
 
 
 def _count_claude_ancestors(
@@ -103,12 +116,30 @@ def _find_ccbot_path() -> str:
     return "ccbot"
 
 
+def _is_ccbot_hook_command(cmd: str) -> bool:
+    """Is this settings.json command string a ccbot SessionStart hook?
+
+    Primary form is shell-quoted `<path-to-ccbot> hook` (what --install
+    writes). The legacy suffix match keeps recognising old unquoted entries —
+    including ones whose path contains a space (those split into 3+ tokens
+    under shlex but still end with "/ccbot hook"), so --install can repair
+    them instead of stacking a second entry.
+    """
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return False
+    if len(parts) == 2 and parts[1] == "hook" and Path(parts[0]).name == "ccbot":
+        return True
+    return cmd == _HOOK_COMMAND_SUFFIX or cmd.endswith("/" + _HOOK_COMMAND_SUFFIX)
+
+
 def _find_hook_entry(settings: dict) -> dict | None:
     """Return the ccbot SessionStart hook dict from settings, or None.
 
-    Matches both 'ccbot hook' and full paths like '/path/to/ccbot hook'.
-    Returned dict is the live object inside ``settings`` so callers can
-    repair its ``command`` in place.
+    Matches quoted and legacy-unquoted command forms (see
+    _is_ccbot_hook_command). Returned dict is the live object inside
+    ``settings`` so callers can repair its ``command`` in place.
     """
     hooks = settings.get("hooks", {})
     session_start = hooks.get("SessionStart", [])
@@ -120,9 +151,7 @@ def _find_hook_entry(settings: dict) -> dict | None:
         for h in inner_hooks:
             if not isinstance(h, dict):
                 continue
-            cmd = h.get("command", "")
-            # Match 'ccbot hook' or paths ending with 'ccbot hook'
-            if cmd == _HOOK_COMMAND_SUFFIX or cmd.endswith("/" + _HOOK_COMMAND_SUFFIX):
+            if _is_ccbot_hook_command(h.get("command", "")):
                 return h
     return None
 
@@ -135,22 +164,29 @@ def _is_hook_installed(settings: dict) -> bool:
 def _hook_command_runnable(command: str) -> bool:
     """Can the installed hook command actually execute?
 
-    The command is ``<executable> hook``. An absolute executable must exist
-    on disk (the recorded path goes stale when the repo/venv is moved or
-    renamed — the exact failure this check exists to catch); a bare name
-    must resolve via PATH. A stale path means Claude Code silently runs a
-    dead hook: session_map is never written and replies stop reaching chat.
+    The command is ``<executable> hook`` (shell-quoted by --install). An
+    absolute executable must exist on disk (the recorded path goes stale when
+    the repo/venv is moved or renamed — the exact failure this check exists
+    to catch); a bare name must resolve via PATH. A legacy *unquoted* path
+    containing a space splits into 3+ tokens here and correctly reports
+    not-runnable — the shell would split it the same way at execution time.
+    A dead hook means session_map is never written and replies stop reaching
+    chat, so err on the side of False.
     """
-    executable = command[: -len(" " + "hook")].strip()
-    if not executable:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
         return False
+    if len(parts) != 2 or parts[1] != "hook":
+        return False
+    executable = parts[0]
     if os.path.isabs(executable):
         return Path(executable).exists()
     return shutil.which(executable) is not None
 
 
 def hook_installed_in_settings() -> bool:
-    """True if a *runnable* ccbot SessionStart hook is in ~/.claude/settings.json.
+    """True if a *runnable* ccbot SessionStart hook is in Claude's settings.json.
 
     Used by the bot as a first-run check: without the hook, session_map.json
     is never written and agent replies silently never reach the chat.
@@ -160,7 +196,7 @@ def hook_installed_in_settings() -> bool:
     ``ccbot hook --install`` repairs a stale path in place.
     """
     try:
-        settings = json.loads(_CLAUDE_SETTINGS_FILE.read_text())
+        settings = json.loads(_claude_settings_file().read_text())
     except (OSError, json.JSONDecodeError):
         return False
     if not isinstance(settings, dict):
@@ -176,7 +212,7 @@ def _install_hook() -> int:
 
     Returns 0 on success, 1 on error.
     """
-    settings_file = _CLAUDE_SETTINGS_FILE
+    settings_file = _claude_settings_file()
     settings_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Read existing settings
@@ -189,9 +225,13 @@ def _install_hook() -> int:
             print(f"Error reading {settings_file}: {e}", file=sys.stderr)
             return 1
 
-    # Find the full path to ccbot
+    # Find the full path to ccbot. shlex.quote so a path containing a space
+    # (common on macOS: "My Projects", iCloud dirs) survives the shell that
+    # Claude Code runs hook commands through — unquoted it would split at the
+    # space, the hook would silently never fire, and replies would never
+    # reach the chat. Paths without special characters are left untouched.
     ccbot_path = _find_ccbot_path()
-    hook_command = f"{ccbot_path} hook"
+    hook_command = f"{shlex.quote(ccbot_path)} hook"
 
     # Already installed? Healthy → done; stale executable path (repo/venv
     # moved or renamed since install) → repair the command in place instead
@@ -233,6 +273,27 @@ def _install_hook() -> int:
     return 0
 
 
+def _preload_dotenv_for_install() -> None:
+    """Best-effort .env preload for the --install CLI path.
+
+    Mirrors config._preload_dotenv (local .env first, then $CCBOT_DIR/.env,
+    no override of real env vars) without importing config.py, which this
+    module must not do.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # pragma: no cover - dotenv is a hard dep of the bot
+        return
+    from .utils import ccbot_dir
+
+    local_env = Path(".env")
+    if local_env.is_file():
+        load_dotenv(local_env)
+    global_env = ccbot_dir() / ".env"
+    if global_env.is_file():
+        load_dotenv(global_env)
+
+
 def hook_main() -> None:
     """Process a Claude Code hook event from stdin, or install the hook."""
     # Configure logging for the hook subprocess (main.py logging doesn't apply here)
@@ -249,12 +310,17 @@ def hook_main() -> None:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="Install the hook into ~/.claude/settings.json",
+        help="Install the hook into Claude Code's settings.json",
     )
     # Parse only known args to avoid conflicts with stdin JSON
     args, _ = parser.parse_known_args(sys.argv[2:])
 
     if args.install:
+        # `ccbot hook --install` dispatches before config.py's dotenv preload
+        # ever runs, so honour a CLAUDE_CONFIG_DIR (or CCBOT_DIR) that lives
+        # only in .env. dotenv+utils only — this module must not import
+        # config.py (see module docstring).
+        _preload_dotenv_for_install()
         logger.info("Hook install requested")
         sys.exit(_install_hook())
 
