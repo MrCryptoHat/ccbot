@@ -299,8 +299,12 @@ async def _handle_dir_select(
         return
     subdir_name = cached_dirs[idx]
 
-    default_path = str(Path.cwd())
-    current_path = _get_user_data(context, BROWSE_PATH_KEY, default_path)
+    current_path = _get_user_data(context, BROWSE_PATH_KEY)
+    if current_path is None:
+        # user_data died with a bot restart; browsing from the bot's own
+        # cwd would eventually bind the topic to a nonsense directory.
+        await _answer_stale(query, "browser")
+        return
     new_path = (Path(current_path) / subdir_name).resolve()
 
     if not new_path.exists() or not new_path.is_dir():
@@ -331,8 +335,10 @@ async def _handle_dir_up(
         await _answer_stale(query, "browser")
         return
 
-    default_path = str(Path.cwd())
-    current_path = _get_user_data(context, BROWSE_PATH_KEY, default_path)
+    current_path = _get_user_data(context, BROWSE_PATH_KEY)
+    if current_path is None:
+        await _answer_stale(query, "browser")
+        return
     parent_path = str(Path(current_path).resolve().parent)
 
     if context.user_data is not None:
@@ -364,8 +370,10 @@ async def _handle_dir_page(
         await query.answer(tr("cb.invalid_data"))
         return
 
-    default_path = str(Path.cwd())
-    current_path = _get_user_data(context, BROWSE_PATH_KEY, default_path)
+    current_path = _get_user_data(context, BROWSE_PATH_KEY)
+    if current_path is None:
+        await _answer_stale(query, "browser")
+        return
     if context.user_data is not None:
         context.user_data[BROWSE_PAGE_KEY] = pg
 
@@ -387,8 +395,12 @@ async def _handle_dir_confirm(
     # Import here to avoid circular import during transition
     from ..bot import _create_and_bind_window
 
-    default_path = str(Path.cwd())
-    selected_path = _get_user_data(context, BROWSE_PATH_KEY, default_path)
+    selected_path = _get_user_data(context, BROWSE_PATH_KEY)
+    if selected_path is None:
+        # Stale Select button from before a bot restart: without this check
+        # the topic would be bound to the bot process's own cwd.
+        await _answer_stale(query, "browser")
+        return
     pending_thread_id: int | None = _get_user_data(context, "_pending_thread_id")
 
     confirm_thread_id = get_thread_id(update)
@@ -467,7 +479,10 @@ async def _handle_session_select(
         return
 
     session = cached_sessions[idx]
-    selected_path = _get_user_data(context, "_selected_path", str(Path.cwd()))
+    selected_path = _get_user_data(context, "_selected_path")
+    if selected_path is None:
+        await _answer_stale(query)
+        return
     clear_session_picker_state(context.user_data)
     if context.user_data is not None:
         context.user_data.pop("_selected_path", None)
@@ -499,7 +514,12 @@ async def _handle_session_new(
         await _answer_stale(query)
         return
 
-    selected_path = _get_user_data(context, "_selected_path", str(Path.cwd()))
+    selected_path = _get_user_data(context, "_selected_path")
+    if selected_path is None:
+        # ➕ New Session on a picker from before a bot restart would create
+        # a window in the bot's own cwd and bind the topic to it.
+        await _answer_stale(query)
+        return
     clear_session_picker_state(context.user_data)
     if context.user_data is not None:
         context.user_data.pop("_selected_path", None)
