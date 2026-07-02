@@ -312,7 +312,7 @@ STRINGS.update(
             "ru": "ℹ Использование: `/bind <agent>`\nДоступные агенты смотри в конфиге DOCKER\\_AGENTS.",
             "en": "ℹ Usage: `/bind <agent>`\nSee available agents in the DOCKER\\_AGENTS config.",
         },
-        "commands.btn_clear": {"ru": "🧹 Очистить диалог", "en": "🧹 Clear chat"},
+        "commands.btn_clear": {"ru": "🧹 Очистить", "en": "🧹 Clear"},
         "commands.btn_compact": {"ru": "🗜 Сжать", "en": "🗜 Compact"},
         "commands.btn_context": {"ru": "📊 Контекст", "en": "📊 Context"},
         "commands.btn_delete_agent": {"ru": "🗑 Удалить агента", "en": "🗑 Delete agent"},

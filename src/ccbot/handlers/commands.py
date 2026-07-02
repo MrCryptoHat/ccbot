@@ -1118,9 +1118,11 @@ def _build_commands_keyboard(
     MCP) and lifecycle (Resume / New / Restart / End / worktree
     fork+delete).
 
-    Colour grammar (see architecture.md): red = irreversible loss (Clear /
-    End / delete-agent), blue = the primary tap (Refresh), everything else
-    neutral — green appears only on confirm buttons, never in the grid.
+    Colour grammar (see architecture.md): red in the grid = irreversible
+    loss (End / delete-agent; Clear is neutral in the grid by user
+    preference — its red confirm step carries the warning), blue = the
+    primary tap (Refresh), everything else neutral — green appears only
+    on confirm buttons, never in the grid.
 
     Confirmation layout — shown when ``confirming`` is set; it suspends
     the tab UI entirely and offers a single yes/cancel pair. Destructive
@@ -1253,11 +1255,10 @@ def _build_commands_keyboard(
             ],
             [
                 cmd_btn(tr("commands.btn_compact"), CB_CMD_COMPACT),
-                cmd_btn(
-                    tr("commands.btn_clear"),
-                    CB_CMD_CLEAR,
-                    style=KeyboardButtonStyle.DANGER,
-                ),
+                # Neutral in the grid (user's call — the everyday tab shouldn't
+                # carry a red button); the loss warning lives in the red
+                # confirm step, which stays.
+                cmd_btn(tr("commands.btn_clear"), CB_CMD_CLEAR),
             ],
         ]
     else:
