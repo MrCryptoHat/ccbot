@@ -65,9 +65,11 @@ truth and you never lose the ability to switch back.
   (advanced, bring-your-own-container — see [docs/docker-agents.md](docs/docker-agents.md)).
 - **Worktree agents** — fork a repo into a `git worktree` + branch and run a
   parallel agent, all from Telegram.
-- **Reaction controls** — 👍-to-confirm and 👀 read-acks, both **on by default** (turn off via `REACTION_CONFIRM_ENABLED=false` / `CCBOT_REACTION_ACK=false`, or toggle at runtime with `/react`).
-- **Automation hooks** — a localhost task-injection socket and live browser
-  dashboards.
+- **Reaction controls** — 👍-to-confirm and 👀 read-acks, both **on by default**
+  (env switches: `REACTION_CONFIRM_ENABLED=false` / `CCBOT_REACTION_ACK=false`;
+  the runtime `/react` toggle flips the 👀 read-ack only).
+- **Automation hooks** — a localhost task-injection socket
+  (`CCBOT_INJECT_TOKEN`) for scripting tasks into agents.
 
 See **"Core vs optional"** below and [`.env.example`](.env.example) for the
 full switch list.
@@ -158,10 +160,11 @@ uninstalled plugin never crashes the bot.
 ## Hook setup
 
 ```bash
-ccbot hook --install
+uv run ccbot hook --install    # or just `ccbot hook --install` if on PATH
 ```
 
-Or add manually to `~/.claude/settings.json`:
+Or add manually to `~/.claude/settings.json` (or
+`$CLAUDE_CONFIG_DIR/settings.json` if you relocate Claude's config):
 
 ```json
 { "hooks": { "SessionStart": [ { "hooks": [{ "type": "command", "command": "ccbot hook", "timeout": 5 }] } ] } }
@@ -169,6 +172,10 @@ Or add manually to `~/.claude/settings.json`:
 
 This writes window↔session mappings to `$CCBOT_DIR/session_map.json` so the bot
 tracks which Claude session runs in each window, even after `/clear`.
+
+Uninstalling ccbot? Run `uv run ccbot hook --uninstall` **before** deleting the
+checkout — the hook entry records an absolute path into it, and a deleted repo
+would leave every future Claude Code session running a dead hook command.
 
 ## Usage
 
@@ -234,8 +241,11 @@ transcription) and get spoken replies (Gemini / ElevenLabs / OpenAI TTS).
 
 **Is my code exposed to a third party?**
 No middleman: traffic flows between your server and Telegram's Bot API under
-your own bot token. Only the users listed in `ALLOWED_USERS` are served —
-anyone else gets a refusal and no access to sessions.
+your own bot token. But mind the trust boundary inside Telegram itself:
+`ALLOWED_USERS` controls who can *drive* the bot, while everything the bot
+posts — agent replies with code, pane screenshots, sent files — is visible to
+**every member of the group**. Keep the group private and invite only people
+you'd let read your terminal.
 
 ## Credits & license
 

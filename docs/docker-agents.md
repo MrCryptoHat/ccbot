@@ -26,8 +26,13 @@ So the contract is small, but strict:
        "claude --dangerously-skip-permissions"
    ```
 
-   (`/restart` from Telegram recreates the session with the same invocation —
-   see `docker_driver.start_session`.)
+   ⚠️ Note on `/restart` from Telegram: it does **not** re-run your
+   entrypoint's command — it always launches
+   `claude --dangerously-skip-permissions [--resume <id>]`
+   (`docker_driver.start_session`'s built-in default). If your entrypoint
+   deliberately runs plain `claude` (with permission prompts), a Telegram
+   restart currently loses that choice — keep it in mind until a per-agent
+   command override exists.
 
 2. **The agent's working directory is `/workspace`**, bind-mounted from the
    host. Hard expectation, not a convention: the `(send file: …)` path
@@ -110,7 +115,7 @@ Claude session.
 ## Notes
 
 - The image needs `tmux`, the `claude` CLI, and (for the hook example) `jq`.
-- `/remount` (rclone deployments) restarts every active docker agent —
-  a remount invalidates the FUSE snapshot the bind-mounts hold.
-- The live browser dashboard (`browser_live`) and VNC links are separate,
-  optional layers on the `ipc` mount; see `.env.example`.
+- Some deployments layer optional plugins on top of docker agents (rclone
+  remounts that restart agents, live browser dashboards on the `ipc` mount) —
+  those ship in separate plugin packages, not in this repo; the core seams
+  they use are `ipc_dir` and per-agent `vnc_url`.

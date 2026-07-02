@@ -68,8 +68,11 @@ def main() -> None:
             "Create a .env file (in the repo root, or at "
             f"{env_path}) with the following content:\n"
         )
-        print("  TELEGRAM_BOT_TOKEN=your_bot_token_here")
-        print("  ALLOWED_USERS=your_telegram_user_id")
+        # Angle-bracket placeholders on purpose: the .env.example literal
+        # ("your_bot_token_here") is exactly the value the placeholder check
+        # just rejected — echoing it back invites pasting it a second time.
+        print("  TELEGRAM_BOT_TOKEN=<token from @BotFather>")
+        print("  ALLOWED_USERS=<your numeric Telegram user id>")
         print()
         print("Get your bot token from @BotFather on Telegram.")
         print("Get your user ID from @userinfobot on Telegram.")

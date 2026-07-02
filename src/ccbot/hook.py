@@ -273,6 +273,68 @@ def _install_hook() -> int:
     return 0
 
 
+def _uninstall_hook() -> int:
+    """Remove the ccbot hook from Claude's settings.json.
+
+    Without this, deleting a tried-out ccbot checkout leaves a global
+    SessionStart hook pointing at a dead binary — every future Claude Code
+    session on the machine (ccbot-related or not) runs a failing command.
+
+    Returns 0 on success (including "nothing to remove"), 1 on error.
+    """
+    settings_file = _claude_settings_file()
+    try:
+        settings = json.loads(settings_file.read_text())
+    except FileNotFoundError:
+        print("Hook is not installed (no settings file) — nothing to remove.")
+        return 0
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Error reading {settings_file}: {e}", file=sys.stderr)
+        return 1
+    if not isinstance(settings, dict):
+        print(f"Error: {settings_file} is not a JSON object", file=sys.stderr)
+        return 1
+
+    session_start = settings.get("hooks", {}).get("SessionStart", [])
+    removed = 0
+    kept_entries = []
+    for entry in session_start:
+        if not isinstance(entry, dict):
+            kept_entries.append(entry)
+            continue
+        inner = entry.get("hooks", [])
+        kept_hooks = [
+            h
+            for h in inner
+            if not (
+                isinstance(h, dict) and _is_ccbot_hook_command(h.get("command", ""))
+            )
+        ]
+        removed += len(inner) - len(kept_hooks)
+        if kept_hooks or set(entry.keys()) - {"hooks"}:
+            kept_entries.append({**entry, "hooks": kept_hooks})
+
+    if not removed:
+        print("Hook is not installed — nothing to remove.")
+        return 0
+
+    settings["hooks"]["SessionStart"] = kept_entries
+    if not kept_entries:
+        del settings["hooks"]["SessionStart"]
+        if not settings["hooks"]:
+            del settings["hooks"]
+
+    try:
+        settings_file.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+        )
+    except OSError as e:
+        print(f"Error writing {settings_file}: {e}", file=sys.stderr)
+        return 1
+    print(f"Removed ccbot hook from {settings_file}")
+    return 0
+
+
 def _preload_dotenv_for_install() -> None:
     """Best-effort .env preload for the --install CLI path.
 
@@ -295,11 +357,18 @@ def _preload_dotenv_for_install() -> None:
 
 
 def hook_main() -> None:
-    """Process a Claude Code hook event from stdin, or install the hook."""
-    # Configure logging for the hook subprocess (main.py logging doesn't apply here)
+    """Process a Claude Code hook event from stdin, or (un)install the hook."""
+    # Configure logging for the hook subprocess (main.py logging doesn't apply
+    # here). Default WARNING, not DEBUG: once installed the hook fires on
+    # EVERY Claude session on the machine, and per-event debug chatter would
+    # pollute Claude Code's hook stderr. CCBOT_LOG_LEVEL opts into more.
+    level_name = os.environ.get("CCBOT_LOG_LEVEL", "WARNING").upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        level = logging.WARNING
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        level=logging.DEBUG,
+        level=level,
         stream=sys.stderr,
     )
 
@@ -312,17 +381,29 @@ def hook_main() -> None:
         action="store_true",
         help="Install the hook into Claude Code's settings.json",
     )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove the hook from Claude Code's settings.json",
+    )
     # Parse only known args to avoid conflicts with stdin JSON
     args, _ = parser.parse_known_args(sys.argv[2:])
 
-    if args.install:
-        # `ccbot hook --install` dispatches before config.py's dotenv preload
-        # ever runs, so honour a CLAUDE_CONFIG_DIR (or CCBOT_DIR) that lives
-        # only in .env. dotenv+utils only — this module must not import
-        # config.py (see module docstring).
+    if args.install or args.uninstall:
+        # `ccbot hook --(un)install` dispatches before config.py's dotenv
+        # preload ever runs, so honour a CLAUDE_CONFIG_DIR (or CCBOT_DIR)
+        # that lives only in .env. dotenv+utils only — this module must not
+        # import config.py (see module docstring).
         _preload_dotenv_for_install()
+    if args.install and args.uninstall:
+        print("Pick one: --install or --uninstall", file=sys.stderr)
+        sys.exit(2)
+    if args.install:
         logger.info("Hook install requested")
         sys.exit(_install_hook())
+    if args.uninstall:
+        logger.info("Hook uninstall requested")
+        sys.exit(_uninstall_hook())
 
     # Normal hook processing: read JSON from stdin
     logger.debug("Processing hook event from stdin")

@@ -266,21 +266,14 @@ class Config:
             os.getenv("CCBOT_SHOW_USER_MESSAGES", "false").lower() == "true"
         )
 
-        # Show tool call notifications (tool_use/tool_result) in Telegram
-        # When False, only text responses, thinking, and interactive prompts are sent
-        self.show_tool_calls = (
-            os.getenv("CCBOT_SHOW_TOOL_CALLS", "false").lower() == "true"
-        )
-
         # Show thinking blocks in Telegram
         # When False, thinking content is hidden
         self.show_thinking = os.getenv("CCBOT_SHOW_THINKING", "false").lower() == "true"
 
-        # Show tool results (output of tool calls) in Telegram
-        # When False, only tool_use headers are shown, not their output
-        self.show_tool_results = (
-            os.getenv("CCBOT_SHOW_TOOL_RESULTS", "false").lower() == "true"
-        )
+        # (CCBOT_SHOW_TOOL_CALLS / CCBOT_SHOW_TOOL_RESULTS are gone: tool
+        # plumbing is unconditionally suppressed from the chat — see
+        # message-handling.md "What reaches the chat". /diff and /screenshot
+        # are the sanctioned windows into it.)
 
         # Show hidden (dot) directories in directory browser
         self.show_hidden_dirs = (

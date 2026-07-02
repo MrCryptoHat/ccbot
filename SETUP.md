@@ -20,6 +20,9 @@ Linux/macOS host with tmux, the `claude` CLI, and `uv`.
 1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy the **token**.
 2. Create a Telegram **group**, then enable **Topics** in the group settings
    (Manage group → Topics). The bot works only in topic (forum) mode.
+   ⚠️ Anyone you add to this group can **read** all agent output — code, pane
+   screenshots, sent files. `ALLOWED_USERS` restricts who can *control* the
+   bot, not who can see. Keep the group private; don't publish an invite link.
 3. Add your bot to the group and make it an **admin** (needed to read topics
    and — for the 👍-to-confirm feature — to receive reactions).
 4. Get your own numeric Telegram user id (e.g. via
@@ -46,7 +49,9 @@ TELEGRAM_BOT_TOKEN=123456:ABC-your-token
 ALLOWED_USERS=123456789
 ```
 
-Everything else in `.env.example` is optional and off by default. Add a voice
+Everything else in `.env.example` is optional — almost all of it off by
+default (the two exceptions: 👍-to-confirm and 👀 read-ack reactions are on;
+see the REACTIONS section there to turn them off). Add a voice
 key (Deepgram/OpenAI/Gemini/ElevenLabs) if you want speech; leave the whole
 **SERVER-SPECIFIC** section blank — it wires into one particular server's
 extra infra and does nothing unless configured.
@@ -68,6 +73,10 @@ uv run ccbot hook --install
 This adds a `SessionStart` hook to `~/.claude/settings.json` so the bot can map
 each tmux window to its Claude session (survives `/clear` and restarts). Or add
 it manually — see the README "Hook Setup" section.
+
+(If you later remove ccbot, run `uv run ccbot hook --uninstall` **before**
+deleting the checkout, otherwise every future Claude Code session will keep
+invoking a hook whose binary no longer exists.)
 
 ## 6. Run
 

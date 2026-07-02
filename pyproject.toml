@@ -1,9 +1,23 @@
 [project]
 name = "ccbot"
 version = "0.1.0"
-description = "Telegram Bot for monitoring Claude Code sessions"
+description = "Control Claude Code from Telegram — forum topics bridged to tmux sessions"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = ["claude-code", "telegram", "telegram-bot", "tmux", "remote-control"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development",
+]
+
 dependencies = [
     "python-telegram-bot[rate-limiter]>=21.0",
     "python-dotenv>=1.0.0",
@@ -25,6 +39,10 @@ dependencies = [
 [project.scripts]
 ccbot = "ccbot.main:main"
 
+[project.urls]
+Homepage = "https://github.com/MrCryptoHat/ccbot"
+Issues = "https://github.com/MrCryptoHat/ccbot/issues"
+
 [dependency-groups]
 # PEP 735 group — installed by a plain `uv sync` (and `uv sync --dev`), so the
 # README's dev-checks (ruff/pyright/pytest) work right after a fresh clone.
@@ -42,10 +60,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ccbot"]
-
-# Target Python 3.12
-[tool.black]
-target-version = ["py312"]
 
 [tool.ruff]
 target-version = "py312"
