@@ -67,6 +67,7 @@ from .message_sender import PARSE_MODE, safe_reply
 from ..screenshot import text_to_image
 from ..config import config
 from ..docker_driver import docker_driver
+from ..hook import hook_installed_in_settings
 from .. import i18n, plugins, preview
 from ..i18n import tr
 from ..session import session_manager
@@ -355,18 +356,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
-            await safe_reply(update.message, tr("common.not_authorized"))
+            await safe_reply(
+                update.message,
+                tr("common.not_authorized", uid=user.id if user else "?"),
+            )
         return
 
     clear_browse_state(context.user_data)
 
     if update.message:
+        # In a DM the "create a topic" welcome is impossible advice — a
+        # friend's first tap after BotFather lands here, so walk them
+        # through the group setup instead.
+        chat = update.effective_chat
+        in_private = chat is not None and chat.type == "private"
         await safe_reply(
             update.message,
-            "🤖 *Claude Code Monitor*\n\n"
-            "Each topic is a session. Create a new topic to start.",
+            tr("bot.private_start") if in_private else tr("bot.start_welcome"),
             reply_markup=menu_keyboard(),
         )
+        thread_id = get_thread_id(update)
+        if thread_id is not None:
+            session_manager.mark_menu_shown(user.id, thread_id)
 
 
 async def bind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -427,7 +438,9 @@ async def bind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await safe_reply(
         update.message,
         tr("commands.bind_done", name=agent.name),
+        reply_markup=menu_keyboard(),
     )
+    session_manager.mark_menu_shown(user.id, thread_id)
 
 
 async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -481,6 +494,19 @@ def build_bot_commands() -> list[BotCommand]:
     Rebuilt (not cached) so /lang can re-publish it in the new language —
     keep this in sync with the CommandHandler registrations in bot.py.
     """
+    # The rclone /mount|/umount|/remount trio is host-specific plumbing —
+    # advertise it only when mounts are actually configured, so a fresh
+    # install's command menu isn't padded with dead entries. The handlers
+    # stay registered either way (a typed /mount still answers).
+    mount_cmds = (
+        [
+            BotCommand("remount", tr("cmd.remount")),
+            BotCommand("mount", tr("cmd.mount")),
+            BotCommand("umount", tr("cmd.umount")),
+        ]
+        if config.rclone_mounts
+        else []
+    )
     return [
         BotCommand("start", tr("cmd.start")),
         BotCommand("status", tr("cmd.status")),
@@ -493,10 +519,8 @@ def build_bot_commands() -> list[BotCommand]:
         BotCommand("react", tr("cmd.react")),
         BotCommand("diff", tr("cmd.diff")),
         BotCommand("lang", tr("cmd.lang")),
-        BotCommand("remount", tr("cmd.remount")),
         BotCommand("menu", tr("cmd.menu")),
-        BotCommand("mount", tr("cmd.mount")),
-        BotCommand("umount", tr("cmd.umount")),
+        *mount_cmds,
         *plugins.bot_commands(),
     ]
 
@@ -1082,7 +1106,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await safe_reply(update.message, text, reply_markup=_status_keyboard())
 
 
-Tab = Literal["nav", "act"]
+Tab = Literal["nav", "act", "ses"]
+
+
+def _action_home_tab(action: str) -> Tab:
+    """The tab a panel action's button lives on.
+
+    Post-action repaints and confirm-cancel return here, so the user lands
+    back on the buttons they tapped from. Lifecycle + configuration actions
+    live on «Сессия»; everyday actions on «Действия».
+    """
+    return "ses" if action in ("kill", "restart", "fresh") else "act"
 
 
 # Confirmation copy for destructive / restart panel actions.
@@ -1142,20 +1176,29 @@ def _build_commands_keyboard(
     tab: Tab = "nav",
     confirming: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """Agent panel keyboard with two tabs (Навигация / Действия).
+    """Agent panel keyboard with three tabs (Клавиши / Действия / Сессия).
 
-    Nav tab — raw key presses for driving Claude's TUI: arrows, Space,
-    Tab, Esc, ^C, Enter, "/". Routed through the screenshot-keys
-    handler (CB_KEYS_PREFIX:kb), which knows how to send a key and
-    refresh the photo while preserving the active tab.
+    Nav tab («Клавиши») — raw key presses for driving Claude's TUI:
+    arrows, Esc, ^C, ^B, Enter, "/", plus «Стереть ввод» (an input-line
+    op, so it lives with the keys). Key presses route through the
+    screenshot-keys handler (CB_KEYS_PREFIX:kb), which knows how to send
+    a key and refresh the photo while preserving the active tab.
 
-    Act tab — session-level actions: Mode/Model/Compact/Clear/
-    Restart/Kill. Destructive ones (Compact / Clear / Kill) flip the
-    keyboard to a confirmation layout first; after confirm or cancel
-    the keyboard returns to the Act tab.
+    Act tab («Действия») — the everyday actions only: Mode / Context /
+    Compact / Clear. Kept to two rows so the pane photo — the actual
+    content — stays on screen instead of being pushed off by the keyboard.
 
-    Confirmation layout — shown when ``confirming`` is set; it
-    suspends the tab UI entirely and offers a single yes/cancel pair.
+    Ses tab («Сессия») — set-and-forget config (Model / Effort / MCP) and
+    lifecycle (Resume / New / Restart / End / worktree fork+delete).
+
+    Colour grammar (see architecture.md): red = irreversible loss (Clear /
+    End / delete-agent), blue = the primary tap (Refresh), everything else
+    neutral — green appears only on confirm buttons, never in the grid.
+
+    Confirmation layout — shown when ``confirming`` is set; it suspends
+    the tab UI entirely and offers a single yes/cancel pair. Destructive
+    actions flip here first; confirm/cancel returns to the action's home
+    tab (``_action_home_tab``).
     """
     wid_short = window_id[:32]  # keep payload well under 64 bytes
 
@@ -1174,6 +1217,8 @@ def _build_commands_keyboard(
             yes_style = KeyboardButtonStyle.SUCCESS
         else:
             yes_style = KeyboardButtonStyle.PRIMARY
+        # Cancel returns to the tab the action was tapped from.
+        home_tab = _action_home_tab(confirming)
         return InlineKeyboardMarkup(
             [
                 [
@@ -1186,7 +1231,7 @@ def _build_commands_keyboard(
                 [
                     InlineKeyboardButton(
                         tr("commands.cancel"),
-                        callback_data=f"{CB_CMD_CANCEL}{wid_short}"[:64],
+                        callback_data=f"{CB_CMD_CANCEL}{home_tab}:{wid_short}"[:64],
                     )
                 ],
             ]
@@ -1211,19 +1256,18 @@ def _build_commands_keyboard(
     # Tapping the active tab is a no-op (same callback would re-render
     # the same keyboard); we still emit the callback so Telegram closes
     # the spinner instead of leaving it spinning.
-    nav_label = (
-        f"{tr('commands.tab_nav')} ·" if tab == "nav" else tr("commands.tab_nav")
-    )
-    act_label = (
-        f"{tr('commands.tab_act')} ·" if tab == "act" else tr("commands.tab_act")
-    )
+    def tab_btn(tab_id: Tab, label_key: str) -> InlineKeyboardButton:
+        label = tr(label_key)
+        if tab == tab_id:
+            label = f"{label} ·"
+        return InlineKeyboardButton(
+            label, callback_data=f"{CB_CMD_TAB}{tab_id}:{wid_short}"[:64]
+        )
+
     tab_row = [
-        InlineKeyboardButton(
-            nav_label, callback_data=f"{CB_CMD_TAB}nav:{wid_short}"[:64]
-        ),
-        InlineKeyboardButton(
-            act_label, callback_data=f"{CB_CMD_TAB}act:{wid_short}"[:64]
-        ),
+        tab_btn("nav", "commands.tab_nav"),
+        tab_btn("act", "commands.tab_act"),
+        tab_btn("ses", "commands.tab_ses"),
     ]
 
     # Refresh button repeats the active tab so the rendered photo comes back
@@ -1245,7 +1289,8 @@ def _build_commands_keyboard(
         # например в permission-промптах) и подтвердить. Стрелки в порядке
         # чтения: лево, право, верх, низ. Раздельно потому, что у этих двух
         # групп противоположное настроение и смешивать их в одну строку (как
-        # было одним рядом) — глаз каждый раз ищет нужное.
+        # было одним рядом) — глаз каждый раз ищет нужное. «Стереть ввод» —
+        # тоже операция со строкой ввода, поэтому живёт здесь, не в действиях.
         body = [
             [
                 key_btn("⎋ Esc", "esc"),
@@ -1260,44 +1305,39 @@ def _build_commands_keyboard(
                 key_btn("↓", "dn"),
                 key_btn("⏎", "ent"),
             ],
+            [cmd_btn(tr("commands.btn_wipe_input"), CB_CMD_WIPE_INPUT)],
         ]
-    else:
-        # Чистая 2-колонка, единый русский (выбрано с юзером). Регулярные пары
-        # + два полноширинных акцента (🌳 новый агент, 📸 Обновить) — на
-        # телефоне Telegram ужимает 3+ длинные подписи в ряд, поэтому строго по
-        # двое. 🌳 заводит параллельного агента-worktree в этом же проекте.
+    elif tab == "act":
+        # Только ежедневное — два ряда, чтобы фото панели оставалось на
+        # экране. Всё установочное/жизненный цикл — на вкладке «Сессия».
         body = [
             [
                 cmd_btn(tr("commands.btn_mode"), CB_CMD_MODE_CYCLE),
-                cmd_btn(tr("commands.btn_model"), CB_CMD_MODEL),
-            ],
-            [
-                cmd_btn(
-                    tr("commands.btn_effort"),
-                    CB_CMD_EFFORT,
-                    style=KeyboardButtonStyle.PRIMARY,
-                ),
-                cmd_btn("🔌 MCP", CB_CMD_MCP),
-            ],
-            [
                 cmd_btn(tr("commands.btn_context"), CB_CMD_CONTEXT),
-                cmd_btn(tr("commands.btn_compact"), CB_CMD_COMPACT),
             ],
             [
+                cmd_btn(tr("commands.btn_compact"), CB_CMD_COMPACT),
                 cmd_btn(
                     tr("commands.btn_clear"),
                     CB_CMD_CLEAR,
                     style=KeyboardButtonStyle.DANGER,
                 ),
-                cmd_btn(tr("commands.btn_wipe_input"), CB_CMD_WIPE_INPUT),
+            ],
+        ]
+    else:
+        # «Сессия»: set-and-forget конфиг + жизненный цикл. Тройка
+        # Модель/Усилие/MCP — подписи короткие, на телефоне не ужимаются;
+        # остальное строго по двое. 🌳 заводит параллельного
+        # агента-worktree в этом же проекте.
+        body = [
+            [
+                cmd_btn(tr("commands.btn_model"), CB_CMD_MODEL),
+                cmd_btn(tr("commands.btn_effort"), CB_CMD_EFFORT),
+                cmd_btn("🔌 MCP", CB_CMD_MCP),
             ],
             [
                 cmd_btn(tr("commands.btn_resume"), CB_CMD_RESUME),
-                cmd_btn(
-                    tr("commands.btn_new"),
-                    CB_CMD_FRESH,
-                    style=KeyboardButtonStyle.SUCCESS,
-                ),
+                cmd_btn(tr("commands.btn_new"), CB_CMD_FRESH),
             ],
             [
                 cmd_btn(tr("commands.btn_restart"), CB_CMD_RESTART),
@@ -1399,6 +1439,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         tr("menu.pinned"),
         reply_markup=menu_keyboard(),
     )
+    thread_id = get_thread_id(update)
+    if thread_id is not None:
+        session_manager.mark_menu_shown(user.id, thread_id)
 
 
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1879,7 +1922,9 @@ async def _try_auto_bind_topic(
                 await safe_reply(
                     msg,
                     tr("commands.autobind_docker", name=agent_name),
+                    reply_markup=menu_keyboard(),
                 )
+                session_manager.mark_menu_shown(user_id, thread_id)
             except Exception as e:
                 logger.debug("auto-bind reply failed: %s", e)
             return True
@@ -2043,9 +2088,19 @@ async def _auto_bind_to_directory(
                 else "commands.autobind_new_session",
                 dir=_display_home_path(matching_dir),
             ),
+            reply_markup=menu_keyboard(),
         )
+        session_manager.mark_menu_shown(user_id, thread_id)
     except Exception as e:
         logger.debug("auto-bind reply failed: %s", e)
+
+    # First-run trap: hook definitively absent → agent replies will never be
+    # delivered for this fresh session. Warn in-topic (see bot.hook_missing).
+    if not hook_ok and not resume_id and not hook_installed_in_settings():
+        try:
+            await safe_reply(msg, tr("bot.hook_missing"))
+        except Exception as e:
+            logger.debug("hook-missing warning failed: %s", e)
     return True
 
 

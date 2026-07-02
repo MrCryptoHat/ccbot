@@ -149,8 +149,14 @@ def _validate_pending_thread(
 
 
 async def _answer_stale(query: CallbackQuery, entity: str = "picker") -> None:
-    """Answer a stale callback query with a mismatch alert."""
-    await query.answer(f"Stale {entity} (topic mismatch)", show_alert=True)
+    """Answer a stale callback query with a mismatch alert.
+
+    ``entity`` is kept for the log trail only — the user-facing toast is a
+    single translated string (the distinction browser/picker doesn't help
+    the user, only the developer).
+    """
+    logger.debug("stale callback ignored (entity=%s)", entity)
+    await query.answer(tr("cb.stale_ui"), show_alert=True)
 
 
 def _extract_suffix(data: str, prefix: str) -> str:
@@ -248,7 +254,7 @@ async def _handle_history(
             window_id = ":".join(parts[1:-2])
         offset = int(offset_str)
     except (ValueError, IndexError):
-        await query.answer("Invalid data")
+        await query.answer(tr("cb.invalid_data"))
         return
 
     # History reads JSONL via session_manager — transport-agnostic, so
@@ -267,7 +273,7 @@ async def _handle_history(
         )
     else:
         await safe_edit(query, "Window no longer exists.")
-    await query.answer("Page updated")
+    await query.answer(tr("cb.page_updated"))
 
 
 async def _handle_dir_select(
@@ -285,12 +291,12 @@ async def _handle_dir_select(
     try:
         idx = int(_extract_suffix(data, CB_DIR_SELECT))
     except ValueError:
-        await query.answer("Invalid data")
+        await query.answer(tr("cb.invalid_data"))
         return
 
     cached_dirs: list[str] = _get_user_data(context, BROWSE_DIRS_KEY, [])
     if idx < 0 or idx >= len(cached_dirs):
-        await query.answer("Directory list changed, please refresh", show_alert=True)
+        await query.answer(tr("cb.list_changed"), show_alert=True)
         return
     subdir_name = cached_dirs[idx]
 
@@ -299,7 +305,7 @@ async def _handle_dir_select(
     new_path = (Path(current_path) / subdir_name).resolve()
 
     if not new_path.exists() or not new_path.is_dir():
-        await query.answer("Directory not found", show_alert=True)
+        await query.answer(tr("cb.dir_not_found"), show_alert=True)
         return
 
     new_path_str = str(new_path)
@@ -356,7 +362,7 @@ async def _handle_dir_page(
     try:
         pg = int(_extract_suffix(data, CB_DIR_PAGE))
     except ValueError:
-        await query.answer("Invalid data")
+        await query.answer(tr("cb.invalid_data"))
         return
 
     default_path = str(Path.cwd())
@@ -430,7 +436,7 @@ async def _handle_dir_cancel(
         context.user_data.pop("_pending_thread_id", None)
         context.user_data.pop("_pending_thread_text", None)
     await safe_edit(query, "Cancelled")
-    await query.answer("Cancelled")
+    await query.answer(tr("cb.cancelled"))
 
 
 async def _handle_session_select(
@@ -453,12 +459,12 @@ async def _handle_session_select(
     try:
         idx = int(_extract_suffix(data, CB_SESSION_SELECT))
     except ValueError:
-        await query.answer("Invalid data")
+        await query.answer(tr("cb.invalid_data"))
         return
 
     cached_sessions = _get_user_data(context, SESSIONS_KEY, [])
     if idx < 0 or idx >= len(cached_sessions):
-        await query.answer("Session not found")
+        await query.answer(tr("cb.session_not_found"))
         return
 
     session = cached_sessions[idx]
@@ -556,7 +562,7 @@ async def _handle_session_cancel(
         context.user_data.pop("_pending_thread_text", None)
         context.user_data.pop("_selected_path", None)
     await safe_edit(query, "Cancelled")
-    await query.answer("Cancelled")
+    await query.answer(tr("cb.cancelled"))
 
 
 async def _handle_win_bind(
@@ -574,12 +580,12 @@ async def _handle_win_bind(
     try:
         idx = int(_extract_suffix(data, CB_WIN_BIND))
     except ValueError:
-        await query.answer("Invalid data")
+        await query.answer(tr("cb.invalid_data"))
         return
 
     cached_windows: list[str] = _get_user_data(context, UNBOUND_WINDOWS_KEY, [])
     if idx < 0 or idx >= len(cached_windows):
-        await query.answer("Window list changed, please retry", show_alert=True)
+        await query.answer(tr("cb.list_changed"), show_alert=True)
         return
     selected_wid = cached_windows[idx]
 
@@ -591,7 +597,7 @@ async def _handle_win_bind(
 
     thread_id = get_thread_id(update)
     if thread_id is None:
-        await query.answer("Not in a topic", show_alert=True)
+        await query.answer(tr("cb.not_in_topic"), show_alert=True)
         return
 
     display = w.window_name
@@ -612,7 +618,7 @@ async def _handle_win_bind(
     except Exception as e:
         logger.debug(f"Failed to rename topic: {e}")
 
-    await safe_edit(query, f"✅ Bound to window `{display}`")
+    await safe_edit(query, tr("bot.bound_to_window", name=display))
 
     pending_text = _get_user_data(context, "_pending_thread_text")
     if context.user_data is not None:
@@ -627,10 +633,10 @@ async def _handle_win_bind(
             await safe_send(
                 context.bot,
                 resolved_chat,
-                f"❌ Failed to send pending message: {send_msg}",
+                tr("bot.pending_send_failed", err=send_msg),
                 message_thread_id=thread_id,
             )
-    await query.answer("Bound")
+    await query.answer(tr("cb.bound"))
 
 
 async def _handle_win_new(
@@ -674,7 +680,7 @@ async def _handle_win_cancel(
         context.user_data.pop("_pending_thread_id", None)
         context.user_data.pop("_pending_thread_text", None)
     await safe_edit(query, "Cancelled")
-    await query.answer("Cancelled")
+    await query.answer(tr("cb.cancelled"))
 
 
 async def _handle_screenshot_refresh(
@@ -782,7 +788,7 @@ async def _handle_interactive_key(
             break
 
     if matched_prefix is None:
-        await query.answer("Unknown key")
+        await query.answer(tr("cb.unknown_key"))
         return
 
     tmux_key, toast_label, clear_after = _INTERACTIVE_KEY_MAP[matched_prefix]
@@ -851,14 +857,14 @@ async def _handle_screenshot_keys(
     rest = _extract_suffix(data, CB_KEYS_PREFIX)
     colon_idx = rest.find(":")
     if colon_idx < 0:
-        await query.answer("Invalid data")
+        await query.answer(tr("cb.invalid_data"))
         return
     key_id = rest[:colon_idx]
     window_id = rest[colon_idx + 1 :]
 
     key_info = _KEYS_SEND_MAP.get(key_id)
     if not key_info:
-        await query.answer("Unknown key")
+        await query.answer(tr("cb.unknown_key"))
         return
 
     tmux_key, enter, literal = key_info
@@ -943,19 +949,25 @@ async def _cmd_refresh_photo(
 ) -> bool:
     """Recapture the pane and swap the photo + caption in place.
 
-    ``tab`` selects which keyboard tab to rebuild — typically "nav"
-    after a key press and "act" after an action button. Returns True
-    when the message is in the desired state (either edited or already
-    identical — Telegram's "not modified" is treated as a success since
-    there's nothing to show differently). Returns False only on real
-    failures (agent gone, parse error, network).
+    ``tab`` selects which keyboard tab to rebuild — "nav" after a key
+    press, the action's home tab ("act"/"ses") after an action button.
+    Returns True when the message is in the desired state (either edited
+    or already identical — Telegram's "not modified" is treated as a
+    success since there's nothing to show differently). Returns False
+    only on real failures (agent gone, parse error, network).
     """
     from telegram.helpers import escape_markdown
 
     from ..screenshot import text_to_image
     from .commands import Tab, _build_commands_keyboard
 
-    tab_typed: Tab = "act" if tab == "act" else "nav"
+    tab_typed: Tab
+    if tab == "act":
+        tab_typed = "act"
+    elif tab == "ses":
+        tab_typed = "ses"
+    else:
+        tab_typed = "nav"
 
     pane_text = await session_manager.capture_pane(window_id, with_ansi=True)
     if not pane_text:
@@ -1023,6 +1035,11 @@ _CMD_DESTRUCTIVE_ACTIONS: dict[str, str] = {
     CB_CMD_COMPACT: "compact",
     CB_CMD_KILL: "kill",
 }
+
+# Slash-buttons living on the «Сессия» tab — their post-action repaint
+# returns there instead of «Действия» (see commands._action_home_tab for
+# the confirm-flow counterpart).
+_SES_TAB_PREFIXES = {CB_CMD_MODEL, CB_CMD_MCP, CB_CMD_RESUME, CB_CMD_EFFORT}
 
 
 async def _post_slash_context(
@@ -1125,7 +1142,10 @@ async def _handle_cmd_slash(
     post = _POST_SLASH_HANDLERS.get(prefix)
     if post:
         await post(query, update, context, user, window_id)
-    await _cmd_refresh_photo(query, window_id, tab="act")
+    # Repaint on the tab the button lives on (Model/MCP/Resume/Effort are on
+    # «Сессия»; Context/Compact on «Действия»).
+    home = "ses" if prefix in _SES_TAB_PREFIXES else "act"
+    await _cmd_refresh_photo(query, window_id, tab=home)
 
 
 async def _handle_cmd_tab(
@@ -1146,10 +1166,16 @@ async def _handle_cmd_tab(
 
     rest = _parse_cmd_payload(data, CB_CMD_TAB)
     tab_id, _, window_id = rest.partition(":")
-    if not window_id or tab_id not in ("nav", "act"):
-        await query.answer("Invalid tab", show_alert=True)
+    if not window_id or tab_id not in ("nav", "act", "ses"):
+        await query.answer(tr("cb.invalid_data"), show_alert=True)
         return
-    tab_typed: Tab = "act" if tab_id == "act" else "nav"
+    tab_typed: Tab
+    if tab_id == "act":
+        tab_typed = "act"
+    elif tab_id == "ses":
+        tab_typed = "ses"
+    else:
+        tab_typed = "nav"
     try:
         await query.edit_message_reply_markup(
             reply_markup=_build_commands_keyboard(window_id, tab=tab_typed)
@@ -1214,7 +1240,7 @@ async def _handle_cmd_wipe_input(
             return
     await query.answer(tr("cb.input_wiped"))
     await asyncio.sleep(0.3)
-    await _cmd_refresh_photo(query, window_id, tab="act")
+    await _cmd_refresh_photo(query, window_id, tab="nav")
 
 
 async def _handle_cmd_drive(
@@ -1246,8 +1272,8 @@ async def _handle_cmd_refresh(
     """Plain screenshot refresh — no side effects. Payload carries the tab."""
     rest = _parse_cmd_payload(data, CB_CMD_REFRESH)
     tab_id, _, window_id = rest.partition(":")
-    if not window_id or tab_id not in ("nav", "act"):
-        await query.answer("Invalid refresh", show_alert=True)
+    if not window_id or tab_id not in ("nav", "act", "ses"):
+        await query.answer(tr("cb.invalid_data"), show_alert=True)
         return
     ok = await _cmd_refresh_photo(query, window_id, tab=tab_id)
     await query.answer(
@@ -1301,7 +1327,7 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
                 agent.container, resume_session_id=resume_id or None
             )
         await _wait_pane_ready(window_id)
-        await _cmd_refresh_photo(query, window_id, tab="act")
+        await _cmd_refresh_photo(query, window_id, tab="ses")
         return
 
     w = await tmux_manager.find_window_by_id(window_id)
@@ -1334,7 +1360,7 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
             logger.warning("Ignoring malformed resume id %r; starting fresh", resume_id)
         await tmux_manager.send_keys(window_id, cmd)
     await _wait_pane_ready(window_id)
-    await _cmd_refresh_photo(query, window_id, tab="act")
+    await _cmd_refresh_photo(query, window_id, tab="ses")
 
 
 async def _show_confirm(query: CallbackQuery, window_id: str, action: str) -> None:
@@ -1482,7 +1508,7 @@ async def _handle_cmd_confirm(
     rest = _parse_cmd_payload(data, CB_CMD_CONFIRM)
     action, _, window_id = rest.partition(":")
     if not action or not window_id:
-        await query.answer("Invalid data", show_alert=True)
+        await query.answer(tr("cb.invalid_data"), show_alert=True)
         return
 
     if action == "kill":
@@ -1517,29 +1543,40 @@ async def _handle_cmd_cancel(
 ) -> None:
     """Return the keyboard to its normal layout after cancelling confirmation.
 
-    Cancel always returns to the Act tab — that's where the confirmation
-    was triggered from, so the user lands back on the same buttons. Also
-    restores the base caption (👾 Агент: …), undoing the action description
-    _show_confirm wrote above the button.
+    Cancel returns to the tab the confirmation was triggered from (carried
+    in the payload: cm:can:<tab>:<wid>; a legacy payload without the tab
+    falls back to «Действия»), so the user lands back on the same buttons.
+    Also restores the base caption (👾 Агент: …), undoing the action
+    description _show_confirm wrote above the button.
     """
     from telegram.helpers import escape_markdown
 
-    from .commands import _build_commands_keyboard
+    from .commands import Tab, _build_commands_keyboard
 
-    window_id = _parse_cmd_payload(data, CB_CMD_CANCEL)
+    rest = _parse_cmd_payload(data, CB_CMD_CANCEL)
+    tab_id, sep, wid_rest = rest.partition(":")
+    tab_typed: Tab = "act"
+    if sep and tab_id in ("nav", "act", "ses"):
+        window_id = wid_rest
+        if tab_id == "ses":
+            tab_typed = "ses"
+        elif tab_id == "nav":
+            tab_typed = "nav"
+    else:
+        window_id = rest
     display = session_manager.get_display_name(window_id)
     caption = tr("cb.agent_header", name=escape_markdown(display, version=2))
     try:
         await query.edit_message_caption(
             caption=caption,
             parse_mode="MarkdownV2",
-            reply_markup=_build_commands_keyboard(window_id, tab="act"),
+            reply_markup=_build_commands_keyboard(window_id, tab=tab_typed),
         )
     except Exception as e:
         logger.debug("cancel caption edit failed, keyboard-only: %s", e)
         try:
             await query.edit_message_reply_markup(
-                reply_markup=_build_commands_keyboard(window_id, tab="act")
+                reply_markup=_build_commands_keyboard(window_id, tab=tab_typed)
             )
         except Exception as e2:
             logger.debug("cancel edit failed: %s", e2)
@@ -1672,7 +1709,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     user = update.effective_user
     if not user or not config.is_user_allowed(user.id):
-        await query.answer("Not authorized")
+        await query.answer(tr("cb.not_authorized_toast"))
         return
 
     data = query.data
