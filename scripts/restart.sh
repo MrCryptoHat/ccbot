@@ -40,7 +40,19 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 bot_pids() {
-    pgrep -f "$BOT_PATTERN" 2>/dev/null || true
+    # Match the bot's console-script path (BOT_PATTERN), then drop any PID
+    # running inside a docker container. On a host that ALSO runs a
+    # containerized ccbot (e.g. a dockerized deployment on the same box),
+    # `pgrep -f` sees the container's process too — its cmdline carries the
+    # same `.venv/bin/ccbot` script. SIGINT'ing it kills the in-container tmux
+    # session → the container's entrypoint exits → docker restarts the whole
+    # container, an unintended bounce of a live service. A containerized
+    # process carries `docker-<id>.scope` in its cgroup; the host bot does not.
+    local pid
+    for pid in $(pgrep -f "$BOT_PATTERN" 2>/dev/null || true); do
+        grep -q docker "/proc/$pid/cgroup" 2>/dev/null && continue
+        printf '%s\n' "$pid"
+    done
 }
 
 # 1. Stop any running ccbot by PID. Works regardless of tmux state —
