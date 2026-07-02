@@ -13,13 +13,42 @@ import os
 import sys
 
 
+_USAGE = """\
+Usage:
+  ccbot                     start the Telegram bot
+  ccbot hook [--install]    Claude Code SessionStart hook (--install: add it
+                            to Claude Code's settings.json)
+  ccbot --help              show this message
+  ccbot --version           show version
+
+Configuration lives in .env (repo root or $CCBOT_DIR, default ~/.ccbot/).
+See SETUP.md for the first-run walkthrough."""
+
+
 def main() -> None:
     """Main entry point."""
-    if len(sys.argv) > 1 and sys.argv[1] == "hook":
-        from .hook import hook_main
+    # Manual argv routing (hook.py parses its own sys.argv[2:], so a full
+    # argparse with subparsers buys nothing here). Anything unrecognised must
+    # NOT fall through to the bot: a configured user running `ccbot --help`
+    # would otherwise start a SECOND polling instance and fight the running
+    # one over getUpdates (Telegram 409s, replies flapping).
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg == "hook":
+            from .hook import hook_main
 
-        hook_main()
-        return
+            hook_main()
+            return
+        if arg in ("-h", "--help"):
+            print(_USAGE)
+            return
+        if arg in ("-V", "--version"):
+            from . import __version__
+
+            print(f"ccbot {__version__}")
+            return
+        print(f"Unknown command: {arg}\n\n{_USAGE}", file=sys.stderr)
+        sys.exit(2)
 
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -145,7 +174,21 @@ def main() -> None:
         # Telegram only delivers message_reaction updates when explicitly
         # listed here (and the bot is a chat admin). See reaction_confirm.py.
         allowed_updates.append("message_reaction")
-    application.run_polling(allowed_updates=allowed_updates)
+    # A mistyped/truncated token is the most likely first-run error after a
+    # missing .env; PTB raises InvalidToken out of run_polling AFTER its own
+    # ERROR-with-traceback log — without this catch the user gets ~120 lines
+    # of stack with the actual cause buried, looking like a crash.
+    from telegram.error import InvalidToken
+
+    try:
+        application.run_polling(allowed_updates=allowed_updates)
+    except InvalidToken:
+        print()
+        print("Error: Telegram rejected TELEGRAM_BOT_TOKEN.")
+        print("Check the token in your .env — it usually means a typo or a")
+        print("partial copy-paste. Get the exact value from @BotFather")
+        print("(/mybots -> your bot -> API Token).")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
