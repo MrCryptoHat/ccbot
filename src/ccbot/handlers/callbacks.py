@@ -271,7 +271,7 @@ async def _handle_history(
             end_byte=end_byte,
         )
     else:
-        await safe_edit(query, "Window no longer exists.")
+        await safe_edit(query, tr("cb.window_gone"))
     await query.answer(tr("cb.page_updated"))
 
 
@@ -434,7 +434,7 @@ async def _handle_dir_cancel(
     if context.user_data is not None:
         context.user_data.pop("_pending_thread_id", None)
         context.user_data.pop("_pending_thread_text", None)
-    await safe_edit(query, "Cancelled")
+    await safe_edit(query, tr("cb.cancelled"))
     await query.answer(tr("cb.cancelled"))
 
 
@@ -560,7 +560,7 @@ async def _handle_session_cancel(
         context.user_data.pop("_pending_thread_id", None)
         context.user_data.pop("_pending_thread_text", None)
         context.user_data.pop("_selected_path", None)
-    await safe_edit(query, "Cancelled")
+    await safe_edit(query, tr("cb.cancelled"))
     await query.answer(tr("cb.cancelled"))
 
 
@@ -591,7 +591,7 @@ async def _handle_win_bind(
     w = await tmux_manager.find_window_by_id(selected_wid)
     if not w:
         display = session_manager.get_display_name(selected_wid)
-        await query.answer(f"Window '{display}' no longer exists", show_alert=True)
+        await query.answer(tr("commands.window_gone", name=display), show_alert=True)
         return
 
     thread_id = get_thread_id(update)
@@ -678,7 +678,7 @@ async def _handle_win_cancel(
     if context.user_data is not None:
         context.user_data.pop("_pending_thread_id", None)
         context.user_data.pop("_pending_thread_text", None)
-    await safe_edit(query, "Cancelled")
+    await safe_edit(query, tr("cb.cancelled"))
     await query.answer(tr("cb.cancelled"))
 
 

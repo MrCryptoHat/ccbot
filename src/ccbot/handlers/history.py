@@ -13,6 +13,7 @@ from typing import Any
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from ..config import config
+from ..i18n import tr
 from ..session import session_manager
 from ..telegram_sender import split_message
 from ..transcript_parser import TranscriptParser
@@ -44,7 +45,7 @@ def _build_history_keyboard(
         )
         buttons.append(
             InlineKeyboardButton(
-                "◀ Older",
+                tr("hist.older"),
                 callback_data=cb_data[:64],
             )
         )
@@ -59,7 +60,7 @@ def _build_history_keyboard(
         )
         buttons.append(
             InlineKeyboardButton(
-                "Newer ▶",
+                tr("hist.newer"),
                 callback_data=cb_data[:64],
             )
         )

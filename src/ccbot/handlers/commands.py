@@ -1952,7 +1952,7 @@ async def forward_command_handler(
     cc_slash = cmd_text.split("@")[0]
     wid = session_manager.resolve_window_for_thread(user.id, thread_id)
     if not wid:
-        await safe_reply(update.message, "❌ No session bound to this topic.")
+        await safe_reply(update.message, tr("fwd.no_session"))
         return
 
     display = session_manager.get_display_name(wid)
@@ -1962,7 +1962,7 @@ async def forward_command_handler(
     await update.message.chat.send_action(ChatAction.TYPING)
     success, message = await session_manager.send_to_window(wid, cc_slash)
     if success:
-        await safe_reply(update.message, f"⚡ [{display}] Sent: {cc_slash}")
+        await safe_reply(update.message, tr("fwd.sent", name=display, cmd=cc_slash))
         if cc_slash.strip().lower() == "/clear":
             logger.info("Clearing session for window %s after /clear", display)
             session_manager.clear_window_session(wid)
@@ -1981,10 +1981,7 @@ async def unsupported_content_handler(
     if not user or not is_user_allowed(user.id):
         return
     logger.debug("Unsupported content from user %d", user.id)
-    await safe_reply(
-        update.message,
-        "⚠ Only text, photo, voice, and file messages are supported. Stickers, video, and other media cannot be forwarded to Claude Code.",
-    )
+    await safe_reply(update.message, tr("media.unsupported"))
 
 
 async def menu_button_dispatcher(

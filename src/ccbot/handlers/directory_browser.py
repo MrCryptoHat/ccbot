@@ -88,11 +88,7 @@ def build_window_picker(
     """
     window_ids = [wid for wid, _, _ in windows]
 
-    lines = [
-        "*Bind to Existing Window*\n",
-        "These windows are running but not bound to any topic.",
-        "Pick one to attach it here, or start a new session.\n",
-    ]
+    lines = [tr("dirb.winp_header")]
     for _wid, name, cwd in windows:
         display_cwd = cwd.replace(str(Path.home()), "~")
         lines.append(f"• `{name}` — {display_cwd}")
@@ -112,8 +108,8 @@ def build_window_picker(
 
     buttons.append(
         [
-            InlineKeyboardButton("➕ New Session", callback_data=CB_WIN_NEW),
-            InlineKeyboardButton("Cancel", callback_data=CB_WIN_CANCEL),
+            InlineKeyboardButton(tr("dirb.new_session"), callback_data=CB_WIN_NEW),
+            InlineKeyboardButton(tr("commands.cancel"), callback_data=CB_WIN_CANCEL),
         ]
     )
 
@@ -181,16 +177,18 @@ def build_directory_browser(
     action_row: list[InlineKeyboardButton] = []
     # Allow going up unless at filesystem root
     if path != path.parent:
-        action_row.append(InlineKeyboardButton("..", callback_data=CB_DIR_UP))
-    action_row.append(InlineKeyboardButton("Select", callback_data=CB_DIR_CONFIRM))
-    action_row.append(InlineKeyboardButton("Cancel", callback_data=CB_DIR_CANCEL))
+        action_row.append(InlineKeyboardButton(tr("dirb.up"), callback_data=CB_DIR_UP))
+    action_row.append(
+        InlineKeyboardButton(tr("dirb.select_here"), callback_data=CB_DIR_CONFIRM)
+    )
+    action_row.append(
+        InlineKeyboardButton(tr("commands.cancel"), callback_data=CB_DIR_CANCEL)
+    )
     buttons.append(action_row)
 
     display_path = str(path).replace(str(Path.home()), "~")
-    if not subdirs:
-        text = f"*Select Working Directory*\n\nCurrent: `{display_path}`\n\n_(No subdirectories)_"
-    else:
-        text = f"*Select Working Directory*\n\nCurrent: `{display_path}`\n\nTap a folder to enter, or select current directory"
+    key = "dirb.header_empty" if not subdirs else "dirb.header"
+    text = tr(key, path=display_path)
 
     return text, InlineKeyboardMarkup(buttons), subdirs
 
@@ -203,15 +201,12 @@ def _relative_time(file_path: str) -> str:
         return ""
     delta = int(time.time() - mtime)
     if delta < 60:
-        return "just now"
+        return tr("dirb.time_now")
     if delta < 3600:
-        m = delta // 60
-        return f"{m}m ago"
+        return tr("dirb.time_min", n=delta // 60)
     if delta < 86400:
-        h = delta // 3600
-        return f"{h}h ago"
-    d = delta // 86400
-    return f"{d}d ago"
+        return tr("dirb.time_hour", n=delta // 3600)
+    return tr("dirb.time_day", n=delta // 86400)
 
 
 def build_session_picker(
@@ -228,7 +223,7 @@ def build_session_picker(
 
     Returns: (text, keyboard).
     """
-    lines = ["*Resume Session?*\n"]
+    lines = [tr("dirb.resume_header")]
     if directory:
         try:
             shown = "~/" + str(Path(directory).relative_to(Path.home()))
@@ -237,12 +232,13 @@ def build_session_picker(
         # Inside a MarkdownV2 code span only backtick and backslash escape.
         code = shown.replace("\\", "\\\\").replace("`", "\\`")
         lines.append(f"📂 `{code}`\n")
-    lines.append("Existing sessions found in this directory.\n")
+    lines.append(tr("dirb.resume_found"))
     for i, s in enumerate(sessions):
         summary = s.summary[:40] + "…" if len(s.summary) > 40 else s.summary
         rel = _relative_time(s.file_path)
         time_str = f" ({rel})" if rel else ""
-        lines.append(f"{i + 1}. {summary} — {s.message_count} msgs{time_str}")
+        msgs = tr("dirb.msgs", n=s.message_count)
+        lines.append(f"{i + 1}. {summary} — {msgs}{time_str}")
 
     buttons: list[list[InlineKeyboardButton]] = []
     for i in range(0, len(sessions), 2):
@@ -269,8 +265,10 @@ def build_session_picker(
     )
     buttons.append(
         [
-            InlineKeyboardButton("➕ New Session", callback_data=CB_SESSION_NEW),
-            InlineKeyboardButton("Cancel", callback_data=CB_SESSION_CANCEL),
+            InlineKeyboardButton(tr("dirb.new_session"), callback_data=CB_SESSION_NEW),
+            InlineKeyboardButton(
+                tr("commands.cancel"), callback_data=CB_SESSION_CANCEL
+            ),
         ]
     )
 

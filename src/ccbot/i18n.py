@@ -392,8 +392,8 @@ STRINGS.update(
             "en": "⛔ Interrupted (Escape + Ctrl+C)",
         },
         "commands.no_session_in_topic": {
-            "ru": "❌ Нет сессии в этом топике.",
-            "en": "❌ No session in this topic.",
+            "ru": "❌ Нет сессии в этом топике. Отправьте любое сообщение — предложу выбрать папку и запустить агента.",
+            "en": "❌ No session in this topic. Send any message and I'll offer to pick a folder and start an agent.",
         },
         "commands.none_paren": {"ru": "(нет)", "en": "(none)"},
         "commands.only_in_topic": {
@@ -486,6 +486,46 @@ STRINGS.update(
         "ctxp.categories": {"ru": "Категории:", "en": "Categories:"},
         # -- dirb --
         "dirb.change_folder": {"ru": "📂 Сменить папку", "en": "📂 Change folder"},
+        "dirb.winp_header": {
+            "ru": "*Есть запущенные агенты без топика*\n\nОни уже работают, но не привязаны ни к одному топику.\nВыберите, кого привязать сюда, или начните новую сессию.\n",
+            "en": "*Bind to Existing Window*\n\nThese windows are running but not bound to any topic.\nPick one to attach it here, or start a new session.\n",
+        },
+        "dirb.new_session": {"ru": "➕ Новая сессия", "en": "➕ New Session"},
+        "dirb.header": {
+            "ru": "*Выберите папку проекта*\n\nСейчас: `{path}`\n\nНажмите на папку, чтобы войти, или возьмите текущую («✅ Эта папка»)",
+            "en": "*Select Working Directory*\n\nCurrent: `{path}`\n\nTap a folder to enter, or take the current one (“✅ This folder”)",
+        },
+        "dirb.header_empty": {
+            "ru": "*Выберите папку проекта*\n\nСейчас: `{path}`\n\n_(Подпапок нет)_",
+            "en": "*Select Working Directory*\n\nCurrent: `{path}`\n\n_(No subdirectories)_",
+        },
+        "dirb.up": {"ru": "⬆️ Вверх", "en": "⬆️ Up"},
+        "dirb.select_here": {"ru": "✅ Эта папка", "en": "✅ This folder"},
+        "dirb.resume_header": {
+            "ru": "*Продолжить прошлый разговор?*\n",
+            "en": "*Resume Session?*\n",
+        },
+        "dirb.resume_found": {
+            "ru": "В этой папке уже есть сессии Claude.\n",
+            "en": "Existing sessions found in this directory.\n",
+        },
+        "dirb.msgs": {"ru": "{n} сообщ.", "en": "{n} msgs"},
+        "dirb.time_now": {"ru": "только что", "en": "just now"},
+        "dirb.time_min": {"ru": "{n} мин назад", "en": "{n}m ago"},
+        "dirb.time_hour": {"ru": "{n} ч назад", "en": "{n}h ago"},
+        "dirb.time_day": {"ru": "{n} дн назад", "en": "{n}d ago"},
+        # -- fwd --
+        "fwd.no_session": {
+            "ru": "❌ В этом топике нет агента. Отправьте обычное сообщение — предложу выбрать папку и запустить его.",
+            "en": "❌ No session bound to this topic. Send a regular message and I'll offer to pick a folder and start one.",
+        },
+        "fwd.sent": {
+            "ru": "⚡ [{name}] Передал агенту: {cmd}\nРезультат — в панели 👾 Агент.",
+            "en": "⚡ [{name}] Sent: {cmd}\nSee the result in the 👾 Agent panel.",
+        },
+        # -- hist --
+        "hist.older": {"ru": "◀ Раньше", "en": "◀ Older"},
+        "hist.newer": {"ru": "Позже ▶", "en": "Newer ▶"},
         # -- iui --
         "iui.btn_open_login": {"ru": "🔗 Открыть вход", "en": "🔗 Open sign-in"},
         "iui.btn_refresh": {"ru": "🔄 Обновить", "en": "🔄 Refresh"},
@@ -502,6 +542,10 @@ STRINGS.update(
         "links.header": {"ru": "🔗 Ссылки", "en": "🔗 Links"},
         "links.overflow": {"ru": "… и ещё {extra}", "en": "… and {extra} more"},
         # -- media --
+        "media.unsupported": {
+            "ru": "⚠ Стикеры, видео и прочие медиа я переслать агенту не могу. Подойдут текст, фото, голосовые и файлы.",
+            "en": "⚠ Stickers, video and other media can't be forwarded to Claude Code. Text, photos, voice messages and files work.",
+        },
         "media.archive_sent": {
             "ru": "📦 Архив «{name}» отправлен агенту — попросил его распаковать.",
             "en": "📦 Archive «{name}» sent to the agent — asked it to unpack it.",
