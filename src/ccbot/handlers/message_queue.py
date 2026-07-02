@@ -922,65 +922,93 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
         segments = split_voice_segments(raw_text)
         if segments:
             send_kw = _send_kwargs(task.thread_id)
-            for kind, chunk in segments:
-                if kind == "chat":
-                    await send_with_fallback(
-                        bot,
-                        chat_id,
-                        strip_output_tags(chunk),
-                        **send_kw,  # type: ignore[arg-type]
+            seg_idx = 0
+            try:
+                for seg_idx, (kind, chunk) in enumerate(segments):
+                    if kind == "chat":
+                        await send_with_fallback(
+                            bot,
+                            chat_id,
+                            strip_output_tags(chunk),
+                            **send_kw,  # type: ignore[arg-type]
+                        )
+                        continue
+                    # Layer 3: daily budget pre-check. If exhausted, fall
+                    # back to text without calling Gemini. ``can_spend``
+                    # rolls the date over when needed but doesn't record —
+                    # record() runs only after a successful synth.
+                    chunk_chars = len(chunk)
+                    if not session_manager.voice_budget_can_spend(chunk_chars):
+                        logger.warning(
+                            "Voice budget exhausted; falling back to text "
+                            "(chunk=%dch, used=%d/%d)",
+                            chunk_chars,
+                            session_manager.voice_budget.chars_used,
+                            session_manager.voice_budget.daily_limit,
+                        )
+                        await _ensure_voice_disabled_for_exhausted_budget(bot)
+                        await send_with_fallback(
+                            bot,
+                            chat_id,
+                            strip_output_tags(chunk),
+                            **send_kw,  # type: ignore[arg-type]
+                        )
+                        continue
+                    try:
+                        audio_data = await synthesize_speech(chunk)
+                        await send_voice(
+                            bot,
+                            chat_id,
+                            audio_data,
+                            **send_kw,  # type: ignore[arg-type]
+                        )
+                        event = session_manager.voice_budget_record(chunk_chars)
+                        logger.info(
+                            "TTS billed: chunk=%dch, daily=%d/%d",
+                            chunk_chars,
+                            event.chars_used,
+                            event.daily_limit,
+                        )
+                        if event.crossed_80pct:
+                            await _notify_budget_warning(bot, event)
+                        if event.crossed_exhausted:
+                            await _notify_budget_exhausted(bot)
+                    except (RetryAfter, NetworkError):
+                        # Incl. BadRequest (a NetworkError subclass) — the
+                        # outer clauses sort them out. The point here is to
+                        # keep RetryAfter away from the generic fallback
+                        # below, which would burn an extra send during an
+                        # active flood ban.
+                        raise
+                    except Exception as e:
+                        logger.warning(
+                            "TTS failed for segment, falling back to text: %s", e
+                        )
+                        await send_with_fallback(
+                            bot,
+                            chat_id,
+                            strip_output_tags(chunk),
+                            **send_kw,  # type: ignore[arg-type]
+                        )
+            except BadRequest:
+                raise
+            except (RetryAfter, NetworkError):
+                # Rebuild task.parts from the UNDELIVERED segments only —
+                # mirroring the text path's part-trim — so the requeue in
+                # _dispatch_task doesn't resend (and re-bill TTS for)
+                # segments the user already received. Chat segments get
+                # their [chat] wrapper back so split_voice_segments
+                # re-parses them identically on retry.
+                remaining = segments[seg_idx:]
+                task.parts = [
+                    "\n\n".join(
+                        c if k == "voice" else f"[chat]{c}[/chat]" for k, c in remaining
                     )
-                    continue
-                # Layer 3: daily budget pre-check. If exhausted, fall back to
-                # text without calling Gemini. ``can_spend`` rolls the date
-                # over when needed but doesn't record — record() runs only
-                # after a successful synth.
-                chunk_chars = len(chunk)
-                if not session_manager.voice_budget_can_spend(chunk_chars):
-                    logger.warning(
-                        "Voice budget exhausted; falling back to text "
-                        "(chunk=%dch, used=%d/%d)",
-                        chunk_chars,
-                        session_manager.voice_budget.chars_used,
-                        session_manager.voice_budget.daily_limit,
-                    )
-                    await _ensure_voice_disabled_for_exhausted_budget(bot)
-                    await send_with_fallback(
-                        bot,
-                        chat_id,
-                        strip_output_tags(chunk),
-                        **send_kw,  # type: ignore[arg-type]
-                    )
-                    continue
-                try:
-                    audio_data = await synthesize_speech(chunk)
-                    await send_voice(
-                        bot,
-                        chat_id,
-                        audio_data,
-                        **send_kw,  # type: ignore[arg-type]
-                    )
-                    event = session_manager.voice_budget_record(chunk_chars)
-                    logger.info(
-                        "TTS billed: chunk=%dch, daily=%d/%d",
-                        chunk_chars,
-                        event.chars_used,
-                        event.daily_limit,
-                    )
-                    if event.crossed_80pct:
-                        await _notify_budget_warning(bot, event)
-                    if event.crossed_exhausted:
-                        await _notify_budget_exhausted(bot)
-                except Exception as e:
-                    logger.warning(
-                        "TTS failed for segment, falling back to text: %s", e
-                    )
-                    await send_with_fallback(
-                        bot,
-                        chat_id,
-                        strip_output_tags(chunk),
-                        **send_kw,  # type: ignore[arg-type]
-                    )
+                ]
+                raise
+            # All segments delivered: an image-send RetryAfter below must
+            # not replay them on requeue.
+            task.parts = []
             await _send_task_images(bot, chat_id, task)
             await _emit_links(bot, chat_id, task, link_source, user_id, tid)
             return
