@@ -316,6 +316,26 @@ def menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A real /help — the first thing a new user asks the bot.
+
+    Registered BEFORE the forward-everything-else command handler: without
+    it /help would be typed into the agent's terminal (bound topic) or
+    answered with a useless "no session" error (unbound/private chat).
+    """
+    user = update.effective_user
+    if not user or not is_user_allowed(user.id):
+        if update.message:
+            await safe_reply(
+                update.message,
+                tr("common.not_authorized", uid=user.id if user else "?"),
+            )
+        return
+    if not update.message:
+        return
+    await safe_reply(update.message, tr("bot.help"))
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
@@ -469,11 +489,14 @@ def build_bot_commands() -> list[BotCommand]:
     Rebuilt (not cached) so /lang can re-publish it in the new language —
     keep this in sync with the CommandHandler registrations in bot.py.
     """
+    # /screenshot (alias of /commands) still works but is deliberately NOT
+    # published — an alias row is noise in the menu new users read as a
+    # feature map.
     return [
+        BotCommand("help", tr("cmd.help")),
         BotCommand("start", tr("cmd.start")),
         BotCommand("status", tr("cmd.status")),
         BotCommand("commands", tr("cmd.commands")),
-        BotCommand("screenshot", tr("cmd.screenshot")),
         BotCommand("restart", tr("cmd.restart")),
         BotCommand("esc", tr("cmd.esc")),
         BotCommand("kill", tr("cmd.kill")),

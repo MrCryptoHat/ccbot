@@ -1115,19 +1115,14 @@ async def _handle_cmd_slash(
     first — actual work happens in _handle_cmd_confirm. For safe
     commands, sends the slash to Claude and refreshes the screenshot.
     """
-    from .commands import _build_commands_keyboard
-
-    # Destructive first — swap to confirmation UI and bail.
+    # Destructive first — swap to confirmation UI and bail. _show_confirm
+    # also writes the action's CONFIRM_COPY description into the caption:
+    # the grid buttons for Clear/End are deliberately neutral, so this
+    # caption is the one place the data-loss warning is spelled out.
     for dest_prefix, action in _CMD_DESTRUCTIVE_ACTIONS.items():
         if data.startswith(dest_prefix):
             window_id = _parse_cmd_payload(data, dest_prefix)
-            try:
-                await query.edit_message_reply_markup(
-                    reply_markup=_build_commands_keyboard(window_id, confirming=action)
-                )
-                await query.answer(tr("cb.confirm_action"))
-            except Exception as e:
-                logger.warning("confirmation ui failed: %s", e)
+            await _show_confirm(query, window_id, action)
             return
 
     # Safe slash-command path.

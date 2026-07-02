@@ -21,6 +21,7 @@ from ccbot.handlers.callback_data import (
     CB_ASK_LEFT,
     CB_ASK_REFRESH,
     CB_ASK_RIGHT,
+    CB_ASK_SPACE,
     CB_ASK_UP,
 )
 from ccbot.handlers.interactive_ui import (
@@ -119,11 +120,13 @@ class TestHandleInteractiveUI:
 class TestInteractiveKeyboardLayout:
     """The unified keyboard attached to every interactive-UI screenshot.
 
-    Seven keys: ← ↑ ↓ → / ⏎ Enter / ⎋ Esc / 🔄 Обновить. The old per-UI
+    Eight keys: ← ↑ ↓ → / ⏎ Enter / ⎋ Esc / ␣ / 🔄 Обновить. The old per-UI
     variation (each prompt kind a bespoke button set) was removed in favour
     of one layout — the user reads the screenshot for context and walks the
     cursor with the directional cluster. ←/→ switch between an
-    AskUserQuestion's question tabs, which ↑/↓ alone can't reach.
+    AskUserQuestion's question tabs, which ↑/↓ alone can't reach; ␣ toggles
+    multi-select checkboxes (whitespace can't be sent as a text message, so
+    without the button a phone user can't answer those at all).
     """
 
     def test_keyboard_has_expected_callback_kinds(self):
@@ -140,9 +143,10 @@ class TestInteractiveKeyboardLayout:
         assert any(CB_ASK_RIGHT in d for d in all_cb_data)
         assert any(CB_ASK_ENTER in d for d in all_cb_data)
         assert any(CB_ASK_ESC in d for d in all_cb_data)
+        assert any(CB_ASK_SPACE in d for d in all_cb_data)
         assert any(CB_ASK_REFRESH in d for d in all_cb_data)
-        # And nothing else — the count pins it down (← ↑ ↓ → ⏎ ⎋ 🔄).
-        assert len(all_cb_data) == 7
+        # And nothing else — the count pins it down (← ↑ ↓ → ⏎ ⎋ ␣ 🔄).
+        assert len(all_cb_data) == 8
 
     def test_callback_data_carries_window_id(self):
         keyboard = _build_interactive_keyboard("@42")

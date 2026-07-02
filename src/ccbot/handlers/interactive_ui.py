@@ -43,6 +43,7 @@ from .callback_data import (
     CB_ASK_DOWN,
     CB_ASK_ENTER,
     CB_ASK_ESC,
+    CB_ASK_SPACE,
     CB_ASK_LEFT,
     CB_ASK_REFRESH,
     CB_ASK_RIGHT,
@@ -293,11 +294,14 @@ def _build_interactive_keyboard(window_id: str) -> InlineKeyboardMarkup:
     """Compact nav keyboard attached to the Claude-ждёт-ответа photo.
 
     Row 1 is the navigation in reading order — ← → ↑ ↓ (left, right, up, down) —
-    with ⏎ on the right; row 2 is ⎋ Esc / 🔄 Обновить. The user reads the
+    with ⏎ on the right; row 2 is ⎋ Esc / ␣ / 🔄 Обновить. The user reads the
     captured pane image to see the options and navigates via these keys. ←/→
     switch between an AskUserQuestion's question tabs (the `← N Вопрос …`
-    columns), which ↑/↓ alone can't reach. Replaces the old option-by-option
-    button list which required fragile text-parsing from the terminal output.
+    columns), which ↑/↓ alone can't reach; ␣ toggles checkboxes in
+    multi-select questions (without it a phone user literally cannot pick
+    options — whitespace can't be sent as a text message). Replaces the old
+    option-by-option button list which required fragile text-parsing from the
+    terminal output.
     """
     return InlineKeyboardMarkup(
         [
@@ -319,6 +323,9 @@ def _build_interactive_keyboard(window_id: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(
                     "⎋ Esc", callback_data=f"{CB_ASK_ESC}{window_id}"[:64]
+                ),
+                InlineKeyboardButton(
+                    "␣", callback_data=f"{CB_ASK_SPACE}{window_id}"[:64]
                 ),
                 InlineKeyboardButton(
                     tr("iui.btn_refresh"),

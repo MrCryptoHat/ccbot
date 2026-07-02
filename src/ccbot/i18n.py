@@ -115,7 +115,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "📈 Context: {k}k tokens (~{pct}% of 1M)",
     },
     # -- BotCommand descriptions (set_my_commands) ---------------------
-    "cmd.start": {"ru": "обновить клавиатуру меню", "en": "refresh the menu keyboard"},
+    "cmd.start": {
+        "ru": "начало работы и проверка настройки",
+        "en": "getting started & setup check",
+    },
+    "cmd.help": {
+        "ru": "что умеет этот бот",
+        "en": "what this bot can do",
+    },
     "cmd.status": {
         "ru": "сервер, агенты, диск, RAM",
         "en": "server, agents, disk, RAM",
@@ -164,6 +171,42 @@ STRINGS.update(
         "bot.private_start": {
             "ru": "👋 Я мост между Telegram и Claude Code, работаю в группе с топиками.\n\n1. Создайте группу и включите в её настройках *Темы* (Topics).\n2. Добавьте меня в группу и сделайте админом.\n3. Создайте топик с названием папки проекта — и просто пишите.\n\nПодробная инструкция — SETUP.md в репозитории.",
             "en": "👋 I bridge Telegram and Claude Code, and I work in a group with topics.\n\n1. Create a group and enable *Topics* in its settings.\n2. Add me to the group and make me an admin.\n3. Create a topic named after a project folder — and just write.\n\nFull walkthrough — SETUP.md in the repository.",
+        },
+        "bot.help": {
+            "ru": (
+                "🤖 *Как я работаю*\n"
+                "Один топик = один агент Claude Code. Создайте топик (назовите его именем папки проекта — привяжется сам), напишите сообщение — оно уйдёт агенту, а его ответы будут приходить сюда.\n\n"
+                "*Кнопки внизу:* 🖥️ Сервер — сводка сервера · 👾 Агент — панель управления (живой скриншот терминала, клавиши, режим, модель, перезапуск…).\n\n"
+                "*Переключатели:*\n"
+                "/voice — отвечать голосом (нужен TTS-ключ)\n"
+                "/diff — присылать скриншоты правок кода\n"
+                "/react — 👀-отметка «сообщение принято»\n"
+                "/lang — язык интерфейса ru/en\n\n"
+                "*Полезно знать:*\n"
+                "• 👍 на сообщении агента = подтвердить (Enter или «да»)\n"
+                "• Фото, файлы и голосовые тоже уходят агенту\n"
+                "• Незнакомые /команды (/clear, /compact, /review…) уходят прямо в Claude Code\n"
+                "• 🌳 в панели — параллельный агент в git worktree\n"
+                "• Закрытие топика завершает его сессию\n\n"
+                "*Если агент молчит:* проверьте hook (`uv run ccbot hook --install` на сервере), затем /status и панель 👾 Агент → 📸."
+            ),
+            "en": (
+                "🤖 *How I work*\n"
+                "One topic = one Claude Code agent. Create a topic (name it after a project folder — it binds itself), send a message — it goes to the agent, and its replies come back here.\n\n"
+                "*Bottom buttons:* 🖥️ Server — server summary · 👾 Agent — control panel (live terminal screenshot, keys, mode, model, restart…).\n\n"
+                "*Toggles:*\n"
+                "/voice — spoken replies (needs a TTS key)\n"
+                "/diff — send screenshots of code edits\n"
+                "/react — 👀 “message taken” receipt\n"
+                "/lang — UI language ru/en\n\n"
+                "*Good to know:*\n"
+                "• 👍 on an agent message = confirm (Enter or “yes”)\n"
+                "• Photos, files and voice messages reach the agent too\n"
+                "• Unknown /commands (/clear, /compact, /review…) go straight to Claude Code\n"
+                "• 🌳 in the panel — a parallel agent in a git worktree\n"
+                "• Closing a topic ends its session\n\n"
+                "*If the agent is silent:* check the hook (`uv run ccbot hook --install` on the server), then /status and the 👾 Agent panel → 📸."
+            ),
         },
         "bot.enable_topics_hint": {
             "ru": "⚠️ В этой группе не включены Темы (Topics), а без них я не работаю. Настройки группы → Темы → включить, затем создайте топик.",

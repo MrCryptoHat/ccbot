@@ -49,6 +49,7 @@ from .handlers.commands import (
     diff_command,
     esc_command,
     forward_command_handler,
+    help_command,
     kill_command,
     lang_command,
     menu_button_dispatcher,
@@ -1206,6 +1207,7 @@ def create_bot() -> Application:
     application.add_error_handler(_on_error)
 
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("screenshot", screenshot_command))
     application.add_handler(CommandHandler("esc", esc_command))
     application.add_handler(CommandHandler("kill", kill_command))
