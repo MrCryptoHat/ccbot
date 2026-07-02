@@ -22,6 +22,7 @@ Key methods for thread binding access:
 """
 
 import asyncio
+import fcntl
 import json
 import os
 import logging
@@ -29,7 +30,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, Literal
 
 import aiofiles
@@ -432,12 +433,23 @@ class SessionManager:
                     )
                     pass
 
-            except (json.JSONDecodeError, ValueError) as e:
+            # TypeError/AttributeError/KeyError cover STRUCTURALLY wrong
+            # state (valid JSON, wrong shapes — e.g. a hand-edited file where
+            # a dict became a list): those used to escape this handler and
+            # crash the bot at boot with a bare traceback.
+            except (
+                json.JSONDecodeError,
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+            ) as e:
                 logger.warning("Failed to load state: %s", e)
                 self.window_states = {}
                 self.user_window_offsets = {}
                 self.thread_bindings = {}
                 self.window_display_names = {}
+                self.thread_directory_memory = {}
                 self.group_chat_ids = {}
                 self.voice_mode_topics = set()
                 self.diff_mode_topics = set()
@@ -448,7 +460,7 @@ class SessionManager:
                 self.voice_announced_sessions = set()
                 self.voice_budget = VoiceBudget()
                 self.live_dashboard_message_ids = {}
-                pass
+                self.worktree_meta = {}
 
     async def resolve_stale_ids(self) -> None:
         """Re-resolve persisted window IDs against live tmux windows.
@@ -605,32 +617,60 @@ class SessionManager:
         await self._cleanup_stale_session_map_entries(live_ids)
         await self._cleanup_old_format_session_map_keys()
 
+    @staticmethod
+    def _locked_session_map_rmw(mutate: Callable[[dict], bool]) -> None:
+        """Read-modify-write session_map.json under the hook's flock.
+
+        The SessionStart hook does its own flock'd RMW on this file; the
+        bot's cleanup passes used to read/write it lock-free, so a hook
+        firing between the bot's read and write had its fresh entry
+        silently erased — that agent's replies never delivered until the
+        next SessionStart. Sync by design (flock is not awaitable); called
+        via asyncio.to_thread from the async cleanups. ``mutate`` returns
+        True when the map changed and must be written back.
+        """
+        map_file = config.session_map_file
+        if not map_file.exists():
+            return
+        lock_path = map_file.with_suffix(".lock")
+        try:
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    try:
+                        session_map = json.loads(map_file.read_text())
+                    except (json.JSONDecodeError, OSError):
+                        return
+                    if not isinstance(session_map, dict):
+                        return
+                    if mutate(session_map):
+                        atomic_write_json(map_file, session_map)
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except OSError as e:
+            logger.warning("session_map cleanup skipped (lock/IO): %s", e)
+
     async def _cleanup_old_format_session_map_keys(self) -> None:
         """Remove old-format keys (window_name instead of @window_id) from session_map.json."""
-        if not config.session_map_file.exists():
-            return
-        try:
-            async with aiofiles.open(config.session_map_file, "r") as f:
-                content = await f.read()
-            session_map = json.loads(content)
-        except (json.JSONDecodeError, OSError):
-            return
 
-        prefix = f"{config.tmux_session_name}:"
-        old_keys = [
-            key
-            for key in session_map
-            if key.startswith(prefix) and not self._is_window_id(key[len(prefix) :])
-        ]
-        if not old_keys:
-            return
+        def _mutate(session_map: dict) -> bool:
+            prefix = f"{config.tmux_session_name}:"
+            old_keys = [
+                key
+                for key in session_map
+                if key.startswith(prefix) and not self._is_window_id(key[len(prefix) :])
+            ]
+            for key in old_keys:
+                del session_map[key]
+            if old_keys:
+                logger.info(
+                    "Cleaned up %d old-format session_map keys: %s",
+                    len(old_keys),
+                    old_keys,
+                )
+            return bool(old_keys)
 
-        for key in old_keys:
-            del session_map[key]
-        atomic_write_json(config.session_map_file, session_map)
-        logger.info(
-            "Cleaned up %d old-format session_map keys: %s", len(old_keys), old_keys
-        )
+        await asyncio.to_thread(self._locked_session_map_rmw, _mutate)
 
     async def _cleanup_stale_session_map_entries(self, live_ids: set[str]) -> None:
         """Remove entries for tmux windows that no longer exist.
@@ -639,35 +679,28 @@ class SessionManager:
         retains orphan references. This cleanup removes entries whose window_id
         is not in the current set of live tmux windows.
         """
-        if not config.session_map_file.exists():
-            return
-        try:
-            async with aiofiles.open(config.session_map_file, "r") as f:
-                content = await f.read()
-            session_map = json.loads(content)
-        except (json.JSONDecodeError, OSError):
-            return
 
-        prefix = f"{config.tmux_session_name}:"
-        stale_keys = [
-            key
-            for key in session_map
-            if key.startswith(prefix)
-            and self._is_window_id(key[len(prefix) :])
-            and key[len(prefix) :] not in live_ids
-        ]
-        if not stale_keys:
-            return
+        def _mutate(session_map: dict) -> bool:
+            prefix = f"{config.tmux_session_name}:"
+            stale_keys = [
+                key
+                for key in session_map
+                if key.startswith(prefix)
+                and self._is_window_id(key[len(prefix) :])
+                and key[len(prefix) :] not in live_ids
+            ]
+            for key in stale_keys:
+                del session_map[key]
+                logger.info("Removed stale session_map entry: %s", key)
+            if stale_keys:
+                logger.info(
+                    "Cleaned up %d stale session_map entries "
+                    "(windows no longer in tmux)",
+                    len(stale_keys),
+                )
+            return bool(stale_keys)
 
-        for key in stale_keys:
-            del session_map[key]
-            logger.info("Removed stale session_map entry: %s", key)
-
-        atomic_write_json(config.session_map_file, session_map)
-        logger.info(
-            "Cleaned up %d stale session_map entries (windows no longer in tmux)",
-            len(stale_keys),
-        )
+        await asyncio.to_thread(self._locked_session_map_rmw, _mutate)
 
     # --- Display name management ---
 
@@ -1190,6 +1223,39 @@ class SessionManager:
         )
         return root / encoded_cwd / f"{session_id}.jsonl"
 
+    def _locate_session_file(
+        self,
+        session_id: str,
+        cwd: str,
+        projects_root: Path | None = None,
+    ) -> Path | None:
+        """Resolve a session's JSONL path (direct build + glob fallback).
+
+        Path-only: no content read. Callers that need just the file (offset
+        bumps, size checks) use this instead of the full parse in
+        ``_get_session_direct``.
+        """
+        file_path = self._build_session_file_path(session_id, cwd, projects_root)
+        if file_path and file_path.exists():
+            return file_path
+        glob_root = (
+            projects_root if projects_root is not None else config.claude_projects_path
+        )
+        pattern = f"*/{session_id}.jsonl"
+        matches = list(glob_root.glob(pattern))
+        if matches:
+            logger.debug("Found session via glob: %s", matches[0])
+            return matches[0]
+        return None
+
+    def resolve_session_file_for_window(self, window_id: str) -> Path | None:
+        """Path-only variant of resolve_session_for_window (no JSONL parse)."""
+        state = self.get_window_state(window_id)
+        if not state.session_id or not state.cwd:
+            return None
+        projects_root = self._projects_root_for_binding(window_id)
+        return self._locate_session_file(state.session_id, state.cwd, projects_root)
+
     async def _get_session_direct(
         self,
         session_id: str,
@@ -1197,20 +1263,9 @@ class SessionManager:
         projects_root: Path | None = None,
     ) -> ClaudeSession | None:
         """Get a ClaudeSession directly from session_id and cwd (no scanning)."""
-        file_path = self._build_session_file_path(session_id, cwd, projects_root)
-        glob_root = (
-            projects_root if projects_root is not None else config.claude_projects_path
-        )
-
-        # Fallback: glob search if direct path doesn't exist
-        if not file_path or not file_path.exists():
-            pattern = f"*/{session_id}.jsonl"
-            matches = list(glob_root.glob(pattern))
-            if matches:
-                file_path = matches[0]
-                logger.debug("Found session via glob: %s", file_path)
-            else:
-                return None
+        file_path = self._locate_session_file(session_id, cwd, projects_root)
+        if file_path is None:
+            return None
 
         # Single pass: read file once, extract summary + count messages
         summary = ""
@@ -1555,11 +1610,19 @@ class SessionManager:
         """Find all users whose thread-bound window maps to the given session_id.
 
         Returns list of (user_id, window_id, thread_id) tuples.
+
+        Pure in-memory compare against window_state.session_id — this runs
+        for EVERY monitor event (dozens per tick on a tool-heavy turn), and
+        the previous implementation re-parsed the whole JSONL per binding per
+        event via resolve_session_for_window (O(file size), json.loads per
+        line, in the event loop) only to compare a session_id it already had
+        in memory. The file's existence needs no re-check either: the event
+        being routed exists because the monitor just read that very JSONL.
         """
         result: list[tuple[int, str, int]] = []
         for user_id, thread_id, window_id in self.iter_thread_bindings():
-            resolved = await self.resolve_session_for_window(window_id)
-            if resolved and resolved.session_id == session_id:
+            state = self.window_states.get(window_id)
+            if state and state.session_id == session_id:
                 result.append((user_id, window_id, thread_id))
         return result
 

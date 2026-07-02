@@ -777,10 +777,10 @@ async def _bump_read_offset_to_eof(user_id: int, wid: str) -> None:
     photo carries it, or it's a de-duplicated AskUserQuestion copy) so the
     history pager (``handlers/history.py``) doesn't show it again.
     """
-    session = await session_manager.resolve_session_for_window(wid)
-    if session and session.file_path:
+    file_path = session_manager.resolve_session_file_for_window(wid)
+    if file_path is not None:
         try:
-            file_size = Path(session.file_path).stat().st_size
+            file_size = file_path.stat().st_size
             session_manager.update_user_window_offset(user_id, wid, file_size)
         except OSError:
             pass
