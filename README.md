@@ -1,17 +1,16 @@
-# ccbot — Claude Code in your pocket, via Telegram
+# ccbot: control Claude Code from Telegram
 
 [![Tests](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg)](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
 
-**Full remote control of Claude Code from Telegram.** Your AI coding sessions
-keep running in **tmux** on your machine or server — ccbot streams their
-replies into Telegram Forum **topics** (one topic = one session), lets you
-answer, press keys, approve prompts, switch models, and juggle several
-projects in parallel — from your phone, anywhere.
+A Telegram remote for **Claude Code**. Sessions run in **tmux** on your
+machine or server; the bot streams replies into forum **topics** (one topic =
+one session) and types your answers back into the pane. Press keys, approve
+permission prompts, switch models, run several projects side by side.
 
-Start a refactor at your desk, review and approve it from the couch, and
-`tmux attach` back into the very same terminal session at any moment.
+Start a refactor at your desk, approve it from your phone, `tmux attach` back
+into the same terminal whenever you want.
 
 <!-- screenshots: drop 2-3 images here (agent panel, interactive prompt,
      streaming reply). Recommended width ~1000px. -->
@@ -33,9 +32,8 @@ keystrokes to the pane. So:
   `tmux attach` and you're back in the terminal with full scrollback.
 - **Run sessions in parallel** — each topic maps to its own tmux window, so you
   juggle several projects from one chat group.
-- **Nothing to migrate** — no SDK wrapper, no separate agent runtime, no
-  cloud middleman: your existing Claude Code setup, plans and MCP servers
-  work as-is, and Telegram is end-to-end under your bot token.
+- **Nothing to migrate** — no SDK wrapper, no cloud middleman. Your existing
+  Claude Code setup, plan and MCP servers work as-is.
 
 Because it's a thin control layer over tmux, the terminal stays the source of
 truth and you never lose the ability to switch back.
@@ -209,10 +207,10 @@ uv run pytest -q
 ## FAQ
 
 **How do I control Claude Code from my phone?**
-Run ccbot on the machine where Claude Code runs (laptop, home server, VPS),
-add its Telegram bot to a group with Topics — every topic becomes a live
-remote for one Claude Code session: replies stream in, you answer, press TUI
-keys, approve permission prompts and switch models from the chat.
+Run ccbot on the machine where Claude Code runs (laptop, home server, VPS)
+and add its bot to a Telegram group with Topics enabled. Each topic becomes
+a remote for one session: replies stream in, you answer, press keys, approve
+prompts.
 
 **Is this a separate AI agent or a wrapper around the API?**
 Neither. ccbot doesn't call any LLM API and doesn't re-implement an agent —
