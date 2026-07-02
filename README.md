@@ -1,10 +1,20 @@
-# ccbot
+# ccbot — Claude Code in your pocket, via Telegram
 
 [![Tests](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg)](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
 
-Control Claude Code from Telegram — monitor, drive, and manage AI coding
-sessions running in **tmux** (or, optionally, in Docker containers), one
-Telegram Forum **topic** per session.
+**Full remote control of Claude Code from Telegram.** Your AI coding sessions
+keep running in **tmux** on your machine or server — ccbot streams their
+replies into Telegram Forum **topics** (one topic = one session), lets you
+answer, press keys, approve prompts, switch models, and juggle several
+projects in parallel — from your phone, anywhere.
+
+Start a refactor at your desk, review and approve it from the couch, and
+`tmux attach` back into the very same terminal session at any moment.
+
+<!-- screenshots: drop 2-3 images here (agent panel, interactive prompt,
+     streaming reply). Recommended width ~1000px. -->
 
 ## Why ccbot?
 
@@ -23,6 +33,9 @@ keystrokes to the pane. So:
   `tmux attach` and you're back in the terminal with full scrollback.
 - **Run sessions in parallel** — each topic maps to its own tmux window, so you
   juggle several projects from one chat group.
+- **Nothing to migrate** — no SDK wrapper, no separate agent runtime, no
+  cloud middleman: your existing Claude Code setup, plans and MCP servers
+  work as-is, and Telegram is end-to-end under your bot token.
 
 Because it's a thin control layer over tmux, the terminal stays the source of
 truth and you never lose the ability to switch back.
@@ -192,6 +205,39 @@ uv run ruff check src/ tests/
 uv run pyright src/ccbot/
 uv run pytest -q
 ```
+
+## FAQ
+
+**How do I control Claude Code from my phone?**
+Run ccbot on the machine where Claude Code runs (laptop, home server, VPS),
+add its Telegram bot to a group with Topics — every topic becomes a live
+remote for one Claude Code session: replies stream in, you answer, press TUI
+keys, approve permission prompts and switch models from the chat.
+
+**Is this a separate AI agent or a wrapper around the API?**
+Neither. ccbot doesn't call any LLM API and doesn't re-implement an agent —
+it remote-controls the **real Claude Code CLI** in tmux by reading its
+transcript and typing into its pane. Your subscription/plan, config, memory
+and MCP servers apply unchanged, and there's no extra token cost.
+
+**What happens if the bot dies or the server reboots?**
+Nothing is lost: sessions live in tmux/Claude Code, not in the bot. ccbot
+reconnects on restart, each topic remembers its project directory, and any
+session can be resumed from the panel (`⏪ Resume`).
+
+**Can I run several projects at once?**
+Yes — that's the core design. Each Telegram topic binds to its own tmux
+window (or Docker container). There are also worktree agents: fork a repo
+into a `git worktree` and run a parallel agent on a branch, from the chat.
+
+**Does it work with voice?**
+Yes, both ways (optional): send voice messages (Deepgram/OpenAI
+transcription) and get spoken replies (Gemini / ElevenLabs / OpenAI TTS).
+
+**Is my code exposed to a third party?**
+No middleman: traffic flows between your server and Telegram's Bot API under
+your own bot token. Only the users listed in `ALLOWED_USERS` are served —
+anyone else gets a refusal and no access to sessions.
 
 ## Credits & license
 
