@@ -98,6 +98,21 @@ def main() -> None:
             "(or `uv run ccbot hook --install`)."
         )
 
+    # A `.env`-only CCBOT_DIR is exported into the bot's own tmux session
+    # (so hooks in agent panes see it), but any Claude session started
+    # outside that tmux session would still write session_map.json to the
+    # default ~/.ccbot — a split-brain that looks like "replies stopped".
+    from . import config as config_module
+
+    if os.environ.get("CCBOT_DIR") and not config_module.ccbot_dir_from_shell:
+        logger.warning(
+            "CCBOT_DIR=%s is set only in .env, not exported in the shell. "
+            "Agent windows created by the bot will see it, but a `claude` "
+            "started outside the bot's tmux session will not — export it in "
+            "your shell profile to be safe.",
+            config.config_dir,
+        )
+
     # Preflight: missing binaries fail in confusing places later (libtmux
     # raises deep inside get_or_create_session; a missing `claude` makes every
     # agent window die silently 30s after creation) — check them up front.

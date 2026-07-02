@@ -22,7 +22,7 @@ from pathlib import Path
 import libtmux
 
 from .config import config
-from .utils import is_valid_session_id
+from .utils import CCBOT_DIR_ENV, is_valid_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ class TmuxManager:
         session = self.get_session()
         if session:
             self._scrub_session_env(session)
+            self._export_ccbot_dir(session)
             return session
 
         # Create new session with main window named specifically
@@ -79,6 +80,7 @@ class TmuxManager:
         if session.windows:
             session.windows[0].rename_window(config.tmux_main_window_name)
         self._scrub_session_env(session)
+        self._export_ccbot_dir(session)
         return session
 
     @staticmethod
@@ -93,6 +95,23 @@ class TmuxManager:
                 session.unset_environment(var)
             except Exception:
                 pass  # var not set in session env — nothing to remove
+
+    @staticmethod
+    def _export_ccbot_dir(session: libtmux.Session) -> None:
+        """Publish the bot's resolved CCBOT_DIR to the tmux session env.
+
+        The SessionStart hook runs inside agent panes and inherits the tmux
+        *server* environment, not the bot's — so a CCBOT_DIR that reached the
+        bot only via `.env` (which the hook deliberately never reads) would
+        make the hook write session_map.json to ~/.ccbot while the bot reads
+        it from $CCBOT_DIR: replies silently stop arriving. Exporting the
+        resolved path into the session env makes every window created after
+        this point see the same directory the bot uses.
+        """
+        try:
+            session.set_environment(CCBOT_DIR_ENV, str(config.config_dir))
+        except Exception:
+            logger.warning("Failed to export CCBOT_DIR into tmux session env")
 
     async def list_windows(self) -> list[TmuxWindow]:
         """List all windows in the session with their working directories.

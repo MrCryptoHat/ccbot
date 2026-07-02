@@ -120,3 +120,36 @@ class TestLiteralSendArgv:
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
         ok = await manager.send_keys("@1", "text")
         assert ok is False
+
+
+class TestSessionEnvExport:
+    """get_or_create_session must publish CCBOT_DIR into the tmux session env.
+
+    The SessionStart hook runs in agent panes and inherits the tmux server
+    environment, not the bot's — a `.env`-only CCBOT_DIR would silently split
+    session_map.json across two directories without this export.
+    """
+
+    def test_existing_session_gets_ccbot_dir(self, monkeypatch) -> None:
+        from ccbot.config import config
+
+        class _EnvSession:
+            def __init__(self):
+                self.env_set: list[tuple[str, str]] = []
+                self.env_unset: list[str] = []
+                self.windows = []
+
+            def set_environment(self, name, value):
+                self.env_set.append((name, value))
+
+            def unset_environment(self, name):
+                self.env_unset.append(name)
+
+        manager = TmuxManager(session_name="test")
+        session = _EnvSession()
+        monkeypatch.setattr(manager, "get_session", lambda: session)
+
+        result = manager.get_or_create_session()
+
+        assert result is session
+        assert ("CCBOT_DIR", str(config.config_dir)) in session.env_set

@@ -52,9 +52,14 @@ _async_write_executor: concurrent.futures.ThreadPoolExecutor | None = None
 
 
 def ccbot_dir() -> Path:
-    """Resolve config directory from CCBOT_DIR env var or default ~/.ccbot."""
+    """Resolve config directory from CCBOT_DIR env var or default ~/.ccbot.
+
+    ``expanduser()`` because dotenv does no tilde expansion: a `.env` line
+    ``CCBOT_DIR=~/.ccbot`` would otherwise become a literal ``./~`` directory
+    created relative to the cwd.
+    """
     raw = os.environ.get(CCBOT_DIR_ENV, "")
-    return Path(raw) if raw else Path.home() / ".ccbot"
+    return Path(raw).expanduser() if raw else Path.home() / ".ccbot"
 
 
 def atomic_write_json(path: Path, data: Any, indent: int = 2) -> None:

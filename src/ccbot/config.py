@@ -528,6 +528,15 @@ def _preload_dotenv() -> None:
         load_dotenv(global_env)
 
 
+# Captured BEFORE the .env preload below: True when CCBOT_DIR was a real
+# exported environment variable (shell profile / systemd unit), False when it
+# is absent or arrives only via `.env`. A `.env`-only CCBOT_DIR is visible to
+# the bot but NOT to processes started outside it — the bot exports it into
+# its own tmux session (tmux_manager._export_ccbot_dir), but a `claude` run
+# from a plain shell would still write session_map.json to ~/.ccbot.
+# main.py uses this to warn at startup.
+ccbot_dir_from_shell: bool = "CCBOT_DIR" in os.environ
+
 # Ordering matters:
 #   1. Load `.env` into `os.environ`.
 #   2. Give plugins a chance to capture their own tokens: each plugin's

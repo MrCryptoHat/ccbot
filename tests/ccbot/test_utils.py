@@ -51,6 +51,12 @@ class TestCcbotDir:
         monkeypatch.delenv("CCBOT_DIR", raising=False)
         assert ccbot_dir() == Path.home() / ".ccbot"
 
+    def test_expands_tilde(self, monkeypatch: pytest.MonkeyPatch):
+        # dotenv does no tilde expansion — a `.env` line `CCBOT_DIR=~/.ccbot`
+        # must not become a literal `./~` directory.
+        monkeypatch.setenv("CCBOT_DIR", "~/.ccbot-custom")
+        assert ccbot_dir() == Path.home() / ".ccbot-custom"
+
 
 class TestAtomicWriteJson:
     def test_writes_valid_json(self, tmp_path: Path):
