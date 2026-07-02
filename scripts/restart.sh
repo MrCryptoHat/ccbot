@@ -48,9 +48,21 @@ bot_pids() {
     # session → the container's entrypoint exits → docker restarts the whole
     # container, an unintended bounce of a live service. A containerized
     # process carries `docker-<id>.scope` in its cgroup; the host bot does not.
-    local pid
+    #
+    # Also drop instances launched from a DIFFERENT checkout's .venv (e.g. a
+    # second clone used as a test instance beside the main deployment) —
+    # restarting repo A must not SIGINT repo B's bot. Installs that can't be
+    # attributed to any repo (pipx / uv tool / PATH) keep the legacy
+    # match-everything behavior.
+    local pid cmdline
     for pid in $(pgrep -f "$BOT_PATTERN" 2>/dev/null || true); do
         grep -q docker "/proc/$pid/cgroup" 2>/dev/null && continue
+        cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+        case "$cmdline" in
+            *"$PROJECT_DIR/.venv/bin/ccbot"*) ;;   # this repo's instance
+            *"/.venv/bin/ccbot"*) continue ;;      # another checkout's — leave it alone
+            *) ;;                                  # unattributable install — legacy behavior
+        esac
         printf '%s\n' "$pid"
     done
 }
