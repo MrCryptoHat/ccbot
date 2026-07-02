@@ -98,6 +98,25 @@ def main() -> None:
             "(or `uv run ccbot hook --install`)."
         )
 
+    # Preflight: missing binaries fail in confusing places later (libtmux
+    # raises deep inside get_or_create_session; a missing `claude` makes every
+    # agent window die silently 30s after creation) — check them up front.
+    import shutil
+
+    if shutil.which("tmux") is None:
+        print("Error: `tmux` not found on PATH — ccbot drives Claude Code")
+        print("inside tmux windows and cannot run without it.")
+        print("Install it first (e.g. `apt install tmux` / `brew install tmux`).")
+        sys.exit(1)
+    claude_bin = (config.claude_command.split() or ["claude"])[0]
+    if shutil.which(os.path.expanduser(claude_bin)) is None:
+        logger.warning(
+            "`%s` (from CLAUDE_COMMAND) not found on PATH — new agent windows "
+            "will fail to start until it is installed. "
+            "Install Claude Code: https://claude.com/claude-code",
+            claude_bin,
+        )
+
     # Ensure tmux session exists
     session = tmux_manager.get_or_create_session()
     logger.info("Tmux session '%s' ready", session.session_name)

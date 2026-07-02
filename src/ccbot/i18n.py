@@ -169,6 +169,10 @@ STRINGS.update(
             "ru": "⚠️ В этой группе не включены Темы (Topics), а без них я не работаю. Настройки группы → Темы → включить, затем создайте топик.",
             "en": "⚠️ Topics are not enabled in this group, and I can't work without them. Group settings → Topics → enable, then create a topic.",
         },
+        "bot.make_me_admin": {
+            "ru": "⚠️ Сделайте меня администратором группы — без прав админа Telegram не показывает мне обычные сообщения, и я не смогу отвечать.\nНастройки группы → Администраторы → Добавить администратора.",
+            "en": "⚠️ Make me a group administrator — without admin rights Telegram doesn't deliver regular messages to me, so I can't respond.\nGroup settings → Administrators → Add administrator.",
+        },
         "bot.docker_agent_down": {
             "ru": "❌ Агент `{name}` не запущен, привязка снята.\nКогда контейнер поднимется — отправьте `/bind {name}`.",
             "en": "❌ Docker agent `{name}` is not running; binding removed.\nRun `/bind {name}` once the container is up.",

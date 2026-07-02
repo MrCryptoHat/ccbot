@@ -85,6 +85,15 @@ DEAD_WINDOW_GRACE = 30.0  # seconds
 _orphan_since: dict[str, float] = {}
 ORPHAN_WINDOW_GRACE = 90.0  # seconds
 
+# Zero-bindings guard episode: monotonic time when "agent windows alive but no
+# thread bindings" was first seen (None = condition absent), plus whether the
+# episode's single warning already fired. The condition is normal for a moment
+# during the very first bind (window exists before bind_thread lands), so the
+# warning waits out ORPHAN_WINDOW_GRACE and fires once per episode — not every
+# poll tick.
+_zero_bindings_since: float | None = None
+_zero_bindings_warned = False
+
 # Typing heartbeat throttle: re-send "typing" at most this often per topic.
 # Telegram's typing status lasts ~5s and Telegram explicitly says not to send
 # it more often than every 5s; refresh just under that. (key = (user_id,
@@ -449,13 +458,27 @@ async def status_poll_loop(bot: Bot) -> None:
                 # Zero bindings while agent windows are alive smells like a
                 # lost/corrupt state.json, not N simultaneously orphaned
                 # topics — reaping on that signal would kill every live
-                # agent 90s after a single bad state write.
-                logger.warning(
-                    "Orphan janitor: no thread bindings but %d agent "
-                    "window(s) alive — skipping reap (possible state loss)",
-                    len(agent_windows),
-                )
+                # agent 90s after a single bad state write. It is also the
+                # normal transient during the very first bind (create_window
+                # precedes bind_thread), so only warn once the episode
+                # outlives the grace — and only once, not every poll tick.
+                global _zero_bindings_since, _zero_bindings_warned
+                if _zero_bindings_since is None:
+                    _zero_bindings_since = now
+                if (
+                    not _zero_bindings_warned
+                    and now - _zero_bindings_since >= ORPHAN_WINDOW_GRACE
+                ):
+                    _zero_bindings_warned = True
+                    logger.warning(
+                        "Orphan janitor: no thread bindings but %d agent "
+                        "window(s) alive — skipping reap (possible state loss)",
+                        len(agent_windows),
+                    )
                 agent_windows = []
+            else:
+                _zero_bindings_since = None
+                _zero_bindings_warned = False
             for w in agent_windows:
                 if w.window_id in bound_wids:
                     _orphan_since.pop(w.window_id, None)

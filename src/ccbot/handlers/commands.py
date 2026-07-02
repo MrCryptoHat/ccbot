@@ -368,11 +368,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # through the group setup instead.
         chat = update.effective_chat
         in_private = chat is not None and chat.type == "private"
-        await safe_reply(
-            update.message,
-            tr("bot.private_start") if in_private else tr("bot.start_welcome"),
-            reply_markup=menu_keyboard(),
-        )
+        text = tr("bot.private_start") if in_private else tr("bot.start_welcome")
+        if chat is not None and chat.type in ("group", "supergroup"):
+            # /start is the one signal that reaches the bot even without admin
+            # rights (privacy mode blocks plain group messages) — so it's the
+            # only place the two group-setup traps can be detected and
+            # explained instead of greeting into silence.
+            try:
+                me = await chat.get_member(context.bot.id)
+                is_admin = me.status in ("administrator", "creator")
+            except Exception:
+                is_admin = True  # can't verify — don't nag on a false alarm
+            if not is_admin:
+                text = tr("bot.make_me_admin")
+            elif not getattr(chat, "is_forum", False):
+                text = tr("bot.enable_topics_hint")
+        await safe_reply(update.message, text, reply_markup=menu_keyboard())
         thread_id = get_thread_id(update)
         if thread_id is not None:
             session_manager.mark_menu_shown(user.id, thread_id)
