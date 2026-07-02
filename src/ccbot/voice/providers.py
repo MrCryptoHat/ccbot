@@ -137,6 +137,18 @@ class GeminiProvider(Provider):
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{config.gemini_tts_model}:generateContent"
         )
+        speech_config: dict = {
+            "voiceConfig": {
+                "prebuiltVoiceConfig": {
+                    "voiceName": config.gemini_tts_voice,
+                }
+            },
+        }
+        # Empty = let Gemini auto-detect the language from the text itself
+        # (the right default for a public install; pin via GEMINI_TTS_LANGUAGE
+        # when replies are reliably one language).
+        if config.gemini_tts_language_code:
+            speech_config["languageCode"] = config.gemini_tts_language_code
         response = await _get_client().post(
             url,
             headers={
@@ -148,14 +160,7 @@ class GeminiProvider(Provider):
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
                     "temperature": config.gemini_tts_temperature,
-                    "speechConfig": {
-                        "languageCode": config.gemini_tts_language_code,
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {
-                                "voiceName": config.gemini_tts_voice,
-                            }
-                        },
-                    },
+                    "speechConfig": speech_config,
                 },
             },
         )

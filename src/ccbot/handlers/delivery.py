@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from ..session import session_manager
-from ..voice import OFF_DIRECTIVE, build_on_directive
+from ..voice import build_on_directive, off_directive
 from .ask_question_router import try_route_to_text_option
 from .reaction_emit import arm as arm_reaction_ack
 
@@ -60,7 +60,7 @@ async def deliver_user_text(
     if directive == "on":
         text = f"{build_on_directive()}\n\n---\n{text}"
     elif directive == "off":
-        text = f"{OFF_DIRECTIVE}\n\n---\n{text}"
+        text = f"{off_directive()}\n\n---\n{text}"
 
     ok, msg = await session_manager.send_to_window(wid, text)
     if ok:

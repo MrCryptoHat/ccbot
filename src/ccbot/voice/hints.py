@@ -43,61 +43,130 @@ _STYLE_PREFIX_STRIP_RE = re.compile(
 _CHAT_OPEN_RE = re.compile(r"\[chat\]", re.IGNORECASE)
 _CHAT_CLOSE_RE = re.compile(r"\[/chat\]", re.IGNORECASE)
 
-OFF_DIRECTIVE = (
-    "[SYSTEM: VOICE MODE OFF]\n"
-    "Голосовой режим выключен. Дальше отвечай обычным текстом с markdown "
-    "как раньше. НЕ используй аудио-теги ([warmly], [pause] и т.п.), "
-    "маркеры [chat]...[/chat] и стилевые префиксы (Say cheerfully: и т.п.) "
-    "— они попадут в чат как есть."
-)
+# Agent-directed protocol text is deliberately NOT in the i18n catalog (see
+# i18n.py scope note) — but its language follows the UI language: a directive
+# written in Russian nudges the agent to answer an English-speaking user in
+# Russian (observed in practice), so each directive has both variants keyed
+# by i18n.current_language().
 
-_CHAT_SPLIT_RULES = (
-    "\n\nРазделение голос/чат. Всё что ты пишешь озвучивается, КРОМЕ того что "
-    "обёрнуто в [chat]...[/chat] — такие куски уходят в чат текстом с "
-    "markdown и не читаются вслух. Оборачивай в [chat]: ссылки, пути, "
-    "код/команды, длинные ID/числа/хэши, таблицы, списки, куски логов. "
-    "Голосом давай объяснение и контекст, в [chat] — саму суть которую "
-    "неудобно слушать. Можно чередовать: голос → [chat]...[/chat] → "
-    "голос → [chat]...[/chat]. Пример: «Отчёт готов, вот ссылка. "
-    "[chat]https://example.com/report.pdf[/chat] Посмотри, там всё по "
-    "пунктам.» Если весь ответ — это ссылка/код, оберни всё в [chat] — "
-    "голосом ничего не отправится, это норм."
-)
+_OFF_DIRECTIVES = {
+    "ru": (
+        "[SYSTEM: VOICE MODE OFF]\n"
+        "Голосовой режим выключен. Дальше отвечай обычным текстом с markdown "
+        "как раньше. НЕ используй аудио-теги ([warmly], [pause] и т.п.), "
+        "маркеры [chat]...[/chat] и стилевые префиксы (Say cheerfully: и т.п.) "
+        "— они попадут в чат как есть."
+    ),
+    "en": (
+        "[SYSTEM: VOICE MODE OFF]\n"
+        "Voice mode is off. Reply in regular markdown text from now on. Do "
+        "NOT use audio tags ([warmly], [pause] etc.), [chat]...[/chat] "
+        "markers or style prefixes (Say cheerfully: etc.) — they would land "
+        "in the chat verbatim."
+    ),
+}
 
+_CHAT_SPLIT_RULES = {
+    "ru": (
+        "\n\nРазделение голос/чат. Всё что ты пишешь озвучивается, КРОМЕ того что "
+        "обёрнуто в [chat]...[/chat] — такие куски уходят в чат текстом с "
+        "markdown и не читаются вслух. Оборачивай в [chat]: ссылки, пути, "
+        "код/команды, длинные ID/числа/хэши, таблицы, списки, куски логов. "
+        "Голосом давай объяснение и контекст, в [chat] — саму суть которую "
+        "неудобно слушать. Можно чередовать: голос → [chat]...[/chat] → "
+        "голос → [chat]...[/chat]. Пример: «Отчёт готов, вот ссылка. "
+        "[chat]https://example.com/report.pdf[/chat] Посмотри, там всё по "
+        "пунктам.» Если весь ответ — это ссылка/код, оберни всё в [chat] — "
+        "голосом ничего не отправится, это норм."
+    ),
+    "en": (
+        "\n\nVoice/chat split. Everything you write is spoken aloud EXCEPT "
+        "parts wrapped in [chat]...[/chat] — those go to the chat as markdown "
+        "text and are not read out. Wrap in [chat]: links, paths, "
+        "code/commands, long IDs/numbers/hashes, tables, lists, log excerpts. "
+        "Use voice for explanation and context, [chat] for the exact content "
+        "that is awkward to listen to. You can alternate: voice → "
+        "[chat]...[/chat] → voice → [chat]...[/chat]. Example: “The report is "
+        "ready, here's the link. [chat]https://example.com/report.pdf[/chat] "
+        "Have a look, it's all itemized.” If the whole reply is a link/code, "
+        "wrap it all in [chat] — no voice message gets sent, that's fine."
+    ),
+}
 
-def build_on_directive() -> str:
-    """Compose the 'voice mode ON' directive for the active provider."""
-    provider = get_active_provider()
-    base = (
+_ON_BASE = {
+    "ru": (
         "[SYSTEM: VOICE MODE ON]\n"
         "Твой ответ будет озвучен и отправлен как голосовое сообщение. "
         "Говори как живой человек в непринуждённой беседе: от первого лица, с паузами, "
         "междометиями (хм, ну, эм, короче, слушай), лёгкими самоперебивами. "
         "Без markdown, таблиц, кода, списков, эмодзи, заголовков — только обычная речь. "
         "Коротко: 2-3 предложения, кроме сложных вопросов."
-    )
-    if provider is None:
-        return (
-            base
-            + _CHAT_SPLIT_RULES
-            + "\n\nРежим остаётся активным до '[SYSTEM: VOICE MODE OFF]'."
-        )
+    ),
+    "en": (
+        "[SYSTEM: VOICE MODE ON]\n"
+        "Your reply will be synthesized and sent as a voice message. Speak "
+        "like a real person in casual conversation: first person, natural "
+        "pauses, fillers (hm, well, you know), light self-corrections. No "
+        "markdown, tables, code, lists, emoji or headings — plain speech "
+        "only. Keep it short: 2-3 sentences unless the question is complex."
+    ),
+}
 
+_ON_TAGS = {
+    "ru": (
+        "\nМожно вставлять аудио-теги для выразительности: {tags} — 1-2 на "
+        "ответ, не чаще. Стиль подачи (тон, темп) ccbot задаёт сам, ты просто "
+        "пиши содержание."
+    ),
+    "en": (
+        "\nYou may insert audio tags for expressiveness: {tags} — 1-2 per "
+        "reply, no more. Delivery style (tone, pace) is set by ccbot; you "
+        "just write the content."
+    ),
+}
+
+_ON_NO_TAGS = {
+    "ru": (
+        "\nПровайдер голоса не поддерживает аудио-теги — не используй "
+        "[warmly], [pause] и т.п., они прочитаются буквально."
+    ),
+    "en": (
+        "\nThe voice provider does not support audio tags — don't use "
+        "[warmly], [pause] etc., they would be read out literally."
+    ),
+}
+
+_ON_TAIL = {
+    "ru": "\nРежим остаётся активным до '[SYSTEM: VOICE MODE OFF]'.",
+    "en": "\nThe mode stays active until '[SYSTEM: VOICE MODE OFF]'.",
+}
+
+
+def _lang() -> str:
+    from ..i18n import current_language
+
+    return current_language() if current_language() in ("ru", "en") else "ru"
+
+
+def off_directive() -> str:
+    """The 'voice mode OFF' directive in the active UI language."""
+    return _OFF_DIRECTIVES[_lang()]
+
+
+def build_on_directive() -> str:
+    """Compose the 'voice mode ON' directive for the active provider."""
+    lang = _lang()
+    provider = get_active_provider()
+    base = _ON_BASE[lang]
+    tail = _ON_TAIL[lang]
+    if provider is None:
+        return base + _CHAT_SPLIT_RULES[lang] + "\n" + tail
     tags = provider.tag_catalog()
     if tags:
-        tag_line = (
-            "\nМожно вставлять аудио-теги для выразительности: "
-            + " ".join(tags)
-            + " — 1-2 на ответ, не чаще. Стиль подачи "
-            "(тон, темп) ccbot задаёт сам, ты просто пиши содержание."
-        )
+        tag_line = _ON_TAGS[lang].format(tags=" ".join(tags))
     else:
-        tag_line = (
-            "\nПровайдер голоса не поддерживает аудио-теги — не используй "
-            "[warmly], [pause] и т.п., они прочитаются буквально."
-        )
-    tail = "\nРежим остаётся активным до '[SYSTEM: VOICE MODE OFF]'."
-    return base + tag_line + _CHAT_SPLIT_RULES + tail
+        tag_line = _ON_NO_TAGS[lang]
+    return base + tag_line + _CHAT_SPLIT_RULES[lang] + tail
 
 
 def split_voice_segments(text: str) -> list[tuple[SegmentKind, str]]:

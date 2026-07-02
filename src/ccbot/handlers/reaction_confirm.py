@@ -38,7 +38,7 @@ from telegram import ReactionType, ReactionTypeEmoji, Update
 from telegram.ext import ContextTypes
 
 from ..config import config
-from ..i18n import tr
+from ..i18n import current_language, tr
 from ..session import session_manager
 from ..terminal_parser import is_claude_working, is_interactive_ui
 from . import is_user_allowed
@@ -170,7 +170,11 @@ async def _do_confirm(
             await safe_send(bot, chat_id, tr("rconf.confirmed"), message_thread_id=tid)
         return
     if action == "type_yes":
-        ok, _ = await session_manager.send_to_window(binding, "да")
+        # Agent-directed word, keyed by UI language: an English deployment's
+        # agent should receive "yes", not «да» (and the rconf.sent_yes toast
+        # should tell the truth about what was typed).
+        confirm_word = {"ru": "да", "en": "yes"}.get(current_language(), "да")
+        ok, _ = await session_manager.send_to_window(binding, confirm_word)
         if ok:
             await safe_send(bot, chat_id, tr("rconf.sent_yes"), message_thread_id=tid)
         return

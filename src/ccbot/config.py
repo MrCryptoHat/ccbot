@@ -320,7 +320,9 @@ class Config:
             os.getenv("GEMINI_TTS_TEMPERATURE", "1.0")
         )
         # BCP-47 language code; explicit beats auto-detect per Google docs.
-        self.gemini_tts_language_code: str = os.getenv("GEMINI_TTS_LANGUAGE", "ru-RU")
+        # Empty default = Gemini auto-detects the language per request; set a
+        # BCP-47 code (e.g. ru-RU) to pin it for single-language deployments.
+        self.gemini_tts_language_code: str = os.getenv("GEMINI_TTS_LANGUAGE", "")
         # Style prefix prepended to every Gemini TTS prompt. Gemini parses
         # "Say/Speak X: ..." prefixes and applies the style to the whole
         # utterance — more reliable than inline pace tags (which burn off

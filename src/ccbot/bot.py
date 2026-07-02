@@ -120,8 +120,8 @@ from .terminal_parser import extract_bash_output, is_interactive_ui
 from .tmux_manager import tmux_manager
 from .transcribe import close_client as close_transcribe_client
 from .voice import (
-    OFF_DIRECTIVE as VOICE_OFF_HINT,
     build_on_directive,
+    off_directive,
     check_runtime_dependencies as check_voice_dependencies,
     close_client as close_tts_client,
 )
@@ -179,7 +179,7 @@ async def _forward_pending_after_autobind(
     if directive == "on":
         text = f"{build_on_directive()}\n\n---\n{text}"
     elif directive == "off":
-        text = f"{VOICE_OFF_HINT}\n\n---\n{text}"
+        text = f"{off_directive()}\n\n---\n{text}"
     ok, msg = await session_manager.send_to_window(wid, text)
     if not ok:
         logger.warning("Auto-bind: failed to forward pending text: %s", msg)
@@ -738,7 +738,7 @@ async def _create_and_bind_window(
                 if directive == "on":
                     pending_text = f"{build_on_directive()}\n\n---\n{pending_text}"
                 elif directive == "off":
-                    pending_text = f"{VOICE_OFF_HINT}\n\n---\n{pending_text}"
+                    pending_text = f"{off_directive()}\n\n---\n{pending_text}"
                 send_ok, send_msg = await session_manager.send_to_window(
                     created_wid,
                     pending_text,
