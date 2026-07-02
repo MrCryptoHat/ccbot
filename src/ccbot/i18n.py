@@ -322,8 +322,8 @@ STRINGS.update(
         "commands.btn_model": {"ru": "🤖 Модель", "en": "🤖 Model"},
         "commands.btn_new": {"ru": "🆕 Новая", "en": "🆕 New"},
         "commands.btn_new_worktree": {
-            "ru": "🌳 Новый агент в проекте",
-            "en": "🌳 New agent in project",
+            "ru": "🌳 Worktree-агент",
+            "en": "🌳 Worktree agent",
         },
         "commands.btn_restart": {"ru": "🔄 Перезапуск", "en": "🔄 Restart"},
         "commands.btn_resume": {"ru": "⏪ Продолжить", "en": "⏪ Resume"},

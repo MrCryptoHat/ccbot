@@ -1038,7 +1038,7 @@ _CMD_DESTRUCTIVE_ACTIONS: dict[str, str] = {
 # Slash-buttons living on the «Сессия» tab — their post-action repaint
 # returns there instead of «Действия» (see commands._action_home_tab for
 # the confirm-flow counterpart).
-_SES_TAB_PREFIXES = {CB_CMD_MODEL, CB_CMD_MCP, CB_CMD_RESUME, CB_CMD_EFFORT}
+_SES_TAB_PREFIXES = {CB_CMD_MODEL, CB_CMD_MCP, CB_CMD_RESUME, CB_CMD_CONTEXT}
 
 
 async def _post_slash_context(

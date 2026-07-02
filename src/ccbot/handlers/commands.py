@@ -1110,12 +1110,13 @@ def _build_commands_keyboard(
     screenshot-keys handler (CB_KEYS_PREFIX:kb), which knows how to send
     a key and refresh the photo while preserving the active tab.
 
-    Act tab («Действия») — the everyday actions only: Mode / Context /
+    Act tab («Действия») — the everyday on-the-fly toggles: Mode / Effort /
     Compact / Clear. Kept to two rows so the pane photo — the actual
     content — stays on screen instead of being pushed off by the keyboard.
 
-    Ses tab («Сессия») — set-and-forget config (Model / Effort / MCP) and
-    lifecycle (Resume / New / Restart / End / worktree fork+delete).
+    Ses tab («Сессия») — session config & diagnostics (Model / Context /
+    MCP) and lifecycle (Resume / New / Restart / End / worktree
+    fork+delete).
 
     Colour grammar (see architecture.md): red = irreversible loss (Clear /
     End / delete-agent), blue = the primary tap (Refresh), everything else
@@ -1178,14 +1179,19 @@ def _build_commands_keyboard(
             label, callback_data=f"{CB_KEYS_PREFIX}{key_id}:{wid_short}"[:64]
         )
 
-    # Tab switcher row — `·` after the label marks the active tab.
-    # Tapping the active tab is a no-op (same callback would re-render
-    # the same keyboard); we still emit the callback so Telegram closes
-    # the spinner instead of leaving it spinning.
+    # Tab switcher row — the active tab swaps its icon for a «▸» pointer.
+    # A suffix marker (`label ·`) made the longest label («⚙️ Session ·»)
+    # overflow the three-per-row button width on phones and Telegram clipped
+    # it to «Sessio…»; replacing the wide emoji with a narrow pointer keeps
+    # the active label strictly narrower than the idle one. Tapping the
+    # active tab is a no-op (same callback re-renders the same keyboard);
+    # we still emit the callback so Telegram closes the spinner instead of
+    # leaving it spinning.
     def tab_btn(tab_id: Tab, label_key: str) -> InlineKeyboardButton:
         label = tr(label_key)
         if tab == tab_id:
-            label = f"{label} ·"
+            parts = label.split(" ", 1)
+            label = f"▸ {parts[1]}" if len(parts) == 2 else f"▸ {label}"
         return InlineKeyboardButton(
             label, callback_data=f"{CB_CMD_TAB}{tab_id}:{wid_short}"[:64]
         )
@@ -1235,11 +1241,13 @@ def _build_commands_keyboard(
         ]
     elif tab == "act":
         # Только ежедневное — два ряда, чтобы фото панели оставалось на
-        # экране. Всё установочное/жизненный цикл — на вкладке «Сессия».
+        # экране. Режим и Усилие — переключатели «на ходу» (пара по духу);
+        # Контекст — диагностика состояния сессии, живёт на «Сессии».
+        # Всё установочное/жизненный цикл — тоже там.
         body = [
             [
                 cmd_btn(tr("commands.btn_mode"), CB_CMD_MODE_CYCLE),
-                cmd_btn(tr("commands.btn_context"), CB_CMD_CONTEXT),
+                cmd_btn(tr("commands.btn_effort"), CB_CMD_EFFORT),
             ],
             [
                 cmd_btn(tr("commands.btn_compact"), CB_CMD_COMPACT),
@@ -1251,14 +1259,14 @@ def _build_commands_keyboard(
             ],
         ]
     else:
-        # «Сессия»: set-and-forget конфиг + жизненный цикл. Тройка
-        # Модель/Усилие/MCP — подписи короткие, на телефоне не ужимаются;
+        # «Сессия»: конфиг и диагностика сессии + жизненный цикл. Тройка
+        # Модель/Контекст/MCP — подписи короткие, на телефоне не ужимаются;
         # остальное строго по двое. 🌳 заводит параллельного
         # агента-worktree в этом же проекте.
         body = [
             [
                 cmd_btn(tr("commands.btn_model"), CB_CMD_MODEL),
-                cmd_btn(tr("commands.btn_effort"), CB_CMD_EFFORT),
+                cmd_btn(tr("commands.btn_context"), CB_CMD_CONTEXT),
                 cmd_btn("🔌 MCP", CB_CMD_MCP),
             ],
             [
