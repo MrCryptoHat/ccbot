@@ -3,6 +3,7 @@
 import pytest
 
 from ccbot.terminal_parser import (
+    detect_model_switch,
     extract_bash_output,
     extract_interactive_content,
     is_claude_working,
@@ -631,3 +632,43 @@ class TestLoginPromptDetection:
         assert content is not None
         assert content.name == "LoginPrompt"
         assert parse_login_url(pane) == _LOGIN_URL
+
+
+# ── detect_model_switch ──────────────────────────────────────────────────
+
+
+class TestDetectModelSwitch:
+    """Fable 5's safeguard notice ("Switched to Opus 4.8.") lives in the pane
+    transcript only, never the JSONL — the status poll catches it here."""
+
+    def test_full_wrapped_notice_returns_model(self):
+        # Word-wrapped exactly as the pane renders it (4 rows for one sentence).
+        pane = (
+            "● Fable 5's safeguards flagged this message. The safeguards are "
+            "intentionally broad right now and\n"
+            "  may flag safe and routine coding, cybersecurity, or biology work. "
+            "These measures let us bring you\n"
+            "  Mythos-level capabilities sooner, and we're working to refine "
+            "them. Switched to Opus 4.8. Send\n"
+            "  feedback with /feedback or Learn more\n"
+            "  └ Tip: You can configure model switch behavior in /config\n"
+        )
+        # Not clipped to "Opus 4" at the "4.8" dot.
+        assert detect_model_switch(pane) == "Opus 4.8"
+
+    def test_model_at_end_no_trailing_sentence(self):
+        pane = "safeguards flagged this message ... Switched to Opus 4.8."
+        assert detect_model_switch(pane) == "Opus 4.8"
+
+    def test_notice_present_but_model_unparseable_returns_empty(self):
+        # Empty string (falsy) signals "notice present, name unknown" so the
+        # caller still notifies (with a generic model label).
+        assert detect_model_switch("safeguards flagged this message, no target") == ""
+
+    def test_no_notice_returns_none(self):
+        # The word "safeguards" alone in a transcript must not false-fire.
+        pane = "esc to interrupt · a normal reply mentioning safeguards in prose."
+        assert detect_model_switch(pane) is None
+
+    def test_empty_pane_returns_none(self):
+        assert detect_model_switch("") is None

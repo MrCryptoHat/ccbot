@@ -575,6 +575,14 @@ STRINGS.update(
             "ru": "💀 Окно *{name}* закрыто (агент не работал {secs}с).",
             "en": "💀 Window *{name}* closed (the agent was down for {secs}s).",
         },
+        "spoll.model_switched": {
+            "ru": "⚠️ Сработал предохранитель модели на последнее сообщение — агент сам переключился на {model}. Сейчас предохранители широкие и могут срабатывать даже на безопасные задачи (код, кибербезопасность, биология).",
+            "en": "⚠️ A model safeguard fired on the last message — the agent auto-switched to {model}. Safeguards are broad right now and can trip even on safe work (coding, cybersecurity, biology).",
+        },
+        "spoll.model_switched_fallback": {
+            "ru": "другую модель",
+            "en": "another model",
+        },
         # -- wt --
         "wt.agent_deleted": {
             "ru": "🗑 Агент «{title}» удалён.",

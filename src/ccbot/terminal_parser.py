@@ -16,8 +16,8 @@ All Claude Code text patterns live here. To support a new UI type or
 a changed Claude Code version, edit UI_PATTERNS / STATUS_SPINNERS.
 
 Key functions: is_interactive_ui(), extract_interactive_content(),
-is_claude_working(), parse_status_line(), strip_pane_chrome(),
-extract_bash_output().
+is_claude_working(), parse_status_line(), detect_model_switch(),
+strip_pane_chrome(), extract_bash_output().
 """
 
 import logging
@@ -515,6 +515,36 @@ def _warn_unrecognized_status(status: str) -> None:
         "changed; busy-detection degraded): %r",
         key,
     )
+
+
+# ── Automatic model-switch (safeguard) notice ───────────────────────────
+
+# Fable 5 (and future peers) silently downgrade to a fallback model when their
+# safeguards flag a message, printing a yellow notice block into the transcript
+# — NOT the JSONL, so SessionMonitor never sees it. We catch it by scanning the
+# live pane. The trigger phrase is stable across the notice's wording; the
+# fallback model ("Switched to Opus 4.8.") is parsed when present. Whitespace is
+# flattened before matching so the pane's word-wrapping can't split the phrase.
+_SAFEGUARD_NOTICE_RE = re.compile(r"safeguards flagged this message", re.IGNORECASE)
+# ". " / end anchors the model name so "Opus 4.8" isn't clipped to "Opus 4" at
+# the "4.8" dot; length-capped to stay a model name, not a runaway match.
+_SWITCHED_TO_RE = re.compile(r"Switched to (.{1,40}?)\.(?:\s|$)", re.IGNORECASE)
+
+
+def detect_model_switch(pane_text: str) -> str | None:
+    """Detect Claude Code's safeguard model-switch notice in a captured pane.
+
+    Returns the fallback model name (e.g. ``"Opus 4.8"``) when the notice is on
+    screen, an empty string when the notice is present but the model name
+    couldn't be parsed, or ``None`` when there is no such notice.
+    """
+    if not pane_text:
+        return None
+    flat = " ".join(pane_text.split())
+    if not _SAFEGUARD_NOTICE_RE.search(flat):
+        return None
+    m = _SWITCHED_TO_RE.search(flat)
+    return m.group(1).strip() if m else ""
 
 
 # ── Pane chrome stripping & bash output extraction ─────────────────────

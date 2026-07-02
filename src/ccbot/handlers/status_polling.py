@@ -38,7 +38,11 @@ from telegram.error import BadRequest
 from ..i18n import tr
 from ..rate_limiter import background_context
 from ..session import session_manager
-from ..terminal_parser import has_queued_messages, is_interactive_ui
+from ..terminal_parser import (
+    detect_model_switch,
+    has_queued_messages,
+    is_interactive_ui,
+)
 from ..tmux_manager import tmux_manager
 from .reaction_emit import maybe_fire as fire_reaction_ack
 from .interactive_ui import (
@@ -87,6 +91,12 @@ ORPHAN_WINDOW_GRACE = 90.0  # seconds
 # thread_id or 0) → monotonic time of last send.)
 TYPING_HEARTBEAT_INTERVAL = 4.0  # seconds
 _typing_last_sent: dict[tuple[int, int], float] = {}
+
+# Rising-edge dedup for the safeguard model-switch notice: True while the notice
+# is on this window's pane (so the 1s poll notifies once, not every tick),
+# re-armed when it scrolls off so a later switch is announced again. Keyed by
+# binding value (window_id / "docker:<agent>").
+_model_switch_seen: dict[str, bool] = {}
 
 
 async def update_status_message(
@@ -142,6 +152,33 @@ async def update_status_message(
     # i.e. a message armed on delivery is now taken into the agent's context, not
     # left buffered behind a running turn. No-op unless something is armed.
     await fire_reaction_ack(bot, window_id, has_queue=has_queued_messages(pane_text))
+
+    # Safeguard model-switch notice — Fable 5 (etc.) silently downgrades to a
+    # fallback model when its safeguards flag a message, printing a notice into
+    # the transcript only (never the JSONL, so the monitor can't surface it).
+    # Catch it off the live pane and tell the user at once. Rising-edge dedup
+    # per window: notify once while the notice is on screen, re-arm when it
+    # scrolls off. Runs before the interactive-UI early returns so it fires for
+    # both tmux and docker bindings.
+    switched_to = detect_model_switch(pane_text)
+    if switched_to is not None:
+        if not _model_switch_seen.get(window_id):
+            _model_switch_seen[window_id] = True
+            try:
+                chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+                await safe_send(
+                    bot,
+                    chat_id,
+                    tr(
+                        "spoll.model_switched",
+                        model=switched_to or tr("spoll.model_switched_fallback"),
+                    ),
+                    message_thread_id=thread_id,
+                )
+            except Exception as e:
+                logger.debug("Model-switch notice send failed for %s: %s", window_id, e)
+    else:
+        _model_switch_seen.pop(window_id, None)
 
     interactive_window = get_interactive_window(user_id, thread_id)
     should_check_new_ui = True
