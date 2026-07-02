@@ -81,6 +81,7 @@ from .callback_data import (
     CB_WIN_BIND,
     CB_WIN_CANCEL,
     CB_WIN_NEW,
+    CB_WT_CANCEL,
     CB_WT_DEL,
     CB_WT_DELNO,
     CB_WT_DELOK,
@@ -113,6 +114,7 @@ from .interactive_ui import (
 )
 from .message_sender import safe_edit, safe_send
 from .worktrees import (
+    _handle_wt_cancel,
     _handle_wt_del,
     _handle_wt_delno,
     _handle_wt_delok,
@@ -1611,6 +1613,7 @@ _EXACT_DISPATCH: dict[str, Any] = {
     CB_STATUS_REFRESH: _handle_status_refresh,
     CB_WIN_NEW: _handle_win_new,
     CB_WIN_CANCEL: _handle_win_cancel,
+    CB_WT_CANCEL: _handle_wt_cancel,
     "noop": _handle_noop,
 }
 

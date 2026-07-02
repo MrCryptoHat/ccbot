@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 from telegram import (
@@ -42,6 +43,7 @@ from ..tmux_manager import tmux_manager
 from ..worktrees import WorktreeMeta
 from . import get_thread_id
 from .callback_data import (
+    CB_WT_CANCEL,
     CB_WT_DEL,
     CB_WT_DELNO,
     CB_WT_DELOK,
@@ -57,6 +59,26 @@ logger = logging.getLogger(__name__)
 
 # user_data state value + keys for the "name your task" step.
 STATE_WT_NAMING = "wt_naming"
+# The naming state must not live forever: an abandoned 🌳 tap would silently
+# eat the NEXT message in the topic (however much later) as a task name.
+# Past the TTL the state clears itself and the message routes normally.
+WT_NAMING_TTL_SEC = 300.0
+
+
+def _clear_wt_naming(ud: dict | None) -> None:
+    """Drop every naming-step key (state, repo, chat, thread, deadline)."""
+    if ud is None:
+        return
+    for key in (
+        STATE_KEY,
+        "_wt_repo",
+        "_wt_chat_id",
+        "_wt_source_thread",
+        "_wt_deadline",
+    ):
+        ud.pop(key, None)
+
+
 # External `preview` CLI + its registry (paths overridable via CCBOT_PREVIEW_*;
 # default to this server's XDG layout). Absent on a plain host → the registry
 # read below fails soft and teardown just skips the preview-down step.
@@ -256,13 +278,33 @@ async def _handle_wt_new(
         context.user_data["_wt_repo"] = str(base_repo)
         context.user_data["_wt_chat_id"] = chat_id
         context.user_data["_wt_source_thread"] = thread_id
+        context.user_data["_wt_deadline"] = time.monotonic() + WT_NAMING_TTL_SEC
     await query.answer()
     await safe_send(
         context.bot,
         chat_id,
         tr("wt.new_agent_prompt", repo=repo_name),
         message_thread_id=thread_id,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton(tr("wt.cancel"), callback_data=CB_WT_CANCEL)]]
+        ),
     )
+
+
+async def _handle_wt_cancel(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+) -> None:
+    """↩ Отмена on the "name the task" prompt — drop the naming state."""
+    _clear_wt_naming(context.user_data)
+    await query.answer(tr("cb.cancelled"))
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.debug("wt cancel keyboard clear failed: %s", e)
 
 
 async def consume_worktree_name(
@@ -276,6 +318,13 @@ async def consume_worktree_name(
     ud = context.user_data
     if not ud or ud.get(STATE_KEY) != STATE_WT_NAMING:
         return False
+    # Stale naming state (user tapped 🌳, walked away): let the message
+    # fall through to normal routing — it reaches the agent instead of
+    # silently becoming a worktree name.
+    deadline = ud.get("_wt_deadline")
+    if isinstance(deadline, float) and time.monotonic() > deadline:
+        _clear_wt_naming(ud)
+        return False
     thread_id = get_thread_id(update)
     if ud.get("_wt_source_thread") != thread_id:
         return False  # state belongs to a different topic — don't consume
@@ -285,8 +334,7 @@ async def consume_worktree_name(
 
     base_repo = Path(str(ud.pop("_wt_repo", "")))
     chat_id = int(ud.pop("_wt_chat_id", 0))
-    ud.pop("_wt_source_thread", None)
-    ud.pop(STATE_KEY, None)
+    _clear_wt_naming(ud)
     task_title = (update.message.text or "").strip()
 
     if not task_title:
