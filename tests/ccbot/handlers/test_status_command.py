@@ -1,9 +1,45 @@
 """Tests for status_command — /status output composition."""
 
+import re
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from ccbot import i18n
+from ccbot.handlers.commands import _format_cron_groups
+
+
+class TestCronGroupsLocalization:
+    """The cron block is part of /status — one of the two persistent menu
+    buttons — so a Russian label leaking into the English UI is the most
+    visible i18n regression there is."""
+
+    ENTRIES = [
+        ("*/5 * * * *", "/x/health.sh", "healthcheck"),
+        ("30 3 * * 0", "/x/backup.sh", "weekly backup"),
+        ("15 */4 * * *", "/x/sync.sh", None),
+        ("0 * * * *", "/x/hourly.sh", "hourly"),
+        ("@reboot", "/x/boot.sh", "boot"),
+    ]
+
+    def test_en_output_has_no_cyrillic(self):
+        i18n.set_language("en")
+        try:
+            out = "\n".join(_format_cron_groups(self.ENTRIES))
+        finally:
+            i18n.set_language("ru")
+        assert not re.search(r"[а-яА-Я]", out), out
+
+    def test_weekday_groups_follow_language(self):
+        i18n.set_language("en")
+        try:
+            out_en = "\n".join(_format_cron_groups(self.ENTRIES))
+        finally:
+            i18n.set_language("ru")
+        out_ru = "\n".join(_format_cron_groups(self.ENTRIES))
+        assert "(Sun)" in out_en and "5m" in out_en and "every 4h" in out_en
+        assert "(вс)" in out_ru and "5м" in out_ru and "каждые 4ч" in out_ru
 
 
 def _make_update(user_id: int = 1) -> MagicMock:

@@ -136,7 +136,7 @@ async def _validate_media_context(
         if update.message:
             await safe_reply(
                 update.message,
-                "❌ Please use a named topic. Create a new topic to start a session.",
+                tr("media.use_topic"),
             )
         return None, "no_topic"
 
@@ -145,7 +145,7 @@ async def _validate_media_context(
         if update.message:
             await safe_reply(
                 update.message,
-                "❌ No session bound to this topic. Send a text message first to create one.",
+                tr("media.no_binding"),
             )
         return None, "no_binding"
 
@@ -161,8 +161,7 @@ async def _validate_media_context(
             if update.message:
                 await safe_reply(
                     update.message,
-                    f"❌ Window '{display}' no longer exists. Binding removed.\n"
-                    "Send a message to start a new session.",
+                    tr("media.window_gone", name=display),
                 )
             return None, "window_gone"
 
@@ -213,7 +212,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await safe_reply(update.message, f"❌ {message}")
         return
 
-    await safe_reply(update.message, "📷 Image sent to Claude Code.")
+    await safe_reply(update.message, tr("media.image_sent"))
 
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -293,9 +292,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             tr("media.archive_sent", name=original_name),
         )
     else:
-        await safe_reply(
-            update.message, f"📎 File '{original_name}' sent to Claude Code."
-        )
+        await safe_reply(update.message, tr("media.file_sent", name=original_name))
 
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -315,8 +312,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not config.deepgram_api_key and not config.openai_api_key:
         await safe_reply(
             update.message,
-            "⚠ Voice transcription requires an API key.\n"
-            "Set `DEEPGRAM_API_KEY` or `OPENAI_API_KEY` in your `.env` file and restart the bot.",
+            tr("media.voice_needs_key"),
         )
         return
 
@@ -340,7 +336,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     except Exception as e:
         logger.error("Voice transcription failed: %s", e)
-        await safe_reply(update.message, f"⚠ Transcription failed: {e}")
+        await safe_reply(update.message, tr("media.transcribe_failed", err=e))
         return
 
     await update.message.chat.send_action(ChatAction.TYPING)

@@ -366,6 +366,20 @@ STRINGS.update(
             "en": "❌ The container is not running.",
         },
         "commands.cron_boot": {"ru": " 🚀 при старте", "en": " 🚀 at boot"},
+        "commands.cron_label_min": {"ru": "{n}м", "en": "{n}m"},
+        "commands.cron_label_hourly": {"ru": "1ч (:{mm})", "en": "1h (:{mm})"},
+        "commands.cron_label_every_h": {
+            "ru": "{t1},{t2}… (каждые {n}ч)",
+            "en": "{t1},{t2}… (every {n}h)",
+        },
+        "commands.cron_stopped": {"ru": "cron остановлен", "en": "cron is stopped"},
+        "commands.cron_wd_0": {"ru": "пн", "en": "Mon"},
+        "commands.cron_wd_1": {"ru": "вт", "en": "Tue"},
+        "commands.cron_wd_2": {"ru": "ср", "en": "Wed"},
+        "commands.cron_wd_3": {"ru": "чт", "en": "Thu"},
+        "commands.cron_wd_4": {"ru": "пт", "en": "Fri"},
+        "commands.cron_wd_5": {"ru": "сб", "en": "Sat"},
+        "commands.cron_wd_6": {"ru": "вс", "en": "Sun"},
         "commands.cron_daily": {"ru": " ⏰ ежедневно", "en": " ⏰ daily"},
         "commands.cron_interval": {
             "ru": " ⏰ каждые N мин/ч",
@@ -545,6 +559,34 @@ STRINGS.update(
         "media.unsupported": {
             "ru": "⚠ Стикеры, видео и прочие медиа я переслать агенту не могу. Подойдут текст, фото, голосовые и файлы.",
             "en": "⚠ Stickers, video and other media can't be forwarded to Claude Code. Text, photos, voice messages and files work.",
+        },
+        "media.use_topic": {
+            "ru": "❌ Пишите в отдельном топике — создайте новый топик, чтобы начать сессию.",
+            "en": "❌ Please use a named topic. Create a new topic to start a session.",
+        },
+        "media.no_binding": {
+            "ru": "❌ В этом топике нет агента. Сначала отправьте текстовое сообщение — предложу выбрать папку, — а потом пришлите файл ещё раз.",
+            "en": "❌ No session bound to this topic. Send a text message first to set one up, then re-send the file.",
+        },
+        "media.window_gone": {
+            "ru": "❌ Агент «{name}» больше не запущен, привязка снята.\nОтправьте сообщение, чтобы начать новую сессию.",
+            "en": "❌ Window '{name}' no longer exists. Binding removed.\nSend a message to start a new session.",
+        },
+        "media.image_sent": {
+            "ru": "📷 Фото передал агенту.",
+            "en": "📷 Image sent to Claude Code.",
+        },
+        "media.file_sent": {
+            "ru": "📎 Файл «{name}» передал агенту.",
+            "en": "📎 File '{name}' sent to Claude Code.",
+        },
+        "media.voice_needs_key": {
+            "ru": "⚠ Для распознавания голоса нужен API-ключ.\nДобавьте `DEEPGRAM_API_KEY` или `OPENAI_API_KEY` в `.env` и перезапустите бота.",
+            "en": "⚠ Voice transcription requires an API key.\nSet `DEEPGRAM_API_KEY` or `OPENAI_API_KEY` in your `.env` file and restart the bot.",
+        },
+        "media.transcribe_failed": {
+            "ru": "⚠ Не получилось распознать голос, попробуйте ещё раз. ({err})",
+            "en": "⚠ Transcription failed, please try again. ({err})",
         },
         "media.archive_sent": {
             "ru": "📦 Архив «{name}» отправлен агенту — попросил его распаковать.",

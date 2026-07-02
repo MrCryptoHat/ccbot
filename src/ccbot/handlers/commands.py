@@ -85,29 +85,19 @@ STATUS_USER_SERVICES_WHITELIST = {
     s.strip() for s in os.getenv("CCBOT_STATUS_SERVICES", "").split(",") if s.strip()
 }
 
-_CRON_WEEKDAYS = {
-    "0": "воскресенье",
-    "7": "воскресенье",
-    "1": "понедельник",
-    "2": "вторник",
-    "3": "среда",
-    "4": "четверг",
-    "5": "пятница",
-    "6": "суббота",
+# Canonical weekday index for cron dow tokens: Monday=0 … Sunday=6. The
+# rendered label comes from the i18n catalog (commands.cron_wd_<i>) at
+# format time, so /status weekday groups follow the active UI language.
+_CRON_DOW_CANON = {
+    "1": 0,
+    "2": 1,
+    "3": 2,
+    "4": 3,
+    "5": 4,
+    "6": 5,
+    "0": 6,
+    "7": 6,
 }
-
-# Compact weekday labels for grouped schedule rendering (`⏰ еженедельно (вс)`).
-_CRON_WEEKDAYS_SHORT = {
-    "0": "вс",
-    "7": "вс",
-    "1": "пн",
-    "2": "вт",
-    "3": "ср",
-    "4": "чт",
-    "5": "пт",
-    "6": "сб",
-}
-_CRON_WEEKDAY_ORDER = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
 def _cron_parse_line(line: str) -> tuple[str, str] | None:
@@ -123,31 +113,6 @@ def _cron_parse_line(line: str) -> tuple[str, str] | None:
     if len(parts) != 6:
         return None
     return " ".join(parts[:5]), parts[5]
-
-
-def _cron_human_schedule(raw: str) -> str:
-    if raw.startswith("@reboot"):
-        return "при старте"
-    parts = raw.split()
-    if len(parts) != 5:
-        return raw
-    m, h, dom, mon, dow = parts
-    all_stars = dom == "*" and mon == "*" and dow == "*"
-    if m.startswith("*/") and h == "*" and all_stars:
-        return f"каждые {m[2:]} мин"
-    if m.isdigit() and h == "*" and all_stars:
-        return f"раз в час в :{m.zfill(2)}"
-    if m.isdigit() and h.isdigit() and all_stars:
-        return f"каждый день в {h}:{m.zfill(2)}"
-    if (
-        m.isdigit()
-        and h.isdigit()
-        and dom == "*"
-        and mon == "*"
-        and dow in _CRON_WEEKDAYS
-    ):
-        return f"{_CRON_WEEKDAYS[dow]} в {h}:{m.zfill(2)}"
-    return raw
 
 
 def _cron_script_name(command: str) -> str:
@@ -200,14 +165,15 @@ def _tree_list(items: list[str], indent: str = " ") -> list[str]:
     return [f"{indent}{'└' if i == n - 1 else '├'} {it}" for i, it in enumerate(items)]
 
 
-# Cron classification — group/sort_key/time_label/desc/weekday_short.
+# Cron classification — group/sort_key/time_label/desc/weekday_index.
 # Groups: "daily" (fires at fixed time(s) every day), "weekly" (specific
-# weekday — grouped further), "interval" (every N min/hour regardless of
-# date), "boot" (@reboot). Fallback is "interval" with the raw expression
-# as the label so we don't silently lose unparseable entries.
+# weekday — grouped further, index Monday=0…Sunday=6), "interval" (every N
+# min/hour regardless of date), "boot" (@reboot). Fallback is "interval"
+# with the raw expression as the label so we don't silently lose
+# unparseable entries.
 def _classify_cron(
     schedule_raw: str, command: str, desc: str | None
-) -> tuple[str, tuple, str, str, str | None]:
+) -> tuple[str, tuple, str, str, int | None]:
     label_desc = desc if desc else _cron_script_name(command)
     if schedule_raw.startswith("@reboot"):
         return ("boot", (0,), "", label_desc, None)
@@ -223,14 +189,14 @@ def _classify_cron(
             n = int(m[2:])
         except ValueError:
             return ("interval", (10**9,), schedule_raw, label_desc, None)
-        return ("interval", (n,), f"{n}м", label_desc, None)
+        return ("interval", (n,), tr("commands.cron_label_min", n=n), label_desc, None)
 
-    # Interval — specific minute, every hour. Label as "1ч (:MM)".
+    # Interval — specific minute, every hour. Label as "1h (:MM)".
     if m.isdigit() and h == "*" and all_dates_stars:
         return (
             "interval",
             (60, int(m)),
-            f"1ч (:{m.zfill(2)})",
+            tr("commands.cron_label_hourly", mm=m.zfill(2)),
             label_desc,
             None,
         )
@@ -252,7 +218,7 @@ def _classify_cron(
         elif len(times) == 2:
             label = ",".join(times)
         else:
-            label = f"{times[0]},{times[1]}… (каждые {step}ч)"
+            label = tr("commands.cron_label_every_h", t1=times[0], t2=times[1], n=step)
         first_h = int(times[0].split(":")[0])
         return ("daily", (first_h, mm), label, label_desc, None)
 
@@ -272,14 +238,14 @@ def _classify_cron(
         and h.isdigit()
         and dom == "*"
         and mon == "*"
-        and dow in _CRON_WEEKDAYS_SHORT
+        and dow in _CRON_DOW_CANON
     ):
         return (
             "weekly",
             (int(h), int(m)),
             f"{h.zfill(2)}:{m.zfill(2)}",
             label_desc,
-            _CRON_WEEKDAYS_SHORT[dow],
+            _CRON_DOW_CANON[dow],
         )
 
     # Anything else — keep visible but in interval group with raw expr.
@@ -294,7 +260,7 @@ def _format_cron_groups(
     classified = [_classify_cron(s, c, d) for (s, c, d) in entries]
 
     daily: list[tuple[tuple, str, str]] = []
-    weekly_by_wd: dict[str, list[tuple[tuple, str, str]]] = {}
+    weekly_by_wd: dict[int, list[tuple[tuple, str, str]]] = {}
     interval: list[tuple[tuple, str, str]] = []
     boot: list[str] = []
     for g, k, lbl, desc, wd in classified:
@@ -316,9 +282,9 @@ def _format_cron_groups(
     if daily:
         out.append(tr("commands.cron_daily"))
         out.extend(_tree_list([f"{lbl} — {desc}" for (_, lbl, desc) in daily], "  "))
-    for wd in _CRON_WEEKDAY_ORDER:
+    for wd in range(7):
         if wd in weekly_by_wd:
-            out.append(tr("commands.cron_weekly", wd=wd))
+            out.append(tr("commands.cron_weekly", wd=tr(f"commands.cron_wd_{wd}")))
             out.extend(
                 _tree_list(
                     [f"{lbl} — {desc}" for (_, lbl, desc) in weekly_by_wd[wd]],
@@ -964,7 +930,7 @@ def _build_status_text_sync(windows: list) -> str:
                 cron_active = False
             header_emoji = "🟢" if cron_active else "🔴"
             if not cron_active:
-                warnings.append("cron остановлен")
+                warnings.append(tr("commands.cron_stopped"))
             grouped = _format_cron_groups(entries)
             grouped_text = "\n".join(grouped)
             # Telegram caps a single message at 4096 chars. MarkdownV2
