@@ -1214,30 +1214,32 @@ def _build_commands_keyboard(
     ]
 
     if tab == "nav":
-        # Сверху Ctrl-комбо: ⎋ ^C — «упс, отмена/прервать», ^B — отправить
-        # запущенный субагент / долгую bash-команду в фон и продолжить
-        # общаться. Снизу рабочий ряд / ← → ↑ ↓ ⏎ — открыть Claude-овское
-        # slash-меню, походить по нему (←/→ ходят по табам диалогов,
-        # например в permission-промптах) и подтвердить. Стрелки в порядке
-        # чтения: лево, право, верх, низ. Раздельно потому, что у этих двух
-        # групп противоположное настроение и смешивать их в одну строку (как
-        # было одним рядом) — глаз каждый раз ищет нужное. «Стереть ввод» —
-        # тоже операция со строкой ввода, поэтому живёт здесь, не в действиях.
+        # Сверху ряд «прервать/отменить»: ⎋ ^C — «упс, стоп», «В фон» (^B) —
+        # отправить запущенный субагент / долгую bash-команду в фон и
+        # продолжать общаться. Средний ряд — только стрелки (навигация по
+        # Claude-овским диалогам и permission-промптам). ⏎ живёт в нижнем
+        # ряду СПРАВА, а не рядом с ↓: в старом едином ряду / ← → ↑ ↓ ⏎
+        # промах большим пальцем по ↓ попадал в Enter и подтверждал живой
+        # permission-промпт — у сырых клавиш нет confirm-шага. «/» открывает
+        # slash-меню Claude; «Стереть» — операция со строкой ввода, поэтому
+        # живёт с клавишами, не в действиях.
         body = [
             [
                 key_btn("⎋ Esc", "esc"),
                 key_btn("Ctrl + C", "cc"),
-                key_btn("Ctrl + B", "cb"),
+                key_btn(tr("commands.key_background"), "cb"),
+            ],
+            [
+                key_btn("↑", "up"),
+                key_btn("↓", "dn"),
+                key_btn("←", "lt"),
+                key_btn("→", "rt"),
             ],
             [
                 key_btn("/", "slash"),
-                key_btn("←", "lt"),
-                key_btn("→", "rt"),
-                key_btn("↑", "up"),
-                key_btn("↓", "dn"),
-                key_btn("⏎", "ent"),
+                cmd_btn(tr("commands.btn_wipe_input"), CB_CMD_WIPE_INPUT),
+                key_btn(tr("commands.key_enter"), "ent"),
             ],
-            [cmd_btn(tr("commands.btn_wipe_input"), CB_CMD_WIPE_INPUT)],
         ]
     elif tab == "act":
         # Только ежедневное — два ряда, чтобы фото панели оставалось на
@@ -1284,16 +1286,17 @@ def _build_commands_keyboard(
             [cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW)],
         ]
         # Worktree topics get an explicit instant delete (no waiting for the
-        # hard-delete probe). Plain project topics never show it.
+        # hard-delete probe) — on the SAME row as 🌳, so the worst-case tab
+        # stays within the row budget and the pane photo keeps fitting on
+        # screen. Plain project topics never show it. The red confirm step
+        # guards the create/destroy adjacency.
         if session_manager.is_worktree_window(window_id):
-            body.append(
-                [
-                    cmd_btn(
-                        tr("commands.btn_delete_agent"),
-                        CB_WT_DEL,
-                        style=KeyboardButtonStyle.DANGER,
-                    )
-                ]
+            body[-1].append(
+                cmd_btn(
+                    tr("commands.btn_delete_agent"),
+                    CB_WT_DEL,
+                    style=KeyboardButtonStyle.DANGER,
+                )
             )
 
     return InlineKeyboardMarkup([tab_row, *body, refresh_row])
