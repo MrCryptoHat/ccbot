@@ -327,9 +327,7 @@ STRINGS.update(
         },
         "commands.btn_restart": {"ru": "🔄 Перезапуск", "en": "🔄 Restart"},
         "commands.btn_resume": {"ru": "⏪ Продолжить", "en": "⏪ Resume"},
-        "commands.btn_wipe_input": {"ru": "🧽 Стереть", "en": "🧽 Wipe"},
-        "commands.key_background": {"ru": "⏬ В фон", "en": "⏬ Background"},
-        "commands.key_enter": {"ru": "⏎ Ввод", "en": "⏎ Enter"},
+        "commands.btn_wipe_input": {"ru": "🧽 Стереть ввод", "en": "🧽 Wipe input"},
         "commands.cancel": {"ru": "↩ Отмена", "en": "↩ Cancel"},
         "commands.confirm_clear_btn": {"ru": "🧹 Да, очистить", "en": "🧹 Yes, clear"},
         "commands.confirm_clear_desc": {
