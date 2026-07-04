@@ -390,6 +390,23 @@ class Config:
             os.getenv("CCBOT_REACTION_ACK", "true").lower() != "false"
         )
 
+        # Task-pin mode: auto-pin a user message that reads as a NEW TASK —
+        # at least pin_tasks_min_chars characters AND sent to an idle agent
+        # (a short "да, делай" or a mid-turn follow-up never pins). ON by
+        # default in every topic; /pin toggles it per topic. The threshold is
+        # the only other knob; the idle check is hard-wired because without
+        # it every long clarification mid-conversation would pin too.
+        self.pin_tasks_default: bool = (
+            os.getenv("CCBOT_PIN_DEFAULT", "true").lower() != "false"
+        )
+        try:
+            self.pin_tasks_min_chars: int = int(os.getenv("CCBOT_PIN_MIN_CHARS", "200"))
+        except ValueError as e:
+            raise ValueError(
+                f"CCBOT_PIN_MIN_CHARS must be an integer "
+                f"(got {os.getenv('CCBOT_PIN_MIN_CHARS')!r})"
+            ) from e
+
         # Transparent session resume on auto-bind/rebind. OFF by default (the
         # interactive session picker is the norm). When ON, a topic auto-binding
         # to a folder that already has Claude history silently continues the most

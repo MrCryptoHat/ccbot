@@ -62,6 +62,7 @@ from .handlers.commands import (
     status_command,
     topic_closed_handler,
     topic_created_handler,
+    pin_command,
     topic_edited_handler,
     unsupported_content_handler,
     voice_command,
@@ -112,6 +113,11 @@ from .handlers.message_sender import (
 from .handlers.diff_view import EDIT_TOOLS
 from .handlers.diff_view import capture_and_send as capture_and_send_diffs
 from .handlers.reaction_confirm import handle_message_reaction
+from .handlers.task_pin import (
+    pin_task_message,
+    pinned_service_message_handler,
+    should_pin_task,
+)
 from .handlers.response_builder import build_response_parts
 from .handlers.status_polling import status_poll_loop
 from .markdown_v2 import convert_markdown
@@ -462,6 +468,13 @@ async def _forward_text_to_agent(
     # so without this poll the photo never reaches Telegram and the user
     # types blind into a TUI.
     pane_text = await session_manager.capture_pane(wid)
+
+    # Task-pin (/pin): decide on the PRE-send pane — after the send the agent
+    # is working on this very message and the idle check would always fail.
+    pin_candidate = await should_pin_task(
+        user_id, thread_id, wid, text, pane_text=pane_text
+    )
+
     if pane_text and is_interactive_ui(pane_text):
         logger.info(
             "Detected pending interactive UI before sending text (user=%d, thread=%s)",
@@ -505,6 +518,11 @@ async def _forward_text_to_agent(
     if status == "error":
         await safe_reply(update.message, f"❌ {detail}")
         return
+
+    if pin_candidate:
+        await pin_task_message(
+            context.bot, update.message.chat.id, update.message.message_id
+        )
 
     # Send typing indicator
     try:
@@ -1217,6 +1235,7 @@ def create_bot() -> Application:
     application.add_handler(CommandHandler("voice", voice_command))
     application.add_handler(CommandHandler("react", react_command))
     application.add_handler(CommandHandler("diff", diff_command))
+    application.add_handler(CommandHandler("pin", pin_command))
     application.add_handler(CommandHandler("lang", lang_command))
     application.add_handler(CommandHandler("bind", bind_command))
     application.add_handler(CommandHandler("menu", menu_command))
@@ -1240,6 +1259,14 @@ def create_bot() -> Application:
         MessageHandler(
             filters.StatusUpdate.FORUM_TOPIC_EDITED,
             topic_edited_handler,
+        )
+    )
+    # Clean up the «pinned a message» service line for the bot's own /pin
+    # task pins (a user's manual pins keep theirs).
+    application.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.PINNED_MESSAGE,
+            pinned_service_message_handler,
         )
     )
     application.add_handler(MessageHandler(filters.COMMAND, forward_command_handler))

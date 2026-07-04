@@ -503,6 +503,7 @@ def build_bot_commands() -> list[BotCommand]:
         BotCommand("voice", tr("cmd.voice")),
         BotCommand("react", tr("cmd.react")),
         BotCommand("diff", tr("cmd.diff")),
+        BotCommand("pin", tr("cmd.pin")),
         BotCommand("lang", tr("cmd.lang")),
         BotCommand("menu", tr("cmd.menu")),
         *plugins.bot_commands(),
@@ -567,6 +568,34 @@ async def diff_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if wid:
             reset(wid)
         await safe_reply(update.message, tr("commands.diff_off"))
+
+
+async def pin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle task-pin mode for the current topic (/pin).
+
+    When on, a long user message sent to an idle agent (a new task, not a
+    mid-turn follow-up) gets pinned in the topic — the pinned list becomes
+    the topic's task history. Logic in handlers/task_pin.py.
+    """
+    user = update.effective_user
+    if not user or not is_user_allowed(user.id):
+        return
+    if not update.message:
+        return
+
+    thread_id = get_thread_id(update)
+    if thread_id is None:
+        await safe_reply(update.message, tr("common.topics_only"))
+        return
+
+    enabled = session_manager.toggle_pin_mode(user.id, thread_id)
+    if enabled:
+        await safe_reply(
+            update.message,
+            tr("commands.pin_on", n=config.pin_tasks_min_chars),
+        )
+    else:
+        await safe_reply(update.message, tr("commands.pin_off"))
 
 
 async def screenshot_command(

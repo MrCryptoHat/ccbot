@@ -19,6 +19,7 @@ from telegram.ext import ContextTypes
 from . import get_thread_id, is_user_allowed
 from .delivery import deliver_user_text
 from .message_sender import safe_reply
+from .task_pin import pin_task_message, should_pin_task
 from ..config import config
 from ..i18n import tr
 from ..session import session_manager
@@ -385,6 +386,11 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await update.message.chat.send_action(ChatAction.TYPING)
 
+    # Task-pin (/pin): decide on the PRE-send pane; the pin itself goes on
+    # the transcript reply below — a text line in the pinned list reads as
+    # a task, an audio bubble doesn't.
+    pin_candidate = await should_pin_task(user.id, thread_id, wid, text)
+
     # Same pre-send pipeline as typed text: a dictated answer to an open
     # AskUserQuestion must land in its text option, not in the option
     # picker (where Enter would select the highlighted default and the
@@ -398,7 +404,11 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ack_message_id=update.message.message_id if update.message else None,
     )
     if status in ("routed", "sent"):
-        await safe_reply(update.message, f'🎤 "{text}"')
+        transcript_msg = await safe_reply(update.message, f'🎤 "{text}"')
+        if status == "sent" and pin_candidate:
+            await pin_task_message(
+                context.bot, transcript_msg.chat_id, transcript_msg.message_id
+            )
         return
     if status == "blocked_no_text_option":
         await safe_reply(

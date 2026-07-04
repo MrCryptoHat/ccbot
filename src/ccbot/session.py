@@ -128,6 +128,13 @@ class SessionManager:
     # red/green screenshot, one image per agent turn. Off by default — the
     # default chat stays free of tool plumbing. See handlers/diff_view.py.
     diff_mode_topics: set[str] = field(default_factory=set)
+    # Task-pin mode (/pin): a user message that looks like a NEW TASK
+    # (≥ config.pin_tasks_min_chars chars, sent to an idle agent) is pinned
+    # in its topic, so the pinned list reads as the topic's task history.
+    # ON by default everywhere (config.pin_tasks_default); this dict holds
+    # only per-topic /pin overrides, keyed "user_id:thread_id" → bool.
+    # See handlers/task_pin.py.
+    pin_topic_overrides: dict[str, bool] = field(default_factory=dict)
     # Topics that already received the persistent menu ReplyKeyboard
     # ("user_id:thread_id" keys). Telegram scopes reply keyboards per forum
     # topic, so each topic needs one message carrying the markup; this set
@@ -277,6 +284,7 @@ class SessionManager:
             "group_chat_ids": self.group_chat_ids,
             "voice_mode_topics": sorted(self.voice_mode_topics),
             "diff_mode_topics": sorted(self.diff_mode_topics),
+            "pin_topic_overrides": dict(sorted(self.pin_topic_overrides.items())),
             "menu_shown_topics": sorted(self.menu_shown_topics),
             "reaction_ack_enabled": self.reaction_ack_enabled,
             "ui_language": self.ui_language,
@@ -386,6 +394,13 @@ class SessionManager:
                 }
                 self.voice_mode_topics = set(state.get("voice_mode_topics", []))
                 self.diff_mode_topics = set(state.get("diff_mode_topics", []))
+                self.pin_topic_overrides = {
+                    str(k): bool(v)
+                    for k, v in state.get("pin_topic_overrides", {}).items()
+                }
+                # Legacy shape (pre default-on): a list of opted-in topics.
+                for key in state.get("pin_mode_topics", []):
+                    self.pin_topic_overrides.setdefault(str(key), True)
                 self.menu_shown_topics = set(state.get("menu_shown_topics", []))
                 self.reaction_ack_enabled = bool(
                     state.get("reaction_ack_enabled", config.reaction_ack_default)
@@ -453,6 +468,7 @@ class SessionManager:
                 self.group_chat_ids = {}
                 self.voice_mode_topics = set()
                 self.diff_mode_topics = set()
+                self.pin_topic_overrides = {}
                 self.menu_shown_topics = set()
                 self.reaction_ack_enabled = config.reaction_ack_default
                 self.ui_language = config.default_lang
@@ -796,6 +812,21 @@ class SessionManager:
         self.diff_mode_topics.add(key)
         self._save_state()
         return True
+
+    def is_pin_mode(self, user_id: int, thread_id: int | None) -> bool:
+        """Task-pin mode for a topic: /pin override, else the global default."""
+        if thread_id is None:
+            return False
+        return self.pin_topic_overrides.get(
+            f"{user_id}:{thread_id}", config.pin_tasks_default
+        )
+
+    def toggle_pin_mode(self, user_id: int, thread_id: int) -> bool:
+        """Toggle task-pin mode for a topic. Returns new state (True=on)."""
+        new_state = not self.is_pin_mode(user_id, thread_id)
+        self.pin_topic_overrides[f"{user_id}:{thread_id}"] = new_state
+        self._save_state()
+        return new_state
 
     def is_menu_shown(self, user_id: int, thread_id: int | None) -> bool:
         """Has this topic already received the persistent menu keyboard?"""

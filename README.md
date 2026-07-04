@@ -55,6 +55,10 @@ truth and you never lose the ability to switch back.
 - **Directory browser & resume** — start or resume Claude sessions from a topic.
 - **MarkdownV2 rendering** with auto-fallback; long code/tables/box-art are
   delivered out-of-band so a phone never mangles them.
+- **Task pinning** — a big message (200+ chars) sent to an idle agent is
+  auto-pinned, so a topic's pinned list reads as its task history (on by
+  default; `/pin` toggles per topic, `CCBOT_PIN_DEFAULT=false` flips the
+  default).
 - **Bilingual UI** — `ru` / `en`, switchable at runtime with `/lang`.
 - **Hook-based tracking** — a `SessionStart` hook maps windows ↔ sessions,
   surviving `/clear` and restarts.
@@ -123,6 +127,7 @@ unless you turn it on, so a plain deployment carries no dead code paths.
 | Voice transcription / TTS  | a provider key (`DEEPGRAM_/OPENAI_/GEMINI_/ELEVENLABS_…`) |
 | Docker agents              | `DOCKER_AGENTS_ENABLED=true` + `DOCKER_AGENTS` |
 | 👍-to-confirm reactions     | `REACTION_CONFIRM_ENABLED` (on by default)   |
+| Task pinning               | `CCBOT_PIN_DEFAULT` (on by default)          |
 | Task-injection socket      | `CCBOT_INJECT_TOKEN`                          |
 
 Everything **server-specific** lives as separate `ccbot.<name>` **plugin

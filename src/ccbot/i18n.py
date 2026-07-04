@@ -147,6 +147,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "ru": "показывать правки картинкой: вкл/выкл",
         "en": "show edits as images: on/off",
     },
+    "cmd.pin": {
+        "ru": "закреплять большие задачи: вкл/выкл",
+        "en": "pin big task messages: on/off",
+    },
     "cmd.lang": {"ru": "язык интерфейса (ru/en)", "en": "interface language (ru/en)"},
     "cmd.menu": {"ru": "показать клавиатуру меню", "en": "show the menu keyboard"},
 }
@@ -180,6 +184,7 @@ STRINGS.update(
                 "*Переключатели:*\n"
                 "/voice — отвечать голосом (нужен TTS-ключ)\n"
                 "/diff — присылать скриншоты правок кода\n"
+                "/pin — закреплять большие задачи в топике\n"
                 "/react — 👀-отметка «сообщение принято»\n"
                 "/lang — язык интерфейса ru/en\n\n"
                 "*Полезно знать:*\n"
@@ -197,6 +202,7 @@ STRINGS.update(
                 "*Toggles:*\n"
                 "/voice — spoken replies (needs a TTS key)\n"
                 "/diff — send screenshots of code edits\n"
+                "/pin — pin big task messages in the topic\n"
                 "/react — 👀 “message taken” receipt\n"
                 "/lang — UI language ru/en\n\n"
                 "*Good to know:*\n"
@@ -460,6 +466,18 @@ STRINGS.update(
         "commands.only_in_topic": {
             "ru": "❌ Только в топике.",
             "en": "❌ Only in a topic.",
+        },
+        # NB: no hand-written MarkdownV2 escapes here — these strings go
+        # through convert_markdown (telegramify), which does the escaping
+        # itself and treats `\(...\)` as inline LaTeX math (renders the body
+        # as code and eats the parens — bit the en string once).
+        "commands.pin_off": {
+            "ru": "📌 Закрепление задач выключено.",
+            "en": "📌 Task pinning off.",
+        },
+        "commands.pin_on": {
+            "ru": "📌 Закрепление задач включено.\nБольшие сообщения (от {n} символов), отправленные свободному агенту, будут закрепляться — по закреплённым удобно пробегать список задач этого топика. Короткие ответы и уточнения по ходу работы не закрепляются.",
+            "en": "📌 Task pinning on.\nBig messages ({n}+ characters) sent to an idle agent get pinned — the pinned list becomes this topic's task history. Short replies and mid-work follow-ups are not pinned.",
         },
         "commands.react_off": {
             "ru": "👀 Отметка о приёме выключена\\.",

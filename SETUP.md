@@ -24,7 +24,10 @@ Linux/macOS host with tmux, the `claude` CLI, and `uv`.
    screenshots, sent files. `ALLOWED_USERS` restricts who can *control* the
    bot, not who can see. Keep the group private; don't publish an invite link.
 3. Add your bot to the group and make it an **admin** (needed to read topics
-   and — for the 👍-to-confirm feature — to receive reactions).
+   and — for the 👍-to-confirm feature — to receive reactions). Grant the
+   **Pin messages** and **Delete messages** rights too: task pinning (on by
+   default, `/pin`) pins big task messages and cleans up its own «pinned a
+   message» service lines. Without the rights it degrades to log warnings.
 4. Get your own numeric Telegram user id (e.g. via
    [@userinfobot](https://t.me/userinfobot)) — that's `ALLOWED_USERS`.
 
