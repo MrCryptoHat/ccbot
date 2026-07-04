@@ -400,7 +400,7 @@ class Config:
             os.getenv("CCBOT_PIN_DEFAULT", "true").lower() != "false"
         )
         try:
-            self.pin_tasks_min_chars: int = int(os.getenv("CCBOT_PIN_MIN_CHARS", "200"))
+            self.pin_tasks_min_chars: int = int(os.getenv("CCBOT_PIN_MIN_CHARS", "150"))
         except ValueError as e:
             raise ValueError(
                 f"CCBOT_PIN_MIN_CHARS must be an integer "

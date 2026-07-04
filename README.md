@@ -55,7 +55,7 @@ truth and you never lose the ability to switch back.
 - **Directory browser & resume** — start or resume Claude sessions from a topic.
 - **MarkdownV2 rendering** with auto-fallback; long code/tables/box-art are
   delivered out-of-band so a phone never mangles them.
-- **Task pinning** — a big message (200+ chars) sent to an idle agent is
+- **Task pinning** — a big message (150+ chars) sent to an idle agent is
   auto-pinned, so a topic's pinned list reads as its task history (on by
   default; `/pin` toggles per topic, `CCBOT_PIN_DEFAULT=false` flips the
   default).
