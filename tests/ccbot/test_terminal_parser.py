@@ -406,6 +406,21 @@ class TestUnrecognizedStatusCanary:
             tp.is_claude_working(pane)
         assert len([r for r in caplog.records if "Unrecognized" in r.message]) == 1
 
+    def test_first_warning_fires_on_freshly_booted_clock(self, caplog, monkeypatch):
+        """monotonic() counts from boot; with uptime <1h a 0.0 not-seen
+        sentinel reads as "logged recently" and mutes the first warning
+        (bit CI runners and post-reboot hosts)."""
+        import logging as logging_mod
+
+        from ccbot import terminal_parser as tp
+
+        tp._unrecognized_status_seen.clear()
+        monkeypatch.setattr(tp.time, "monotonic", lambda: 500.0)
+        pane = "✻ Weird status\n" + "─" * 40 + "\n❯ \n"
+        with caplog.at_level(logging_mod.WARNING, logger="ccbot.terminal_parser"):
+            assert tp.is_claude_working(pane) is False
+        assert any("Unrecognized" in r.message for r in caplog.records)
+
 
 class TestHasQueuedMessages:
     """has_queued_messages: detect Claude Code's buffered-input hint."""

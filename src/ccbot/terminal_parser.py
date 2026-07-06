@@ -506,8 +506,11 @@ _UNRECOGNIZED_STATUS_LOG_INTERVAL = 3600.0
 def _warn_unrecognized_status(status: str) -> None:
     now = time.monotonic()
     key = status[:80]
-    last = _unrecognized_status_seen.get(key, 0.0)
-    if now - last < _UNRECOGNIZED_STATUS_LOG_INTERVAL:
+    # No 0.0 default: monotonic() counts from boot, so on a machine up
+    # <1h a zero sentinel would read as "logged recently" and mute the
+    # very first warning (seen on fresh CI runners and post-reboot).
+    last = _unrecognized_status_seen.get(key)
+    if last is not None and now - last < _UNRECOGNIZED_STATUS_LOG_INTERVAL:
         return
     _unrecognized_status_seen[key] = now
     logger.warning(
