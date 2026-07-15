@@ -252,12 +252,15 @@ class Config:
         # flag (unlike claude) — the tmux window name is set at creation.
         self.codex_command = os.getenv("CODEX_COMMAND", "codex")
         # Launch codex with --dangerously-bypass-approvals-and-sandbox. OFF by
-        # default (public repo — keep codex sandboxed). Enable per-deployment
-        # when codex's bundled bubblewrap can't initialize (e.g. a VPS where
-        # nested-userns UID mapping is blocked → "bwrap: setting up uid map:
-        # Permission denied"), which otherwise leaves codex unable to run shell,
-        # edit files, or read documents. The trust model then matches ccbot's
-        # Claude Code agents, which already run with full host access.
+        # default and it should STAY off on a normal host — OpenAI's docs do NOT
+        # recommend it for personal machines (it's `danger-full-access`). If
+        # codex's sandbox fails to init ("bwrap: setting up uid map: Permission
+        # denied" on Ubuntu 24.04, where AppArmor's bwrap-userns-restrict profile
+        # only covers /usr/bin/bwrap and codex falls back to its bundled bwrap),
+        # the PROPER fix is `apt install bubblewrap` (+ load the AppArmor
+        # extra-profile) — an admin/infra task that keeps codex sandboxed. This
+        # flag is only a last resort for environments that are ALREADY externally
+        # sandboxed (a locked-down container/VM).
         self.codex_bypass_sandbox = (
             os.getenv("CODEX_BYPASS_SANDBOX", "false").lower() == "true"
         )
