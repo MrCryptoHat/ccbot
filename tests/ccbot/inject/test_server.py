@@ -121,7 +121,7 @@ async def test_busy_returns_409(client: TestClient) -> None:
         patch(_RESOLVE, new=AsyncMock(return_value="docker:assistant")),
         patch(_CAPTURE, new=AsyncMock(return_value="… (5s · esc to interrupt)")),
         patch(
-            "ccbot.inject.server.terminal_parser.is_claude_working", return_value=True
+            "ccbot.inject.server.session_manager.is_agent_working", return_value=True
         ),
     ):
         r = await client.post(

@@ -73,12 +73,14 @@ from .handlers.directory_browser import (
     BROWSE_PATH_KEY,
     STATE_BROWSING_DIRECTORY,
     STATE_KEY,
+    STATE_SELECTING_RUNTIME,
     STATE_SELECTING_SESSION,
     STATE_SELECTING_WINDOW,
     UNBOUND_WINDOWS_KEY,
     build_directory_browser,
     build_window_picker,
     clear_browse_state,
+    clear_runtime_picker_state,
     clear_session_picker_state,
     clear_window_picker_state,
 )
@@ -240,6 +242,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             i18n.tr("bot.use_picker_above"),
             clear_session_picker_state,
         ),
+        (
+            STATE_SELECTING_RUNTIME,
+            i18n.tr("bot.use_picker_above"),
+            clear_runtime_picker_state,
+        ),
     ]
     for state_val, prompt_msg, clear_fn in _STATE_CHECKS:
         if context.user_data and context.user_data.get(STATE_KEY) == state_val:
@@ -251,7 +258,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             clear_fn(context.user_data)  # type: ignore[operator]
             context.user_data.pop("_pending_thread_id", None)
             context.user_data.pop("_pending_thread_text", None)
-            if state_val == STATE_SELECTING_SESSION:
+            if state_val in (STATE_SELECTING_SESSION, STATE_SELECTING_RUNTIME):
                 context.user_data.pop("_selected_path", None)
 
     # Must be in a named topic
@@ -640,57 +647,92 @@ async def _create_and_bind_window(
     selected_path: str,
     pending_thread_id: int | None,
     resume_session_id: str | None = None,
+    runtime: str = "claude",
 ) -> None:
     """Create a tmux window, bind it to a topic, and forward pending text.
 
     Shared by CB_DIR_CONFIRM (no sessions), CB_SESSION_NEW, and CB_SESSION_SELECT.
+    ``runtime`` selects the agent CLI launched in the window ("claude" default /
+    "codex"); it is tagged onto the window state and drives launch + tracking.
     """
     from telegram import CallbackQuery, User
+
+    from .runtimes import get_runtime
 
     assert isinstance(query, CallbackQuery)
     assert isinstance(user, User)
 
+    rt = get_runtime(runtime)
+    is_codex = rt.name != "claude"
+
     success, message, created_wname, created_wid = await tmux_manager.create_window(
-        selected_path, resume_session_id=resume_session_id
+        selected_path, resume_session_id=resume_session_id, runtime=rt.name
     )
     if success:
+        # Tag the window's runtime up front. load_session_map only reaps
+        # claude windows missing from the claude map, so this keeps a codex
+        # window alive despite having no claude session_map entry.
+        ws0 = session_manager.get_window_state(created_wid)
+        _ws0_changed = False
+        if ws0.runtime != rt.name:
+            ws0.runtime = rt.name
+            _ws0_changed = True
+        # Codex has no session_map hook to record cwd; store it here so the
+        # monitor can resolve the window's rollout by matching session_meta.cwd.
+        if is_codex and ws0.cwd != str(selected_path):
+            ws0.cwd = str(selected_path)
+            _ws0_changed = True
+        if _ws0_changed:
+            session_manager._save_state()
+
         logger.info(
-            "Window created: %s (id=%s) at %s (user=%d, thread=%s, resume=%s)",
+            "Window created: %s (id=%s) at %s (user=%d, thread=%s, resume=%s, runtime=%s)",
             created_wname,
             created_wid,
             selected_path,
             user.id,
             pending_thread_id,
             resume_session_id,
-        )
-        hook_timeout = 15.0 if resume_session_id else 5.0
-        hook_ok = await session_manager.wait_for_session_map_entry(
-            created_wid, timeout=hook_timeout
+            rt.name,
         )
 
-        if resume_session_id:
-            ws = session_manager.get_window_state(created_wid)
-            if not hook_ok:
-                logger.warning(
-                    "Hook timed out for resume window %s, "
-                    "manually setting session_id=%s cwd=%s",
-                    created_wid,
-                    resume_session_id,
-                    selected_path,
-                )
-                ws.session_id = resume_session_id
-                ws.cwd = str(selected_path)
-                ws.window_name = created_wname
-                session_manager._save_state()
-            elif ws.session_id != resume_session_id:
-                logger.info(
-                    "Resume override: window %s session_id %s -> %s",
-                    created_wid,
-                    ws.session_id,
-                    resume_session_id,
-                )
-                ws.session_id = resume_session_id
-                session_manager._save_state()
+        if is_codex:
+            # Codex tracking (its SessionStart hook → codex_session_map, and the
+            # codex transcript parser) is not wired in this slice: don't wait on
+            # the claude session_map (it will never carry this window) and don't
+            # raise the claude "hook missing" alarm below. The window is fully
+            # drivable via the screenshot/keys UI — a fresh unauthenticated
+            # codex shows its in-TUI sign-in menu (device-code login).
+            hook_ok = False
+        else:
+            hook_timeout = 15.0 if resume_session_id else 5.0
+            hook_ok = await session_manager.wait_for_session_map_entry(
+                created_wid, timeout=hook_timeout
+            )
+
+            if resume_session_id:
+                ws = session_manager.get_window_state(created_wid)
+                if not hook_ok:
+                    logger.warning(
+                        "Hook timed out for resume window %s, "
+                        "manually setting session_id=%s cwd=%s",
+                        created_wid,
+                        resume_session_id,
+                        selected_path,
+                    )
+                    ws.session_id = resume_session_id
+                    ws.cwd = str(selected_path)
+                    ws.window_name = created_wname
+                    session_manager._save_state()
+                elif ws.session_id != resume_session_id:
+                    logger.info(
+                        "Resume override: window %s session_id %s -> %s",
+                        created_wid,
+                        ws.session_id,
+                        resume_session_id,
+                    )
+                    ws.session_id = resume_session_id
+                    session_manager._save_state()
 
         if pending_thread_id is not None:
             session_manager.bind_thread(
@@ -716,20 +758,21 @@ async def _create_and_bind_window(
             home_prefix = str(Path.home())
             if shown_dir.startswith(home_prefix):
                 shown_dir = "~" + shown_dir[len(home_prefix) :]
-            await safe_edit(
-                query,
-                i18n.tr(
-                    "bot.window_resumed" if resume_session_id else "bot.window_ready",
-                    dir=shown_dir,
-                ),
-            )
+            if is_codex:
+                ready_key = "bot.window_codex_ready"
+            elif resume_session_id:
+                ready_key = "bot.window_resumed"
+            else:
+                ready_key = "bot.window_ready"
+            await safe_edit(query, i18n.tr(ready_key, dir=shown_dir))
 
             # First-run trap: without the SessionStart hook the monitor never
             # learns this window's session_id, so the agent's replies silently
             # never reach the chat. Warn in-topic only when the hook is
             # definitively absent from settings.json (a merely-slow hook that
             # missed the wait window above must not raise a false alarm).
-            if not hook_ok and not hook_installed_in_settings():
+            # Codex windows have no claude hook by design (see above) — skip.
+            if not is_codex and not hook_ok and not hook_installed_in_settings():
                 await safe_send(
                     context.bot,
                     resolved_chat,
@@ -742,7 +785,13 @@ async def _create_and_bind_window(
                 if context.user_data
                 else None
             )
-            if pending_text:
+            # Never auto-forward into a codex window: a fresh codex opens on the
+            # login / device-code screen, and typing (with Enter) into it would
+            # take a step the user didn't choose (the very bug that pre-selected
+            # a sign-in option). Every codex step stays user-driven; the pending
+            # keys are just cleared below. (Claude has no startup menu — the
+            # forwarded first message simply becomes its first prompt.)
+            if pending_text and not is_codex:
                 logger.debug(
                     "Forwarding pending text to window %s (len=%d)",
                     created_wname,
@@ -771,7 +820,11 @@ async def _create_and_bind_window(
                         message_thread_id=pending_thread_id,
                     )
             elif context.user_data is not None:
+                # No forward (no pending text, or a codex window we must not
+                # auto-type into) — drop both pending keys so they don't leak
+                # into a later flow.
                 context.user_data.pop("_pending_thread_id", None)
+                context.user_data.pop("_pending_thread_text", None)
         else:
             await safe_edit(query, f"✅ {message}")
     else:

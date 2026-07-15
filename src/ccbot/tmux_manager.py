@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
 import libtmux
 
 from .config import config
-from .utils import CCBOT_DIR_ENV, is_valid_session_id
+from .runtimes import get_runtime
+from .utils import CCBOT_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -482,14 +482,18 @@ class TmuxManager:
         window_name: str | None = None,
         start_claude: bool = True,
         resume_session_id: str | None = None,
+        runtime: str = "claude",
     ) -> tuple[bool, str, str, str]:
-        """Create a new tmux window and optionally start Claude Code.
+        """Create a new tmux window and optionally start the agent CLI.
 
         Args:
             work_dir: Working directory for the new window
             window_name: Optional window name (defaults to directory name)
-            start_claude: Whether to start claude command
-            resume_session_id: If set, append --resume <id> to claude command
+            start_claude: Whether to launch the agent CLI (kept name for
+                back-compat; applies to whichever runtime)
+            resume_session_id: If set (and well-formed), resume that session
+            runtime: Agent runtime to launch — "claude" (default) or "codex".
+                The launch/resume command is built by runtimes.get_runtime.
 
         Returns:
             Tuple of (success, message, window_name, window_id)
@@ -526,26 +530,18 @@ class TmuxManager:
                 # Prevent Claude Code from overriding window name
                 window.set_window_option("allow-rename", "off")
 
-                # Start Claude Code if requested
+                # Start the agent CLI if requested. The launch/resume command
+                # is runtime-specific (claude: `claude --name X [--resume Y]`;
+                # codex: `codex [resume Y]`) and built by the runtime — which
+                # also shlex-quotes the window name and validates the resume id
+                # (an unvalidated id typed into the shell is a command-injection
+                # vector). (audit HIGH#1 / MEDIUM)
                 if start_claude:
                     pane = window.active_pane
                     if pane:
-                        cmd = config.claude_command
-                        # shlex.quote (not repr): this string is typed into the
-                        # pane's shell, and repr() is not shell-safe for a name
-                        # holding both quote kinds. (audit MEDIUM)
-                        cmd = f"{cmd} --name {shlex.quote(final_window_name)}"
-                        # Resume only with a well-formed session id — an
-                        # unvalidated id typed into the shell is a command-
-                        # injection vector. (audit HIGH#1)
-                        if resume_session_id and is_valid_session_id(resume_session_id):
-                            cmd = f"{cmd} --resume {resume_session_id}"
-                        elif resume_session_id:
-                            logger.warning(
-                                "Ignoring malformed resume session id for "
-                                "window %s; starting fresh",
-                                final_window_name,
-                            )
+                        cmd = get_runtime(runtime).launch_command(
+                            final_window_name, resume_session_id
+                        )
                         pane.send_keys(cmd, enter=True)
 
                 logger.info(

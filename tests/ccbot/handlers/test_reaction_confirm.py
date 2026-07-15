@@ -49,6 +49,34 @@ def test_decide_skip_when_working():
     assert rc.decide_confirm_action(pane) == "skip"
 
 
+def test_decide_skip_when_codex_working():
+    # A busy codex pane has no ─ chrome — the DEFAULT (claude) detector reads it
+    # as idle ("type_yes"), which is the bug. Passing runtime="codex" makes the
+    # busy-state visible so a 👍 is correctly skipped, not typed into a live turn.
+    pane = (
+        "◦ Working (4s • esc to interrupt)\n"
+        "› Summarize recent commits\n"
+        "  gpt-5.5 medium · /home/user/project\n"
+    )
+    assert rc.decide_confirm_action(pane, "codex") == "skip"
+    # Same pane misjudged as idle under the wrong runtime — documents WHY the
+    # caller must pass the bound window's runtime.
+    assert rc.decide_confirm_action(pane, "claude") == "type_yes"
+
+
+def test_decide_enter_on_codex_menu():
+    # A codex approval / choice menu is a runtime-agnostic interactive UI →
+    # a 👍 presses Enter, same as Claude's AskUserQuestion.
+    pane = (
+        "  Would you like to run the following command?\n"
+        "  $ ls -la\n"
+        "› 1. Yes, proceed (y)\n"
+        "  2. No, and tell Codex what to do differently (esc)\n"
+        "  Press enter to confirm or esc to cancel\n"
+    )
+    assert rc.decide_confirm_action(pane, "codex") == "enter"
+
+
 # ── _has_confirm_emoji ───────────────────────────────────────────────────
 
 

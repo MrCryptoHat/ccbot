@@ -48,6 +48,12 @@ CB_SESSION_NEW = "rs:new"  # start a new session
 CB_SESSION_CANCEL = "rs:cancel"  # cancel
 CB_SESSION_BROWSE = "rs:browse"  # open directory browser (wrong auto-bound folder)
 
+# Runtime picker (choose which agent CLI a fresh window runs: Claude / Codex).
+# Shown after a directory confirm with no existing sessions, and on "new
+# session". Payload carries the runtime id; the handler creates+binds with it.
+CB_RUNTIME_SELECT = "rt:sel:"  # rt:sel:<runtime>  (claude|codex)
+CB_RUNTIME_CANCEL = "rt:cancel"  # cancel the runtime picker
+
 # Screenshot control keys
 CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
 

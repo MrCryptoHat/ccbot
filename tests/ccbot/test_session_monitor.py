@@ -315,7 +315,7 @@ class TestContextTokens:
     """Tests for context-fill token extraction from raw JSONL entries."""
 
     def test_sums_input_cache_tokens(self):
-        from ccbot.session_monitor import _entry_context_tokens
+        from ccbot.runtimes import _entry_context_tokens
 
         entry = {
             "type": "assistant",
@@ -331,17 +331,17 @@ class TestContextTokens:
         assert _entry_context_tokens(entry) == 2 + 9736 + 62468
 
     def test_non_assistant_returns_none(self):
-        from ccbot.session_monitor import _entry_context_tokens
+        from ccbot.runtimes import _entry_context_tokens
 
         assert _entry_context_tokens({"type": "user", "message": {}}) is None
 
     def test_missing_usage_returns_none(self):
-        from ccbot.session_monitor import _entry_context_tokens
+        from ccbot.runtimes import _entry_context_tokens
 
         assert _entry_context_tokens({"type": "assistant", "message": {}}) is None
 
     def test_partial_usage_treats_missing_as_zero(self):
-        from ccbot.session_monitor import _entry_context_tokens
+        from ccbot.runtimes import _entry_context_tokens
 
         entry = {"type": "assistant", "message": {"usage": {"input_tokens": 400_000}}}
         assert _entry_context_tokens(entry) == 400_000

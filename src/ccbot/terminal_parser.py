@@ -34,6 +34,7 @@ class InteractiveUIContent:
 
     content: str  # The extracted display content
     name: str = ""  # Pattern name that matched (e.g. "AskUserQuestion")
+    is_login: bool = False  # matched a sign-in screen carrying an auth URL
 
 
 @dataclass(frozen=True)
@@ -47,12 +48,18 @@ class UIPattern:
     ``top`` and ``bottom`` are tuples of compiled regexes — any single match
     is sufficient.  This accommodates wording changes across Claude Code
     versions (e.g. a reworded confirmation prompt).
+
+    ``is_login`` marks a sign-in screen that carries an auth URL to surface as
+    a clickable link. It is provider-agnostic: any CLI's login screen (Claude
+    Code's ``/login``, Codex's device/browser flow, …) sets this and reuses the
+    one URL-surfacing path in ``interactive_ui`` — no per-provider branch.
     """
 
     name: str  # Descriptive label (not used programmatically)
     top: tuple[re.Pattern[str], ...]
     bottom: tuple[re.Pattern[str], ...]
     min_gap: int = 2  # minimum lines between top and bottom (inclusive)
+    is_login: bool = False  # sign-in screen with an auth URL (see above)
 
 
 # ── UI pattern definitions (order matters — first match wins) ────────────
@@ -157,6 +164,87 @@ UI_PATTERNS: list[UIPattern] = [
         ),
         bottom=(),
         min_gap=1,
+        is_login=True,
+    ),
+    UIPattern(
+        # Codex sign-in URL screen (device-code or browser flow). Carries the
+        # auth.openai.com URL + one-time code — surfaced as a clickable link by
+        # the same is_login path Claude's LoginPrompt uses. The photo (with the
+        # code) is sent alongside as context. Distinct from the menu below by
+        # the "Finish signing in" / "Follow these steps" header.
+        name="CodexLogin",
+        top=(
+            re.compile(r"Finish signing in"),
+            re.compile(r"Follow these steps to sign in"),
+        ),
+        bottom=(
+            re.compile(r"Press esc to cancel"),
+            re.compile(r"Continue only if you started"),
+        ),
+        min_gap=1,
+        is_login=True,
+    ),
+    UIPattern(
+        # Codex initial sign-in MENU (ChatGPT / Device Code / API key). No URL
+        # yet — just a menu the user navigates with the standard ↑ ↓ ⏎ nav
+        # keyboard (is_login stays False; nothing to surface until a method is
+        # chosen and the CodexLogin screen above appears).
+        name="CodexSignIn",
+        top=(re.compile(r"Sign in with ChatGPT"),),
+        bottom=(
+            re.compile(r"Provide your own API key"),
+            re.compile(r"Press enter to continue"),
+        ),
+        min_gap=1,
+    ),
+    UIPattern(
+        # Codex first-run onboarding ("Before you start: … Press enter to
+        # continue"). One keypress step after sign-in — kept as an interactive
+        # UI so the photo + nav keyboard stays up through it.
+        name="CodexOnboard",
+        top=(re.compile(r"Before you start"),),
+        bottom=(re.compile(r"Press enter to continue"),),
+        min_gap=1,
+    ),
+    UIPattern(
+        # Codex per-directory trust prompt ("Do you trust the contents of this
+        # directory?" → 1. Yes / 2. No). Shown the first time codex opens a
+        # workspace; navigated with the standard ↑ ↓ ⏎ nav keyboard.
+        name="CodexTrust",
+        top=(re.compile(r"Do you trust the contents of this director"),),
+        bottom=(
+            re.compile(r"Press enter to continue"),
+            re.compile(r"No, quit"),
+        ),
+        min_gap=1,
+    ),
+    UIPattern(
+        # GENERIC numbered-choice menu — last resort so ANY agent CLI's
+        # "pick an option" prompt surfaces via the same photo + ↑↓⏎ keyboard
+        # as login / AskUserQuestion, with no per-menu pattern. Catches codex's
+        # command/patch APPROVAL prompt ("Would you like to run…?" → `› 1. Yes,
+        # proceed`), model pickers, and future agents' menus alike.
+        #
+        # The discriminating signal is a CURSOR sitting on a NUMBERED option:
+        # `› 1.` (codex, `›` = U+203A) or `❯ 1.` (Claude, U+276F). Codex also
+        # prefixes echoed user messages with `› `, so the match requires a digit
+        # after the cursor (`› \d+\.`) — never a bare `›` — which a user message
+        # (`› Как ты`) can't satisfy. Normal output bullets are `•` (U+2022),
+        # not a cursor, so plain numbered prose the agent writes ("1. foo") never
+        # fires (no cursor on the line). Bounded below by a confirm/cancel footer
+        # OR the next numbered option, so it only matches a LIVE menu (the footer
+        # / sibling option is redrawn away once answered), not lingering history.
+        #
+        # Placed LAST: specific named patterns (AskUserQuestion's text-surfacing
+        # path keys on its name) win first; this only fires when nothing else did.
+        name="ChoiceMenu",
+        top=(re.compile(r"^\s*[›❯▸▶]\s*\d+\.\s"),),
+        bottom=(
+            re.compile(r"Press enter to (confirm|continue|select)"),
+            re.compile(r"[Ee]sc to (cancel|exit)"),
+            re.compile(r"^\s*\d+\.\s"),  # a sibling option below the cursor row
+        ),
+        min_gap=1,
     ),
 ]
 
@@ -191,13 +279,23 @@ _OSC8_URL_RE = re.compile(r"\x1b\]8;[^;]*;([^\x07\x1b]+)(?:\x07|\x1b\\)")
 # SGR (color) escapes — stripped before line-by-line text analysis.
 _SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-# A login screen carries one of these (the URL itself always has
-# `oauth/authorize`, but a wrap could push that off the captured window).
+# A login screen carries one of these markers (used by the wrapped-plain-text
+# URL path when there's no OSC 8 hyperlink). Provider-agnostic: Claude Code's
+# `/login` wording plus Codex's device/browser flow (auth.openai.com + "one-time
+# code"). A wrap could push the URL row off-window, so header prose counts too.
 _LOGIN_SCREEN_RE = re.compile(
-    r"Use the url below to sign in|Paste code here if prompted|oauth/authorize",
+    r"Use the url below to sign in|Paste code here if prompted|oauth/authorize"
+    r"|auth\.openai\.com|Finish signing in|one-time code",
     re.IGNORECASE,
 )
 _URL_IN_LINE_RE = re.compile(r"https?://\S+")
+
+# One-time device-login code shown on a sign-in screen (e.g. Codex device flow:
+# "7FKY-MRFOQ"). Upper-alnum, 4-char group + dash + 4-6 group — distinctive
+# enough on a login pane not to collide with URL fragments (which carry
+# lowercase / no such grouping). Provider-agnostic: returns None when the
+# screen has no such code (Claude's paste-code-back flow has none in the pane).
+_LOGIN_CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b")
 
 
 # ── Post-processing ──────────────────────────────────────────────────────
@@ -247,7 +345,11 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
         return None
 
     content = "\n".join(lines[top_idx : bottom_idx + 1]).rstrip()
-    return InteractiveUIContent(content=_shorten_separators(content), name=pattern.name)
+    return InteractiveUIContent(
+        content=_shorten_separators(content),
+        name=pattern.name,
+        is_login=pattern.is_login,
+    )
 
 
 # ── Public API ───────────────────────────────────────────────────────────
@@ -276,9 +378,18 @@ def is_interactive_ui(pane_text: str) -> bool:
 
 
 def _looks_like_login_url(url: str) -> bool:
-    """Guard against grabbing some unrelated OSC 8 link on the login screen."""
+    """Guard against grabbing some unrelated OSC 8 link on the login screen.
+
+    Provider-agnostic allowlist: Claude Code's OAuth / claude.com host, and
+    Codex's OpenAI auth host (device-code + browser flows).
+    """
     low = url.lower()
-    return "oauth" in low or "claude.com/cai" in low or "/login" in low
+    return (
+        "oauth" in low
+        or "claude.com/cai" in low
+        or "/login" in low
+        or "auth.openai.com" in low
+    )
 
 
 def parse_login_url(pane_ansi: str) -> str | None:
@@ -328,6 +439,20 @@ def parse_login_url(pane_ansi: str) -> str | None:
             url += frag
         return url.rstrip(").,;:!?'\"")
     return None
+
+
+def parse_login_code(pane_text: str) -> str | None:
+    """Extract a one-time device-login code from a sign-in pane, if present.
+
+    Reusable across CLIs: Codex's device flow prints a code in the pane (which
+    the user enters on the sign-in page), so it's surfaced as copyable text;
+    Claude's flow has no pane code (the code comes from the browser) → None.
+    """
+    if not pane_text:
+        return None
+    text = _SGR_RE.sub("", strip_osc(pane_text))
+    m = _LOGIN_CODE_RE.search(text)
+    return m.group(1) if m else None
 
 
 # Option parsing and permission-context extraction used to live here but
@@ -453,6 +578,34 @@ def is_claude_working(pane_text: str) -> bool:
     return False
 
 
+# Codex status line: "• Working (4s • esc to interrupt)" / "◦ Thinking (12s • esc
+# to interrupt)". Codex's TUI has NO ─ chrome separator (verified live), so
+# parse_status_line finds no anchor and is_claude_working returns False for a
+# busy codex pane — hence a runtime-specific detector. The stable, distinctive
+# signal is the running counter with the interrupt hint: "(Ns • esc to
+# interrupt)". Matching the whole "(\d+s … esc to interrupt)" group (not a bare
+# "esc to interrupt", which appears in prose / tool output — see is_claude_working)
+# keeps it from false-firing; the spinner glyph (• U+2022 / ◦ U+25E6, alternating
+# animation frames) and the verb vary, so neither is required. The counter
+# separator is a bullet "•" here, but "·"/"∙" are allowed for resilience.
+_CODEX_WORKING_RE = re.compile(r"\(\d+\s*s\s*[•·∙]\s*esc to interrupt\)", re.IGNORECASE)
+
+
+def is_codex_working(pane_text: str) -> bool:
+    """True iff a Codex pane shows a turn actively running (interruptible).
+
+    Codex has no ─ chrome separator to anchor on the way is_claude_working
+    does, so this matches the codex status line's distinctive running counter
+    ("(Ns • esc to interrupt)") — scanned only in the bottom rows, where the
+    status line is pinned just above the input box, so scrollback prose that
+    happens to contain the phrase can't false-fire.
+    """
+    if not pane_text:
+        return False
+    tail = "\n".join(pane_text.split("\n")[-15:])
+    return bool(_CODEX_WORKING_RE.search(tail))
+
+
 def is_tui_ready(pane_text: str) -> bool:
     """True iff Claude Code's input box has rendered anywhere in the pane.
 
@@ -491,6 +644,28 @@ def has_queued_messages(pane_text: str) -> bool:
         return False
     tail = "\n".join(pane_text.split("\n")[-15:])
     return bool(_QUEUED_MSG_RE.search(tail))
+
+
+# Codex's analog of Claude Code's queued-messages hint: a message typed mid-turn
+# is buffered and codex shows "• Messages to be submitted after next tool call
+# (press esc to interrupt and send immediately)". Presence means the latest input
+# is queued, NOT yet in the agent's context — same reaction-ack semantics as
+# has_queued_messages. (The transient "tab to queue message" shown while still
+# typing is deliberately NOT matched — the bot presses Enter on delivery, so the
+# poll only ever sees the settled queued state.)
+_CODEX_QUEUED_RE = re.compile(r"to be submitted after", re.IGNORECASE)
+
+
+def has_codex_queued_messages(pane_text: str) -> bool:
+    """True if Codex is showing buffered (not-yet-ingested) input.
+
+    Bottom-rows only, like has_queued_messages, so a scrollback occurrence of
+    the phrase can't false-fire.
+    """
+    if not pane_text:
+        return False
+    tail = "\n".join(pane_text.split("\n")[-15:])
+    return bool(_CODEX_QUEUED_RE.search(tail))
 
 
 # Canary for Claude Code TUI updates: a status line we found but could not

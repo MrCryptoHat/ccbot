@@ -104,8 +104,8 @@ async def _handle_inject(request: web.Request) -> web.Response:
     if pane is None:
         logger.warning("inject: pane uncapturable for %s (agent down?)", binding)
         return web.json_response({"ok": False, "error": "unavailable"}, status=503)
-    if terminal_parser.is_interactive_ui(pane) or terminal_parser.is_claude_working(
-        pane
+    if terminal_parser.is_interactive_ui(pane) or session_manager.is_agent_working(
+        binding, pane
     ):
         return web.json_response({"ok": False, "error": "busy"}, status=409)
 

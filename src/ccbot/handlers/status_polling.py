@@ -40,7 +40,6 @@ from ..rate_limiter import background_context
 from ..session import session_manager
 from ..terminal_parser import (
     detect_model_switch,
-    has_queued_messages,
     is_interactive_ui,
 )
 from ..tmux_manager import tmux_manager
@@ -160,7 +159,11 @@ async def update_status_message(
     # Reaction-ack: fire the pending 👀 once this window's input queue drains —
     # i.e. a message armed on delivery is now taken into the agent's context, not
     # left buffered behind a running turn. No-op unless something is armed.
-    await fire_reaction_ack(bot, window_id, has_queue=has_queued_messages(pane_text))
+    await fire_reaction_ack(
+        bot,
+        window_id,
+        has_queue=session_manager.agent_has_queued_input(window_id, pane_text),
+    )
 
     # Safeguard model-switch notice — Fable 5 (etc.) silently downgrades to a
     # fallback model when its safeguards flag a message, printing a notice into

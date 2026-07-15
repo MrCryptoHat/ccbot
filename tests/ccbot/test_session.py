@@ -1046,3 +1046,58 @@ class TestSendLockSerialization:
         # Both started before either finished — no cross-binding serialization.
         kinds = [e.split(":")[0] for e in events]
         assert kinds[:2] == ["start", "start"]
+
+
+class TestRuntimeAwareBusyChecks:
+    """is_agent_working / agent_has_queued_input dispatch on WindowState.runtime,
+    so the same 'don't barge' call sites work for a Claude window and a Codex
+    window without an `if codex:` branch (CLAUDE.md 'runtime is a SECOND axis')."""
+
+    _SEP = "─" * 40
+    _CLAUDE_WORKING = f"✶ Orbiting… (3m 13s · esc to interrupt)\n{_SEP}\n  ❯ \n{_SEP}\n"
+    _CODEX_WORKING = (
+        "◦ Working (4s • esc to interrupt)\n"
+        "› Summarize recent commits\n"
+        "  gpt-5.5 medium · /home/user/project\n"
+    )
+    _CODEX_QUEUED = (
+        "◦ Working (7s • esc to interrupt)\n"
+        "• Messages to be submitted after next tool call "
+        "(press esc to interrupt and send immediately)\n"
+        "  gpt-5.5 medium · /home/user/project\n"
+    )
+
+    def _mgr(self):
+        from ccbot.session import WindowState
+
+        mgr = SessionManager()
+        mgr.window_states["@5"] = WindowState(runtime="claude")
+        mgr.window_states["@9"] = WindowState(runtime="codex")
+        return mgr
+
+    def test_window_runtime(self):
+        mgr = self._mgr()
+        assert mgr.window_runtime("@5") == "claude"
+        assert mgr.window_runtime("@9") == "codex"
+        # Unknown / docker binding with no state → default claude.
+        assert mgr.window_runtime("docker:x") == "claude"
+
+    def test_is_agent_working_dispatches(self):
+        mgr = self._mgr()
+        assert mgr.is_agent_working("@5", self._CLAUDE_WORKING) is True
+        assert mgr.is_agent_working("@9", self._CODEX_WORKING) is True
+        # Cross: the codex window's detector doesn't fire on Claude chrome
+        # (no ─ separator match), and Claude's doesn't fire on the codex pane.
+        assert mgr.is_agent_working("@9", self._CLAUDE_WORKING) is False
+        assert mgr.is_agent_working("@5", self._CODEX_WORKING) is False
+
+    def test_empty_pane_not_working(self):
+        mgr = self._mgr()
+        assert mgr.is_agent_working("@9", None) is False
+        assert mgr.is_agent_working("@9", "") is False
+
+    def test_agent_has_queued_input_dispatches(self):
+        mgr = self._mgr()
+        assert mgr.agent_has_queued_input("@9", self._CODEX_QUEUED) is True
+        assert mgr.agent_has_queued_input("@9", self._CODEX_WORKING) is False
+        assert mgr.agent_has_queued_input("@9", None) is False

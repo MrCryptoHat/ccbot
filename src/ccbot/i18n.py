@@ -238,6 +238,18 @@ STRINGS.update(
             "ru": "✅ Продолжаю прошлый разговор в `{dir}`. Пишите сюда — сообщения уходят агенту.",
             "en": "✅ Resumed the last session in `{dir}`. Messages here go straight to the agent.",
         },
+        "bot.window_codex_ready": {
+            "ru": (
+                "✅ Codex запущен в `{dir}`. Если нужен вход — сейчас появится "
+                "меню с кнопками навигации (↑ ↓ ⏎): выбери «Sign in with Device "
+                "Code», а ссылку для входа пришлю отдельным сообщением."
+            ),
+            "en": (
+                "✅ Codex started in `{dir}`. If sign-in is needed, a menu with "
+                "nav buttons (↑ ↓ ⏎) will pop up shortly — pick “Sign in with "
+                "Device Code”; I'll post the sign-in link as a separate message."
+            ),
+        },
         "bot.bound_to_window": {
             "ru": "✅ Привязано к окну `{name}`.",
             "en": "✅ Bound to window `{name}`.",
@@ -563,6 +575,12 @@ STRINGS.update(
         },
         # -- ctxp --
         "ctxp.categories": {"ru": "Категории:", "en": "Categories:"},
+        # -- csp (codex /status, shown by the panel's Context button) --
+        "csp.header": {"ru": "📊 Статус сессии", "en": "📊 Session status"},
+        "csp.account": {"ru": "Аккаунт", "en": "Account"},
+        "csp.permissions": {"ru": "Права", "en": "Permissions"},
+        "csp.mode": {"ru": "Режим", "en": "Mode"},
+        "csp.weekly_limit": {"ru": "Недельный лимит", "en": "Weekly limit"},
         # -- dirb --
         "dirb.change_folder": {"ru": "📂 Сменить папку", "en": "📂 Change folder"},
         "dirb.winp_header": {
@@ -588,6 +606,18 @@ STRINGS.update(
             "ru": "В этой папке уже есть сессии Claude.\n",
             "en": "Existing sessions found in this directory.\n",
         },
+        "dirb.new_codex": {
+            "ru": "🟠 Новый Codex",
+            "en": "🟠 New Codex",
+        },
+        "dirb.runtime_header": {
+            "ru": "*Какого агента запустить?*\n",
+            "en": "*Which agent to run?*\n",
+        },
+        "dirb.runtime_prompt": {
+            "ru": "Claude Code — как обычно. Codex — новый вариант от OpenAI.",
+            "en": "Claude Code as usual, or Codex — the new OpenAI option.",
+        },
         "dirb.msgs": {"ru": "{n} сообщ.", "en": "{n} msgs"},
         "dirb.time_now": {"ru": "только что", "en": "just now"},
         "dirb.time_min": {"ru": "{n} мин назад", "en": "{n}m ago"},
@@ -609,12 +639,16 @@ STRINGS.update(
         "iui.btn_open_login": {"ru": "🔗 Открыть вход", "en": "🔗 Open sign-in"},
         "iui.btn_refresh": {"ru": "🔄 Обновить", "en": "🔄 Refresh"},
         "iui.caption_waiting": {
-            "ru": "❓ *Claude ждёт ответа*",
-            "en": "❓ *Claude is waiting for a reply*",
+            "ru": "❓ *Агент ждёт ответа*",
+            "en": "❓ *Agent is waiting for a reply*",
         },
         "iui.login_prompt": {
-            "ru": "🔐 *Вход в Claude*\n\nОткрой ссылку, войди в аккаунт, потом пришли сюда код, если попросит.\n\n`{url}`",
-            "en": "🔐 *Sign in to Claude*\n\nOpen the link, sign in to your account, then send the code here if asked.\n\n`{url}`",
+            "ru": "🔐 *Вход*\n\nОткрой ссылку и войди в аккаунт.\n\n`{url}`",
+            "en": "🔐 *Sign in*\n\nOpen the link and sign in to your account.\n\n`{url}`",
+        },
+        "iui.login_code": {
+            "ru": "Одноразовый код (введи где попросят):\n`{code}`",
+            "en": "One-time code (enter it where prompted):\n`{code}`",
         },
         # -- lboard --
         # -- links --

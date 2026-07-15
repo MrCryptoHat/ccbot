@@ -29,7 +29,6 @@ from telegram.ext import ContextTypes
 
 from ..config import config
 from ..session import session_manager
-from ..terminal_parser import has_queued_messages, is_claude_working
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,10 @@ async def should_pin_task(
         pane_text = await session_manager.capture_pane(wid)
     if not pane_text:
         return False
-    return not (is_claude_working(pane_text) or has_queued_messages(pane_text))
+    return not (
+        session_manager.is_agent_working(wid, pane_text)
+        or session_manager.agent_has_queued_input(wid, pane_text)
+    )
 
 
 async def pin_task_message(bot: Bot, chat_id: int, message_id: int) -> None:

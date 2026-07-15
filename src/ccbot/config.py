@@ -240,6 +240,31 @@ class Config:
         # Claude command to run in new windows
         self.claude_command = os.getenv("CLAUDE_COMMAND", "claude")
 
+        # Agent runtime: which CLI a new agent window runs. "claude" (Claude
+        # Code, default) or "codex" (OpenAI Codex CLI). The runtime is an axis
+        # orthogonal to transport (tmux/docker) — see runtimes.py. A binding's
+        # runtime is a property of its window (WindowState.runtime), not of the
+        # binding string; this is only the default for freshly-created windows.
+        self.default_runtime = (
+            os.getenv("CCBOT_DEFAULT_RUNTIME", "claude").strip().lower()
+        )
+        # Codex CLI command (launched in a codex-runtime window). No `--name`
+        # flag (unlike claude) — the tmux window name is set at creation.
+        self.codex_command = os.getenv("CODEX_COMMAND", "codex")
+        # Per-runtime host-side session_map written by that runtime's SessionStart
+        # hook (codex hook lands here, keyed like the main map, tagged runtime).
+        self.codex_session_map_file = self.config_dir / "codex_session_map.json"
+        # Root of Codex's rollout transcripts (~/.codex/sessions/YYYY/MM/DD/
+        # rollout-*.jsonl). The monitor resolves a codex window's transcript by
+        # matching a rollout's session_meta.cwd to the window's cwd (newest).
+        # Override via CODEX_SESSIONS_PATH (e.g. non-default CODEX_HOME).
+        codex_sessions = os.getenv("CODEX_SESSIONS_PATH")
+        self.codex_sessions_path = (
+            Path(codex_sessions).expanduser()
+            if codex_sessions
+            else Path.home() / ".codex" / "sessions"
+        )
+
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"
         self.session_map_file = self.config_dir / "session_map.json"

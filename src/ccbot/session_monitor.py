@@ -23,6 +23,7 @@ import aiofiles
 from . import i18n
 from .config import config
 from .monitor_state import MonitorState, TrackedSession
+from .runtimes import monitored_runtimes
 from .transcript_parser import TranscriptParser
 
 logger = logging.getLogger(__name__)
@@ -36,26 +37,6 @@ logger = logging.getLogger(__name__)
 # from it).
 CONTEXT_TOKEN_THRESHOLDS: tuple[int, ...] = (300_000, 500_000, 700_000)
 CONTEXT_WINDOW_TOKENS = 1_000_000
-
-
-def _entry_context_tokens(entry: dict) -> int | None:
-    """Context-window fill (input-side tokens) for an assistant JSONL entry.
-
-    Returns input + cache_creation + cache_read tokens — the prompt size
-    Claude Code itself reports as "X/1m" in /context. Output tokens are the
-    *next* turn's input, so they're excluded to match that number. Returns
-    None for non-assistant entries or ones without a usage block.
-    """
-    if entry.get("type") != "assistant":
-        return None
-    usage = (entry.get("message") or {}).get("usage") or {}
-    if not usage:
-        return None
-    return (
-        usage.get("input_tokens", 0)
-        + usage.get("cache_creation_input_tokens", 0)
-        + usage.get("cache_read_input_tokens", 0)
-    )
 
 
 def _format_context_alert(tokens: int) -> str:
@@ -332,147 +313,150 @@ class SessionMonitor:
         return new_entries
 
     async def check_for_updates(self, active_session_ids: set[str]) -> list[NewMessage]:
-        """Check all sessions for new assistant messages.
+        """Check every runtime's live transcripts for new messages.
 
-        Reads from last byte offset. Emits both intermediate
-        (stop_reason=null) and complete messages.
-
-        Args:
-            active_session_ids: Set of session IDs currently in session_map
+        Generic over runtime: each registered ``AgentRuntime`` resolves its own
+        transcripts (``iter_transcripts``) and parses them (``parse_entries``);
+        the per-transcript read → parse → emit tail is shared
+        (``_process_transcript``). ``active_session_ids`` (from the Claude
+        session_map) is passed through — runtimes without a session_map ignore
+        it. A failure in one runtime's resolution never blocks the others.
         """
-        new_messages = []
+        from .session import session_manager
 
-        # Scan projects to get available session files
-        sessions = await self.scan_projects()
-
-        # Only process sessions that are in session_map
-        for session_info in sessions:
-            if session_info.session_id not in active_session_ids:
-                continue
+        new_messages: list[NewMessage] = []
+        for runtime in monitored_runtimes():
             try:
-                tracked = self.state.get_session(session_info.session_id)
-
-                if tracked is None:
-                    # For a newly-tracked session, start at current EOF — we
-                    # only care about messages generated from "now" forward.
-                    # On a fresh session (post-/clear or brand new agent) the
-                    # file is tiny so EOF ≈ 0 and nothing is missed. On a
-                    # resumed session the file already holds the whole
-                    # conversation history, which the user either saw in
-                    # real time or doesn't want re-flooded — starting from 0
-                    # would dump it all into Telegram as bogus "new" events.
-                    try:
-                        st = session_info.file_path.stat()
-                        current_mtime = st.st_mtime
-                        file_size = st.st_size
-                    except OSError:
-                        current_mtime = 0.0
-                        file_size = 0
-                    tracked = TrackedSession(
-                        session_id=session_info.session_id,
-                        file_path=str(session_info.file_path),
-                        last_byte_offset=file_size,
-                    )
-                    self.state.update_session(tracked)
-                    self._file_mtimes[session_info.session_id] = current_mtime
-                    logger.info(
-                        "Started tracking session %s at EOF (%d bytes)",
-                        session_info.session_id,
-                        file_size,
-                    )
+                refs = await runtime.iter_transcripts(
+                    session_manager, self, active_session_ids
+                )
+            except Exception as e:
+                logger.exception(
+                    "iter_transcripts failed for runtime %s: %s", runtime.name, e
+                )
+                continue
+            seen: set[str] = set()  # first ref wins if a session_id repeats
+            for session_id, file_path in refs:
+                if session_id in seen:
                     continue
+                seen.add(session_id)
+                new_messages.extend(
+                    await self._process_transcript(runtime, session_id, file_path)
+                )
+        self.state.save_if_dirty()
+        return new_messages
 
-                # Check mtime + file size to see if file has changed
+    def _parsed_to_messages(
+        self, session_id: str, parsed_entries: list
+    ) -> list[NewMessage]:
+        """Convert a ParsedEntry list into NewMessages (shared by both runtimes).
+
+        Drops empty entries and user messages when show_user_messages is off.
+        The runtime-agnostic tail of both the Claude and Codex paths.
+        """
+        msgs: list[NewMessage] = []
+        for entry in parsed_entries:
+            if not entry.text and not entry.image_data:
+                continue
+            if entry.role == "user" and not config.show_user_messages:
+                continue
+            msgs.append(
+                NewMessage(
+                    session_id=session_id,
+                    text=entry.text,
+                    is_complete=True,
+                    content_type=entry.content_type,
+                    tool_use_id=entry.tool_use_id,
+                    role=entry.role,
+                    tool_name=entry.tool_name,
+                    image_data=entry.image_data,
+                    entry_ts_iso=entry.timestamp,
+                    precedes_interactive_prompt=entry.precedes_interactive_prompt,
+                )
+            )
+        return msgs
+
+    async def _process_transcript(
+        self, runtime: Any, session_id: str, file_path: Path
+    ) -> list[NewMessage]:
+        """Read new lines from one transcript, parse via ``runtime``, emit messages.
+
+        The runtime-agnostic tail shared by every runtime: byte-offset
+        incremental read, EOF-start on first track (so a resumed session's
+        history isn't re-flooded), mtime skip, parse, and context alert. Only
+        ``runtime.parse_entries`` / ``latest_context_tokens`` differ per runtime.
+        """
+        new_messages: list[NewMessage] = []
+        try:
+            tracked = self.state.get_session(session_id)
+            if tracked is None:
+                # Newly tracked → start at current EOF. Fresh session (post-/clear
+                # or brand new) is tiny so nothing's missed; a resumed one already
+                # holds history the user saw or doesn't want re-flooded.
                 try:
-                    st = session_info.file_path.stat()
+                    st = file_path.stat()
                     current_mtime = st.st_mtime
-                    current_size = st.st_size
+                    file_size = st.st_size
                 except OSError:
-                    continue
-
-                last_mtime = self._file_mtimes.get(session_info.session_id, 0.0)
-                if (
-                    current_mtime <= last_mtime
-                    and current_size <= tracked.last_byte_offset
-                ):
-                    # File hasn't changed, skip reading
-                    continue
-
-                # File changed, read new content from last offset
-                new_entries = await self._read_new_lines(
-                    tracked, session_info.file_path
+                    current_mtime = 0.0
+                    file_size = 0
+                tracked = TrackedSession(
+                    session_id=session_id,
+                    file_path=str(file_path),
+                    last_byte_offset=file_size,
                 )
-                self._file_mtimes[session_info.session_id] = current_mtime
-
-                if new_entries:
-                    logger.debug(
-                        f"Read {len(new_entries)} new entries for "
-                        f"session {session_info.session_id}"
-                    )
-
-                # Parse new entries using the shared logic, carrying over pending tools
-                carry = self._pending_tools.get(session_info.session_id, {})
-                parsed_entries, remaining = TranscriptParser.parse_entries(
-                    new_entries,
-                    pending_tools=carry,
+                self.state.update_session(tracked)
+                self._file_mtimes[session_id] = current_mtime
+                logger.info(
+                    "Started tracking session %s at EOF (%d bytes)",
+                    session_id,
+                    file_size,
                 )
-                if remaining:
-                    self._pending_tools[session_info.session_id] = remaining
-                else:
-                    self._pending_tools.pop(session_info.session_id, None)
+                return new_messages
 
-                for entry in parsed_entries:
-                    if not entry.text and not entry.image_data:
-                        continue
-                    # Skip user messages unless show_user_messages is enabled
-                    if entry.role == "user" and not config.show_user_messages:
-                        continue
+            try:
+                st = file_path.stat()
+                current_mtime = st.st_mtime
+                current_size = st.st_size
+            except OSError:
+                return new_messages
+
+            last_mtime = self._file_mtimes.get(session_id, 0.0)
+            if current_mtime <= last_mtime and current_size <= tracked.last_byte_offset:
+                return new_messages  # unchanged
+
+            new_entries = await self._read_new_lines(tracked, file_path)
+            self._file_mtimes[session_id] = current_mtime
+
+            carry = self._pending_tools.get(session_id, {})
+            parsed_entries, remaining = runtime.parse_entries(new_entries, carry)
+            if remaining:
+                self._pending_tools[session_id] = remaining
+            else:
+                self._pending_tools.pop(session_id, None)
+
+            new_messages.extend(self._parsed_to_messages(session_id, parsed_entries))
+
+            # Context-fill threshold alerts — the token extraction is
+            # runtime-specific (usage shape differs); the threshold bookkeeping
+            # is generic. None → runtime opts out (e.g. Codex, for now).
+            latest_tokens = runtime.latest_context_tokens(new_entries)
+            if latest_tokens is not None:
+                alert = self._check_context_thresholds(session_id, latest_tokens)
+                if alert is not None:
                     new_messages.append(
                         NewMessage(
-                            session_id=session_info.session_id,
-                            text=entry.text,
+                            session_id=session_id,
+                            text=alert,
                             is_complete=True,
-                            content_type=entry.content_type,
-                            tool_use_id=entry.tool_use_id,
-                            role=entry.role,
-                            tool_name=entry.tool_name,
-                            image_data=entry.image_data,
-                            entry_ts_iso=entry.timestamp,
-                            precedes_interactive_prompt=entry.precedes_interactive_prompt,
+                            content_type="context_alert",
                         )
                     )
 
-                # Context-fill threshold alerts — read straight off `usage`
-                # in the raw JSONL entries (no /context injection, no pane
-                # mutation). Use the *latest* assistant entry's fill so a
-                # /compact-induced drop re-arms the higher thresholds.
-                latest_tokens: int | None = None
-                for raw in new_entries:
-                    t = _entry_context_tokens(raw)
-                    if t is not None:
-                        latest_tokens = t
-                if latest_tokens is not None:
-                    alert = self._check_context_thresholds(
-                        session_info.session_id, latest_tokens
-                    )
-                    if alert is not None:
-                        new_messages.append(
-                            NewMessage(
-                                session_id=session_info.session_id,
-                                text=alert,
-                                is_complete=True,
-                                content_type="context_alert",
-                            )
-                        )
-
-                self.state.update_session(tracked)
-
-            except (OSError, UnicodeDecodeError) as e:
-                # Per-session catch: one unreadable file must not abort
-                # the whole tick for every other session.
-                logger.debug(f"Error processing session {session_info.session_id}: {e}")
-
-        self.state.save_if_dirty()
+            self.state.update_session(tracked)
+        except (OSError, UnicodeDecodeError) as e:
+            # Per-transcript catch: one unreadable file must not abort the tick.
+            logger.debug("Error processing session %s: %s", session_id, e)
         return new_messages
 
     def _check_context_thresholds(self, session_id: str, tokens: int) -> str | None:
@@ -663,7 +647,9 @@ class SessionMonitor:
                 current_map = await self._detect_and_cleanup_changes()
                 active_session_ids = set(current_map.values())
 
-                # Check for new messages (all I/O is async)
+                # Check every runtime's transcripts in one generic pass (Claude
+                # via session_map + scan_projects, Codex via cwd-resolved
+                # rollouts, …) — each runtime's iter_transcripts, one shared tail.
                 new_messages = await self.check_for_updates(active_session_ids)
 
                 for msg in new_messages:

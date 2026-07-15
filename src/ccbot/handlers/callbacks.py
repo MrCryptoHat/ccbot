@@ -17,6 +17,7 @@ import asyncio
 import io
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +36,8 @@ from ..config import config
 from ..i18n import tr
 from ..screenshot import text_to_image
 from ..session import session_manager
-from ..terminal_parser import is_claude_working, is_tui_ready
+from ..terminal_parser import is_tui_ready
 from ..tmux_manager import tmux_manager
-from ..utils import is_valid_session_id
 from .callback_data import (
     CB_ASK_DOWN,
     CB_ASK_ENTER,
@@ -72,6 +72,8 @@ from .callback_data import (
     CB_HISTORY_NEXT,
     CB_HISTORY_PREV,
     CB_KEYS_PREFIX,
+    CB_RUNTIME_CANCEL,
+    CB_RUNTIME_SELECT,
     CB_SCREENSHOT_REFRESH,
     CB_SESSION_BROWSE,
     CB_SESSION_CANCEL,
@@ -96,15 +98,23 @@ from .directory_browser import (
     SESSIONS_KEY,
     STATE_BROWSING_DIRECTORY,
     STATE_KEY,
+    STATE_SELECTING_RUNTIME,
     STATE_SELECTING_SESSION,
     UNBOUND_WINDOWS_KEY,
     build_directory_browser,
+    build_runtime_picker,
     build_session_picker,
     clear_browse_state,
+    clear_runtime_picker_state,
     clear_session_picker_state,
     clear_window_picker_state,
 )
 from . import pane_cache
+from .codex_status_parser import (
+    STATUS_MARKER as CODEX_STATUS_MARKER,
+    format_status_message as format_codex_status,
+    parse_status_output as parse_codex_status,
+)
 from .context_parser import format_context_message, parse_context_output
 from .history import send_history
 from .interactive_ui import (
@@ -393,10 +403,7 @@ async def _handle_dir_confirm(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Confirm directory selection — create session or show session picker."""
-    # Import here to avoid circular import during transition
-    from ..bot import _create_and_bind_window
-
+    """Confirm directory selection — show session picker or runtime picker."""
     selected_path = _get_user_data(context, BROWSE_PATH_KEY)
     if selected_path is None:
         # Stale Select button from before a bot restart: without this check
@@ -427,9 +434,14 @@ async def _handle_dir_confirm(
         await query.answer()
         return
 
-    await _create_and_bind_window(
-        query, context, user, selected_path, pending_thread_id
-    )
+    # No existing sessions → pick the runtime (Claude Code / Codex) for the
+    # fresh window. _handle_runtime_select does the actual create+bind.
+    if context.user_data is not None:
+        context.user_data[STATE_KEY] = STATE_SELECTING_RUNTIME
+        context.user_data["_selected_path"] = selected_path
+    text, keyboard = build_runtime_picker(selected_path)
+    await safe_edit(query, text, reply_markup=keyboard)
+    await query.answer()
 
 
 async def _handle_dir_cancel(
@@ -506,7 +518,12 @@ async def _handle_session_new(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Start a new session (from session picker)."""
+    """Start a new Claude session (from session picker).
+
+    ``New Session`` is Claude-specific by design: the picker lists Claude
+    sessions to resume, and its sibling ``🟠 Codex`` button (CB_RUNTIME_SELECT)
+    covers starting a Codex agent — so no runtime step is needed here.
+    """
     from ..bot import _create_and_bind_window
 
     pending_tid = _get_user_data(context, "_pending_thread_id")
@@ -527,6 +544,67 @@ async def _handle_session_new(
         context.user_data.pop("_selected_path", None)
 
     await _create_and_bind_window(query, context, user, selected_path, pending_tid)
+
+
+async def _handle_runtime_select(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+) -> None:
+    """Runtime chosen (Claude Code / Codex) → create + bind the fresh window."""
+    from ..bot import _create_and_bind_window
+    from ..runtimes import get_runtime
+
+    pending_tid = _get_user_data(context, "_pending_thread_id")
+    if pending_tid is None:
+        pending_tid = get_thread_id(update)
+    if pending_tid is not None and get_thread_id(update) != pending_tid:
+        await _answer_stale(query)
+        return
+
+    selected_path = _get_user_data(context, "_selected_path")
+    if selected_path is None:
+        # Runtime button from a picker that predates a bot restart — the path
+        # is gone, so binding would target the bot's own cwd.
+        await _answer_stale(query)
+        return
+
+    # get_runtime normalises any unknown/garbled suffix to "claude" — no
+    # separate validation needed, and an unrecognised value degrades safely.
+    runtime = get_runtime(_extract_suffix(data, CB_RUNTIME_SELECT)).name
+
+    clear_runtime_picker_state(context.user_data)
+    if context.user_data is not None:
+        context.user_data.pop("_selected_path", None)
+        # When 🟠 Codex is tapped straight from the session picker, the cached
+        # Claude-session list is now stale — drop it too.
+        context.user_data.pop(SESSIONS_KEY, None)
+
+    await _create_and_bind_window(
+        query, context, user, selected_path, pending_tid, runtime=runtime
+    )
+
+
+async def _handle_runtime_cancel(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+) -> None:
+    """Cancel the runtime picker."""
+    if not _validate_pending_thread(update, context):
+        await _answer_stale(query)
+        return
+    clear_runtime_picker_state(context.user_data)
+    if context.user_data is not None:
+        context.user_data.pop("_selected_path", None)
+        context.user_data.pop("_pending_thread_id", None)
+        context.user_data.pop("_pending_thread_text", None)
+    await safe_edit(query, tr("cb.cancelled"))
+    await query.answer(tr("cb.cancelled"))
 
 
 async def _handle_session_browse(
@@ -1040,7 +1118,10 @@ async def _cmd_refresh_photo(
         return False
 
 
-# Map of slash-command prefixes → the text to type into Claude's pane.
+# Map of slash-command prefixes → the DEFAULT (Claude Code) text typed into the
+# pane. The real command is resolved through the window's runtime — codex's
+# Context button types /status, not /context (runtimes.panel_slash_commands) —
+# with this as the fallback for prefixes no runtime overrides.
 _CMD_SLASH_MAP: dict[str, str] = {
     CB_CMD_CLEAR: "/clear",
     CB_CMD_COMPACT: "/compact",
@@ -1049,6 +1130,19 @@ _CMD_SLASH_MAP: dict[str, str] = {
     CB_CMD_RESUME: "/resume",
     CB_CMD_CONTEXT: "/context",
     CB_CMD_EFFORT: "/effort",
+}
+
+# Slash-command prefix → logical panel action id (the same ids
+# runtimes.AgentRuntime.panel_actions / panel_slash_commands key on), so the
+# runtime can resolve the real command / a per-runtime post-slash renderer.
+_CMD_ACTION_ID: dict[str, str] = {
+    CB_CMD_CLEAR: "clear",
+    CB_CMD_COMPACT: "compact",
+    CB_CMD_MODEL: "model",
+    CB_CMD_MCP: "mcp",
+    CB_CMD_RESUME: "resume",
+    CB_CMD_CONTEXT: "context",
+    CB_CMD_EFFORT: "effort",
 }
 
 _CMD_DESTRUCTIVE_ACTIONS: dict[str, str] = {
@@ -1063,6 +1157,18 @@ _CMD_DESTRUCTIVE_ACTIONS: dict[str, str] = {
 _SES_TAB_PREFIXES = {CB_CMD_MODEL, CB_CMD_MCP, CB_CMD_RESUME, CB_CMD_CONTEXT}
 
 
+# The Context button surfaces TUI-only diagnostic output as a chat message, and
+# what that output IS depends on the runtime: Claude's /context (token
+# breakdown) vs codex's /status (session status — codex has no /context). Each
+# renderer is (pane marker to wait for, parse, format); a 3rd agent adds a row.
+_CONTEXT_RENDERERS: dict[
+    str, tuple[str, Callable[[str], dict | None], Callable[[dict], str]]
+] = {
+    "claude": ("Context Usage", parse_context_output, format_context_message),
+    "codex": (CODEX_STATUS_MARKER, parse_codex_status, format_codex_status),
+}
+
+
 async def _post_slash_context(
     query: CallbackQuery,
     update: Update,
@@ -1070,35 +1176,36 @@ async def _post_slash_context(
     user: User,
     window_id: str,
 ) -> None:
-    """Capture and publish /context's TUI output as a Telegram chat message.
+    """Publish the Context button's TUI output as a Telegram chat message.
 
-    /context is rendered purely in the pane (no JSONL trace), so to deliver
-    its data as a normal chat message we have to scrape the pane after it
-    settles. Two pane quirks to defend against:
+    The output (Claude /context or codex /status) is rendered purely in the pane
+    (no JSONL trace), so we scrape the pane after it settles, dispatching parse +
+    format by the window's runtime (``_CONTEXT_RENDERERS``). Two pane quirks:
 
-    * The output regularly exceeds the visible viewport (~50 rows in a
-      typical Claude Code window — /context is 40-70 lines including the
-      MCP tool list), so the "Context Usage" header scrolls off. We pass
-      `scrollback_lines=200` to include enough history.
-    * Render time varies (~1s for empty sessions, longer when MCP/Skills
-      enumeration is slow). Instead of a fixed sleep, poll the pane up to
-      ~5s waiting for the parser to succeed — and bail with a debug log
-      if it never does. The photo refresh that runs after still gives
-      the user a visual fallback."""
+    * The output can exceed the visible viewport (Claude /context is 40-70 lines
+      with the MCP tool list), so the marker scrolls off — `scrollback_lines=200`
+      includes enough history.
+    * Render time varies, so poll up to ~5s for the parser to succeed instead of
+      a fixed sleep, and bail with a debug log if it never does. The photo
+      refresh that runs after still gives a visual fallback."""
     if not query.message:
         return
+    spec = _CONTEXT_RENDERERS.get(session_manager.window_runtime(window_id))
+    if spec is None:
+        return
+    marker, parse, fmt = spec
     parsed = None
     for _ in range(10):
         pane = await session_manager.capture_pane(window_id, scrollback_lines=200)
-        if pane and "Context Usage" in pane:
-            parsed = parse_context_output(pane)
+        if pane and marker in pane:
+            parsed = parse(pane)
             if parsed:
                 break
         await asyncio.sleep(0.5)
     if not parsed:
-        logger.debug("post-slash /context: no Context Usage block in pane after ~5s")
+        logger.debug("post-slash context: no parseable block in pane after ~5s")
         return
-    body = format_context_message(parsed)
+    body = fmt(parsed)
     thread_id = get_thread_id(update)
     chat_id = (
         session_manager.resolve_chat_id(user.id, thread_id) or query.message.chat.id
@@ -1111,7 +1218,7 @@ async def _post_slash_context(
             message_thread_id=thread_id,
         )
     except Exception as e:
-        logger.warning("post-slash /context publish failed: %s", e)
+        logger.warning("post-slash context publish failed: %s", e)
 
 
 # Per-slash-command post-action hooks. Run after the slash is sent and the
@@ -1147,10 +1254,16 @@ async def _handle_cmd_slash(
             await _show_confirm(query, window_id, action)
             return
 
-    # Safe slash-command path.
+    # Safe slash-command path. Resolve the actual slash through the window's
+    # runtime — codex's Context button types /status, not Claude's /context
+    # (runtimes.panel_slash_commands); _CMD_SLASH_MAP is the fallback.
+    from ..runtimes import get_runtime
+
     prefix = next(p for p in _CMD_SLASH_MAP if data.startswith(p))
-    slash = _CMD_SLASH_MAP[prefix]
     window_id = _parse_cmd_payload(data, prefix)
+    action = _CMD_ACTION_ID.get(prefix)
+    runtime = get_runtime(session_manager.window_runtime(window_id))
+    slash = (runtime.panel_slash(action) if action else None) or _CMD_SLASH_MAP[prefix]
 
     success, msg = await session_manager.send_to_window(window_id, slash)
     await query.answer(f"{slash}" if success else f"❌ {msg}")
@@ -1332,9 +1445,10 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
         await query.answer(tr("cb.window_gone"), show_alert=True)
         return
     # /exit + relaunch are typed into the pane — on a busy agent they'd
-    # land in Claude's prompt as text and the agent would keep running.
+    # land in the agent's prompt as text and it would keep running. Runtime-
+    # aware: codex's busy state has different chrome than Claude's.
     pane = await tmux_manager.capture_pane(window_id)
-    if pane and is_claude_working(pane):
+    if pane and session_manager.is_agent_working(window_id, pane):
         await query.answer(
             tr("cb.agent_busy_stop_first"),
             show_alert=True,
@@ -1343,18 +1457,18 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
     await query.answer(
         tr("cb.new_session_toast") if fresh else tr("cb.restarting_toast")
     )
-    # send_lock across /exit → relaunch: anything typed into the pane in
-    # the 3s gap would land in bash, not Claude.
+    # Runtime-aware exit + relaunch (claude: /exit → `claude --name…`; codex:
+    # /quit → `codex [resume …]`). launch_command validates/quotes and knows
+    # each CLI's resume flag, so no per-runtime branch here.
+    from ..runtimes import get_runtime
+
+    runtime = get_runtime(ws.runtime if ws else None)
+    # send_lock across exit → relaunch: anything typed into the pane in the 3s
+    # gap would land in bash, not the agent.
     async with session_manager.send_lock(window_id):
-        await tmux_manager.send_keys(window_id, "/exit")
+        await tmux_manager.send_keys(window_id, runtime.exit_command())
         await asyncio.sleep(3)
-        cmd = config.claude_command
-        # resume_id is typed into the pane's shell after /exit — only append it
-        # when it is a well-formed session id, else start fresh. (audit HIGH#1)
-        if resume_id and is_valid_session_id(resume_id):
-            cmd = f"{cmd} --resume {resume_id}"
-        elif resume_id:
-            logger.warning("Ignoring malformed resume id %r; starting fresh", resume_id)
+        cmd = runtime.launch_command(w.window_name, resume_id or None)
         await tmux_manager.send_keys(window_id, cmd)
     await _wait_pane_ready(window_id)
     await _cmd_refresh_photo(query, window_id, tab="ses")
@@ -1610,6 +1724,7 @@ _EXACT_DISPATCH: dict[str, Any] = {
     CB_SESSION_NEW: _handle_session_new,
     CB_SESSION_BROWSE: _handle_session_browse,
     CB_SESSION_CANCEL: _handle_session_cancel,
+    CB_RUNTIME_CANCEL: _handle_runtime_cancel,
     CB_STATUS_REFRESH: _handle_status_refresh,
     CB_WIN_NEW: _handle_win_new,
     CB_WIN_CANCEL: _handle_win_cancel,
@@ -1624,6 +1739,7 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     (CB_DIR_SELECT, _handle_dir_select),
     (CB_DIR_PAGE, _handle_dir_page),
     (CB_SESSION_SELECT, _handle_session_select),
+    (CB_RUNTIME_SELECT, _handle_runtime_select),
     (CB_WIN_BIND, _handle_win_bind),
     (CB_SCREENSHOT_REFRESH, _handle_screenshot_refresh),
     # Permission relay

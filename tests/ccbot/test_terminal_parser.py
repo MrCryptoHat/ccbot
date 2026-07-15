@@ -6,7 +6,9 @@ from ccbot.terminal_parser import (
     detect_model_switch,
     extract_bash_output,
     extract_interactive_content,
+    has_codex_queued_messages,
     is_claude_working,
+    is_codex_working,
     is_interactive_ui,
     is_tui_ready,
     parse_login_url,
@@ -687,3 +689,130 @@ class TestDetectModelSwitch:
 
     def test_empty_pane_returns_none(self):
         assert detect_model_switch("") is None
+
+
+# ── Codex terminal detection (is_codex_working / has_codex_queued / ChoiceMenu) ──
+#
+# Synthetic panes mirroring the live Codex TUI (cwd genericised for the public
+# repo). Codex has NO ─ chrome separator: its status line sits a few rows above
+# the input box, and the input footer is "<model> · <cwd>".
+
+_CODEX_IDLE = (
+    "› write an essay about TCP\n"
+    "• TCP/IP is a family of networking protocols used across the internet.\n"
+    "\n"
+    "› Summarize recent commits\n"
+    "  gpt-5.5 medium · /home/user/project\n"
+)
+
+_CODEX_WORKING = (
+    "› write an essay about TCP\n"
+    "• TCP/IP is a family of networking protocols used across the internet.\n"
+    "◦ Working (4s • esc to interrupt)\n"
+    "\n"
+    "› Summarize recent commits\n"
+    "  gpt-5.5 medium · /home/user/project\n"
+)
+
+_CODEX_QUEUED = (
+    "◦ Working (7s • esc to interrupt)\n"
+    "  ↳ and also mention quantum computing\n"
+    "• Messages to be submitted after next tool call "
+    "(press esc to interrupt and send immediately)\n"
+    "› Summarize recent commits\n"
+    "  gpt-5.5 medium · /home/user/project\n"
+)
+
+_CODEX_APPROVAL = (
+    "• Running ls -la\n"
+    "  Would you like to run the following command?\n"
+    "  Environment: local\n"
+    "  $ ls -la\n"
+    "› 1. Yes, proceed (y)\n"
+    "  2. Yes, and don't ask again (p)\n"
+    "  3. No, and tell Codex what to do differently (esc)\n"
+    "  Press enter to confirm or esc to cancel\n"
+)
+
+
+class TestIsCodexWorking:
+    def test_working_counter_detected(self):
+        assert is_codex_working(_CODEX_WORKING) is True
+
+    def test_idle_not_working(self):
+        assert is_codex_working(_CODEX_IDLE) is False
+
+    def test_queued_pane_still_working(self):
+        # A queued message arrives mid-turn — the agent is still busy.
+        assert is_codex_working(_CODEX_QUEUED) is True
+
+    def test_empty_not_working(self):
+        assert is_codex_working("") is False
+
+    def test_bare_interrupt_phrase_in_prose_not_working(self):
+        # "esc to interrupt" as prose (NOT the "(Ns • esc to interrupt)"
+        # counter form) must not read as busy — mirrors is_claude_working's guard.
+        pane = (
+            "• We discussed how esc to interrupt works in the codex TUI.\n"
+            "› Summarize recent commits\n"
+            "  gpt-5.5 medium · /home/user/project\n"
+        )
+        assert "esc to interrupt" in pane
+        assert is_codex_working(pane) is False
+
+    def test_claude_status_line_not_matched(self):
+        # Claude's "(3m 13s · … esc to interrupt)" — the first counter token is
+        # "3m", so codex's "(Ns • esc to interrupt)" anchor doesn't match. The
+        # two detectors stay separate; dispatch is by WindowState.runtime.
+        pane = _pane("✶ Orbiting… (3m 13s · ↓ 13.9k tokens · esc to interrupt)")
+        assert is_codex_working(pane) is False
+
+
+class TestHasCodexQueuedMessages:
+    def test_queued_detected(self):
+        assert has_codex_queued_messages(_CODEX_QUEUED) is True
+
+    def test_idle_not_queued(self):
+        assert has_codex_queued_messages(_CODEX_IDLE) is False
+
+    def test_working_no_queue_not_queued(self):
+        assert has_codex_queued_messages(_CODEX_WORKING) is False
+
+    def test_empty_not_queued(self):
+        assert has_codex_queued_messages("") is False
+
+
+class TestChoiceMenu:
+    """The generic numbered-choice menu — surfaces ANY agent CLI's pick-an-
+    option prompt (codex approval, model pickers, …) via the shared photo+nav
+    keyboard, with no per-menu pattern."""
+
+    def test_codex_approval_detected(self):
+        res = extract_interactive_content(_CODEX_APPROVAL)
+        assert res is not None
+        assert res.name == "ChoiceMenu"
+        assert is_interactive_ui(_CODEX_APPROVAL) is True
+
+    def test_codex_idle_output_not_menu(self):
+        assert is_interactive_ui(_CODEX_IDLE) is False
+
+    def test_codex_working_output_not_menu(self):
+        assert is_interactive_ui(_CODEX_WORKING) is False
+
+    def test_user_message_prefix_not_menu(self):
+        # `› ` also prefixes echoed user messages; a cursor on plain text
+        # (`› tell me…`, no digit) must NOT be read as a menu.
+        pane = "› tell me about TCP handshakes\n  gpt-5.5 medium · /home/user/project\n"
+        assert is_interactive_ui(pane) is False
+
+    def test_plain_numbered_prose_not_menu(self):
+        # Numbered prose the agent writes ("1. foo / 2. bar") has no cursor
+        # glyph on the line → not a menu.
+        pane = (
+            "• Here are the steps:\n"
+            "  1. First do this\n"
+            "  2. Then do that\n"
+            "› Summarize recent commits\n"
+            "  gpt-5.5 medium · /home/user/project\n"
+        )
+        assert is_interactive_ui(pane) is False

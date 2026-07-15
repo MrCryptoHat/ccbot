@@ -136,6 +136,17 @@ def worktree_path(repo_name: str, slug: str) -> Path:
     return worktree_root() / repo_name / slug
 
 
+def is_git_repo(path: Path | None) -> bool:
+    """True iff ``path`` is a git repo root (has a ``.git`` entry).
+
+    A cheap ``.git`` stat (matches ``_handle_wt_new``'s guard) — the gate that
+    decides whether the 🌳 panel button is even offered. Worktrees carry a
+    ``.git`` *file* (a gitdir pointer), plain repos a directory; ``.exists()``
+    catches both. None / non-existent → False.
+    """
+    return bool(path) and (path / ".git").exists()
+
+
 # --- persisted metadata -----------------------------------------------------
 
 

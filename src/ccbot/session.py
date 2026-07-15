@@ -38,6 +38,7 @@ import aiofiles
 from . import i18n
 from .config import config
 from .docker_driver import docker_driver
+from .runtimes import get_runtime
 from .tmux_manager import tmux_manager
 from .transcript_parser import TranscriptParser
 from .utils import (
@@ -56,14 +57,19 @@ class WindowState:
     """Persistent state for a tmux window.
 
     Attributes:
-        session_id: Associated Claude session ID (empty if not yet detected)
+        session_id: Associated agent session ID (empty if not yet detected)
         cwd: Working directory for direct file path construction
         window_name: Display name of the window
+        runtime: Agent runtime this window runs — "claude" (default) or
+            "codex". Orthogonal to transport; drives launch/resume, transcript
+            parsing and terminal heuristics (see runtimes.py). Legacy state has
+            no value → defaults to "claude", so nothing migrates.
     """
 
     session_id: str = ""
     cwd: str = ""
     window_name: str = ""
+    runtime: str = "claude"
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -72,6 +78,10 @@ class WindowState:
         }
         if self.window_name:
             d["window_name"] = self.window_name
+        # Persist runtime only when non-default — keeps existing state.json
+        # rows byte-identical (zero migration) and the file uncluttered.
+        if self.runtime and self.runtime != "claude":
+            d["runtime"] = self.runtime
         return d
 
     @classmethod
@@ -80,6 +90,7 @@ class WindowState:
             session_id=data.get("session_id", ""),
             cwd=data.get("cwd", ""),
             window_name=data.get("window_name", ""),
+            runtime=data.get("runtime", "claude") or "claude",
         )
 
 
@@ -1129,7 +1140,16 @@ class SessionManager:
             return
 
         # Clean up window_states entries not in any session_map source.
-        stale_wids = [w for w in self.window_states if w and w not in valid_wids]
+        # Only claude-runtime windows are covered by THIS (claude) session_map;
+        # a codex window is tracked via its own map (codex_session_map) and must
+        # not be reaped here just because it's absent from the claude map — that
+        # would drop its runtime tag mid-session. (Its own source handles its
+        # staleness once merged.)
+        stale_wids = [
+            w
+            for w in self.window_states
+            if w and w not in valid_wids and self.window_states[w].runtime == "claude"
+        ]
         for wid in stale_wids:
             logger.info("Removing stale window_state: %s", wid)
             del self.window_states[wid]
@@ -1145,6 +1165,67 @@ class SessionManager:
         if window_id not in self.window_states:
             self.window_states[window_id] = WindowState()
         return self.window_states[window_id]
+
+    def window_runtime(self, binding_value: str) -> str:
+        """Runtime name (``"claude"`` / ``"codex"``) of a bound window.
+
+        Reads ``WindowState.runtime`` (default ``"claude"`` for legacy rows and
+        docker bindings that never set it). The single point every transport-
+        agnostic runtime dispatch keys on.
+        """
+        ws = self.window_states.get(binding_value)
+        return getattr(ws, "runtime", None) or "claude"
+
+    def is_agent_working(self, binding_value: str, pane_text: str | None) -> bool:
+        """True iff the bound agent is mid-turn — the runtime-aware busy check.
+
+        Dispatches to the window's runtime (Claude's status line vs Codex's
+        "(Ns • esc to interrupt)" counter), so every "don't barge" call site
+        works for both without an ``if codex:`` branch. Empty pane → False.
+        """
+        if not pane_text:
+            return False
+        return get_runtime(self.window_runtime(binding_value)).is_working(pane_text)
+
+    def agent_has_queued_input(self, binding_value: str, pane_text: str | None) -> bool:
+        """True iff the bound agent shows buffered, not-yet-ingested input.
+
+        Runtime-aware analog of ``terminal_parser.has_queued_messages`` — drives
+        reaction-ack timing (fire the 👀 when this flips False).
+        """
+        if not pane_text:
+            return False
+        return get_runtime(self.window_runtime(binding_value)).has_queued_input(
+            pane_text
+        )
+
+    def agent_supports(self, binding_value: str, action: str) -> bool:
+        """True iff the bound agent's runtime offers the given panel button.
+
+        The single seam the agent-panel keyboard consults to gate a button by
+        capability (see runtimes.AgentRuntime.panel_actions) — the panel shows
+        only what the agent can actually do, no ``if codex:`` at the builder.
+        """
+        return get_runtime(self.window_runtime(binding_value)).supports_panel_action(
+            action
+        )
+
+    def can_offer_worktree(self, binding_value: str) -> bool:
+        """True iff the 🌳 (new worktree agent) button should show for a window.
+
+        Requires BOTH: the runtime supports worktrees AND the topic can fork a
+        repo — it's already a worktree topic (base repo recorded) OR its cwd is
+        a git repo. A plain non-repo folder (e.g. a data-agent dir) has nothing
+        to fork, so the button is hidden rather than erroring on tap.
+        """
+        if not self.agent_supports(binding_value, "worktree"):
+            return False
+        if self.is_worktree_window(binding_value):
+            return True
+        from .worktrees import is_git_repo
+
+        ws = self.window_states.get(binding_value)
+        return is_git_repo(Path(ws.cwd)) if ws and ws.cwd else False
 
     def clear_window_session(self, window_id: str) -> None:
         """Clear session association for a window (e.g., after /clear command)."""

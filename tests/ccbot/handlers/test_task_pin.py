@@ -32,8 +32,12 @@ def _pin_overrides_reset():
 
 @pytest.fixture()
 def _idle_pane(monkeypatch):
-    monkeypatch.setattr(task_pin, "is_claude_working", lambda pane: False)
-    monkeypatch.setattr(task_pin, "has_queued_messages", lambda pane: False)
+    # The idle check dispatches through the runtime-aware session_manager
+    # wrappers now (not the terminal_parser functions directly).
+    monkeypatch.setattr(session_manager, "is_agent_working", lambda wid, pane: False)
+    monkeypatch.setattr(
+        session_manager, "agent_has_queued_input", lambda wid, pane: False
+    )
 
 
 # --- is_task_text -----------------------------------------------------------
@@ -112,15 +116,19 @@ async def test_captures_pane_when_not_pre_captured(monkeypatch, _idle_pane):
 
 @pytest.mark.asyncio
 async def test_working_agent_no_pin(monkeypatch):
-    monkeypatch.setattr(task_pin, "is_claude_working", lambda pane: True)
-    monkeypatch.setattr(task_pin, "has_queued_messages", lambda pane: False)
+    monkeypatch.setattr(session_manager, "is_agent_working", lambda wid, pane: True)
+    monkeypatch.setattr(
+        session_manager, "agent_has_queued_input", lambda wid, pane: False
+    )
     assert not await task_pin.should_pin_task(USER, THREAD, "@1", LONG, pane_text="p")
 
 
 @pytest.mark.asyncio
 async def test_queued_input_no_pin(monkeypatch):
-    monkeypatch.setattr(task_pin, "is_claude_working", lambda pane: False)
-    monkeypatch.setattr(task_pin, "has_queued_messages", lambda pane: True)
+    monkeypatch.setattr(session_manager, "is_agent_working", lambda wid, pane: False)
+    monkeypatch.setattr(
+        session_manager, "agent_has_queued_input", lambda wid, pane: True
+    )
     assert not await task_pin.should_pin_task(USER, THREAD, "@1", LONG, pane_text="p")
 
 

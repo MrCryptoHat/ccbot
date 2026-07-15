@@ -36,7 +36,12 @@ from ..markdown_v2 import PLACEHOLDER_RE, render_tables_for_chat
 from ..screenshot import text_to_image
 from ..session import session_manager
 from ..telegram_sender import split_message
-from ..terminal_parser import extract_interactive_content, parse_login_url, strip_osc
+from ..terminal_parser import (
+    extract_interactive_content,
+    parse_login_code,
+    parse_login_url,
+    strip_osc,
+)
 from . import pane_cache
 from .askquestion_parser import parse_ask_question
 from .callback_data import (
@@ -494,6 +499,11 @@ async def _surface_login_url(
         return
 
     text = tr("iui.login_prompt", url=url)
+    # If the sign-in screen shows a one-time code (Codex device flow), append it
+    # as a copyable code span — reading it off the photo can't be copied.
+    code = parse_login_code(pane or pane_ansi)
+    if code:
+        text += "\n\n" + tr("iui.login_code", code=code)
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(tr("iui.btn_open_login"), url=url)]]
     )
@@ -569,9 +579,11 @@ async def _handle_interactive_ui_locked(
             logger.warning("AskUserQuestion text surfacing failed: %s", e)
             _auq_text_sent.setdefault(ikey, 0)
 
-    # LoginPrompt: surface the sign-in URL as a clickable link + button, once
-    # per appearance. The photo (below) is the fallback.
-    if iui.name == "LoginPrompt" and ikey not in _login_url_sent:
+    # Any login screen (is_login): surface the sign-in URL as a clickable link
+    # + button, once per appearance. Provider-agnostic — Claude Code's /login
+    # and Codex's device/browser flow share this one path (no per-CLI branch).
+    # The photo (below) is the fallback and also carries the one-time code.
+    if iui.is_login and ikey not in _login_url_sent:
         try:
             await _surface_login_url(
                 bot, chat_id, window_id, ikey, thread_kwargs, pane_ansi

@@ -40,7 +40,8 @@ from telegram.ext import ContextTypes
 from ..config import config
 from ..i18n import current_language, tr
 from ..session import session_manager
-from ..terminal_parser import is_claude_working, is_interactive_ui
+from ..runtimes import get_runtime
+from ..terminal_parser import is_interactive_ui
 from . import is_user_allowed
 from .message_sender import safe_send
 
@@ -74,18 +75,23 @@ def _has_confirm_emoji(reactions: Sequence[ReactionType]) -> bool:
     return any(isinstance(r, ReactionTypeEmoji) and r.emoji == emoji for r in reactions)
 
 
-def decide_confirm_action(pane_text: str | None) -> str:
+def decide_confirm_action(pane_text: str | None, runtime: str = "claude") -> str:
     """Pure: given the agent's pane, what does a 👍 mean here?
 
     Returns ``"enter"`` (press Enter on the interactive prompt), ``"type_yes"``
     (type «да» — agent is idle waiting for input), or ``"skip"`` (agent busy or
     pane unavailable — don't touch it).
+
+    ``runtime`` selects the busy-detection chrome (Claude's status line vs
+    Codex's counter); the caller passes the bound window's runtime so a busy
+    codex isn't mistaken for idle. ``is_interactive_ui`` is already runtime-
+    agnostic (login / AskUserQuestion / codex menus all match).
     """
     if not pane_text or not pane_text.strip():
         return "skip"
     if is_interactive_ui(pane_text):
         return "enter"
-    if not is_claude_working(pane_text):
+    if not get_runtime(runtime).is_working(pane_text):
         return "type_yes"
     return "skip"
 
@@ -158,7 +164,7 @@ async def _do_confirm(
         return
     chat_id = session_manager.resolve_chat_id(user_id, tid)
     pane = await session_manager.capture_pane(binding)
-    action = decide_confirm_action(pane)
+    action = decide_confirm_action(pane, session_manager.window_runtime(binding))
     logger.info(
         "Reaction confirm: msg=%s binding=%s action=%s", message_id, binding, action
     )

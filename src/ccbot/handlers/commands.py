@@ -69,10 +69,8 @@ from ..hook import hook_installed_in_settings
 from .. import i18n, plugins
 from ..i18n import tr
 from ..session import session_manager
-from ..terminal_parser import is_claude_working
 from ..tmux_manager import tmux_manager
 from ..transcript_parser import TranscriptParser
-from ..utils import is_valid_session_id
 from ..voice import providers as voice_providers
 
 logger = logging.getLogger(__name__)
@@ -1233,24 +1231,32 @@ def _build_commands_keyboard(
         )
     ]
 
+    # Gate divergent buttons on the bound agent's runtime capabilities — the
+    # panel reflects what the AGENT can do, not Claude Code's command set (see
+    # runtimes.AgentRuntime.panel_actions). No `if codex:` here: a button whose
+    # action id isn't in the runtime's set is simply omitted. Universal keys
+    # (arrows/slash/enter/wipe) and lifecycle (resume/new/restart/end) aren't
+    # gated — every agent CLI runs in a pane and can be restarted.
+    def supports(action: str) -> bool:
+        return session_manager.agent_supports(window_id, action)
+
     if tab == "nav":
         # Сверху Ctrl-комбо: ⎋ ^C — «упс, отмена/прервать», ^B — отправить
         # запущенный субагент / долгую bash-команду в фон и продолжить
-        # общаться. Снизу рабочий ряд / ← → ↑ ↓ ⏎ — открыть Claude-овское
-        # slash-меню, походить по нему (←/→ ходят по табам диалогов,
-        # например в permission-промптах) и подтвердить. Стрелки в порядке
-        # чтения: лево, право, верх, низ. Раздельно потому, что у этих двух
-        # групп противоположное настроение и смешивать их в одну строку (как
-        # было одним рядом) — глаз каждый раз ищет нужное. «Стереть ввод» —
-        # тоже операция со строкой ввода, поэтому живёт здесь, не в действиях.
+        # общаться (только у агентов с фоновыми задачами — «background»). Снизу
+        # рабочий ряд / ← → ↑ ↓ ⏎ — открыть slash-меню агента, походить по нему
+        # (←/→ ходят по табам диалогов, например в permission-промптах) и
+        # подтвердить. Стрелки в порядке чтения: лево, право, верх, низ.
+        # Раздельно потому, что у этих двух групп противоположное настроение и
+        # смешивать их в одну строку — глаз каждый раз ищет нужное. «Стереть
+        # ввод» — тоже операция со строкой ввода, поэтому живёт здесь.
         # (Пробовали растащить ⏎ от ↓ по совету дизайн-ревью — юзер вернул:
         # единый ряд навигации удобнее, промахов на практике нет.)
+        ctrl_row = [key_btn("⎋ Esc", "esc"), key_btn("Ctrl + C", "cc")]
+        if supports("background"):
+            ctrl_row.append(key_btn("Ctrl + B", "cb"))
         body = [
-            [
-                key_btn("⎋ Esc", "esc"),
-                key_btn("Ctrl + C", "cc"),
-                key_btn("Ctrl + B", "cb"),
-            ],
+            ctrl_row,
             [
                 key_btn("/", "slash"),
                 key_btn("←", "lt"),
@@ -1262,59 +1268,68 @@ def _build_commands_keyboard(
             [cmd_btn(tr("commands.btn_wipe_input"), CB_CMD_WIPE_INPUT)],
         ]
     elif tab == "act":
-        # Только ежедневное — два ряда, чтобы фото панели оставалось на
-        # экране. Режим и Усилие — переключатели «на ходу» (пара по духу);
-        # Контекст — диагностика состояния сессии, живёт на «Сессии».
-        # Всё установочное/жизненный цикл — тоже там.
-        body = [
-            [
-                cmd_btn(tr("commands.btn_mode"), CB_CMD_MODE_CYCLE),
-                cmd_btn(tr("commands.btn_effort"), CB_CMD_EFFORT),
-            ],
-            [
-                cmd_btn(tr("commands.btn_compact"), CB_CMD_COMPACT),
-                # Neutral in the grid (user's call — the everyday tab shouldn't
-                # carry a red button); the loss warning lives in the red
-                # confirm step, which stays.
-                cmd_btn(tr("commands.btn_clear"), CB_CMD_CLEAR),
-            ],
-        ]
+        # Только ежедневное. Режим и Усилие — переключатели «на ходу» (пара по
+        # духу); Сжать/Очистить — операции с контекстом. Кнопки, которых у
+        # рантайма нет (у codex Режим/Усилие свёрнуты в /model), выпадают, и
+        # оставшиеся пакуются по двое — фото панели остаётся на экране.
+        act_btns: list[InlineKeyboardButton] = []
+        if supports("mode"):
+            act_btns.append(cmd_btn(tr("commands.btn_mode"), CB_CMD_MODE_CYCLE))
+        if supports("effort"):
+            act_btns.append(cmd_btn(tr("commands.btn_effort"), CB_CMD_EFFORT))
+        if supports("compact"):
+            act_btns.append(cmd_btn(tr("commands.btn_compact"), CB_CMD_COMPACT))
+        if supports("clear"):
+            # Neutral in the grid (user's call — the everyday tab shouldn't
+            # carry a red button); the loss warning lives in the red confirm.
+            act_btns.append(cmd_btn(tr("commands.btn_clear"), CB_CMD_CLEAR))
+        body = [act_btns[i : i + 2] for i in range(0, len(act_btns), 2)]
     else:
-        # «Сессия»: конфиг и диагностика сессии + жизненный цикл. Тройка
-        # Модель/Контекст/MCP — подписи короткие, на телефоне не ужимаются;
-        # остальное строго по двое. 🌳 заводит параллельного
-        # агента-worktree в этом же проекте.
-        body = [
-            [
-                cmd_btn(tr("commands.btn_model"), CB_CMD_MODEL),
-                cmd_btn(tr("commands.btn_context"), CB_CMD_CONTEXT),
-                cmd_btn("🔌 MCP", CB_CMD_MCP),
-            ],
+        # «Сессия»: конфиг/диагностика + жизненный цикл. Модель/Контекст/MCP —
+        # подписи короткие, влезают в один ряд; кнопки без поддержки рантайма
+        # (у codex нет /context) выпадают. Жизненный цикл универсален.
+        config_row: list[InlineKeyboardButton] = []
+        if supports("model"):
+            config_row.append(cmd_btn(tr("commands.btn_model"), CB_CMD_MODEL))
+        if supports("context"):
+            config_row.append(cmd_btn(tr("commands.btn_context"), CB_CMD_CONTEXT))
+        if supports("mcp"):
+            config_row.append(cmd_btn("🔌 MCP", CB_CMD_MCP))
+        body = []
+        if config_row:
+            body.append(config_row)
+        body.append(
             [
                 cmd_btn(tr("commands.btn_resume"), CB_CMD_RESUME),
                 cmd_btn(tr("commands.btn_new"), CB_CMD_FRESH),
-            ],
+            ]
+        )
+        body.append(
             [
                 cmd_btn(tr("commands.btn_restart"), CB_CMD_RESTART),
                 # Neutral like Clear (user's call) — the red confirm step
                 # carries the warning.
                 cmd_btn(tr("commands.btn_end"), CB_CMD_KILL),
-            ],
-            [cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW)],
-        ]
-        # Worktree topics get an explicit instant delete (no waiting for the
-        # hard-delete probe) — on the SAME row as 🌳, so the worst-case tab
-        # stays within the row budget and the pane photo keeps fitting on
-        # screen. Plain project topics never show it. The red confirm step
-        # guards the create/destroy adjacency.
-        if session_manager.is_worktree_window(window_id):
-            body[-1].append(
-                cmd_btn(
-                    tr("commands.btn_delete_agent"),
-                    CB_WT_DEL,
-                    style=KeyboardButtonStyle.DANGER,
+            ]
+        )
+        # 🌳 forks a sibling worktree agent — shown only when the runtime
+        # supports worktrees AND the topic can fork a repo (worktree topic, or
+        # cwd is a git repo). A plain non-repo folder / codex hides it rather
+        # than erroring on tap (session_manager.can_offer_worktree).
+        if session_manager.can_offer_worktree(window_id):
+            wt_row = [cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW)]
+            # Worktree topics also get an explicit instant delete (no waiting
+            # for the hard-delete probe) — on the SAME row as 🌳 to keep the tab
+            # within the row budget. The red confirm guards the adjacency.
+            if session_manager.is_worktree_window(window_id):
+                wt_row.append(
+                    cmd_btn(
+                        tr("commands.btn_delete_agent"),
+                        CB_WT_DEL,
+                        style=KeyboardButtonStyle.DANGER,
+                    )
                 )
-            )
+            body.append(wt_row)
 
     return InlineKeyboardMarkup([tab_row, *body, refresh_row])
 
@@ -1471,7 +1486,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # process never exited). Docker restart kills the tmux session
         # outright, so it doesn't need this guard.
         pane = await tmux_manager.capture_pane(target_wid)
-        if pane and is_claude_working(pane):
+        if pane and session_manager.is_agent_working(target_wid, pane):
             await safe_reply(
                 update.message,
                 tr("commands.restart_busy", name=agent_name),
@@ -1514,21 +1529,18 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await safe_reply(update.message, tr("commands.window_gone", name=agent_name))
         return
 
-    # send_lock across /exit → relaunch: anything typed into the pane in
-    # the 3s gap would land in bash, not Claude.
-    async with session_manager.send_lock(target_wid):
-        await tmux_manager.send_keys(target_window.window_id, "/exit")
-        await asyncio.sleep(3)
+    # Runtime-aware exit + relaunch (claude: /exit → `claude --name…`; codex:
+    # /quit → `codex [resume …]`). launch_command validates/quotes and knows
+    # each CLI's resume flag, so no per-runtime branch here.
+    from ..runtimes import get_runtime
 
-        cmd = config.claude_command
-        # session_id is typed into the pane's shell after /exit — only append it
-        # when it is a well-formed session id, else start fresh. (audit HIGH#1)
-        if session_id and is_valid_session_id(session_id):
-            cmd = f"{cmd} --resume {session_id}"
-        elif session_id:
-            logger.warning(
-                "Ignoring malformed resume id %r; starting fresh", session_id
-            )
+    runtime = get_runtime(ws.runtime if ws else None)
+    # send_lock across exit → relaunch: anything typed into the pane in the 3s
+    # gap would land in bash, not the agent.
+    async with session_manager.send_lock(target_wid):
+        await tmux_manager.send_keys(target_window.window_id, runtime.exit_command())
+        await asyncio.sleep(3)
+        cmd = runtime.launch_command(target_window.window_name, session_id or None)
         await tmux_manager.send_keys(target_window.window_id, cmd)
 
     await asyncio.sleep(8)

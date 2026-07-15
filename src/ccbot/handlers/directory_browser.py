@@ -29,6 +29,8 @@ from .callback_data import (
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_UP,
+    CB_RUNTIME_CANCEL,
+    CB_RUNTIME_SELECT,
     CB_SESSION_BROWSE,
     CB_SESSION_CANCEL,
     CB_SESSION_NEW,
@@ -51,6 +53,14 @@ BROWSE_DIRS_KEY = "browse_dirs"  # Cache of subdirs for current path
 UNBOUND_WINDOWS_KEY = "unbound_windows"  # Cache of (name, cwd) tuples
 STATE_SELECTING_SESSION = "selecting_session"
 SESSIONS_KEY = "cached_sessions"  # Cache of ClaudeSession list
+STATE_SELECTING_RUNTIME = "selecting_runtime"  # runtime picker (claude/codex) up
+
+
+def clear_runtime_picker_state(user_data: dict | None) -> None:
+    """Clear runtime picker state. ``_selected_path`` is popped by the caller
+    once it has consumed it (mirrors the session picker's handling)."""
+    if user_data is not None:
+        user_data.pop(STATE_KEY, None)
 
 
 def clear_browse_state(user_data: dict | None) -> None:
@@ -263,14 +273,61 @@ def build_session_picker(
             )
         ]
     )
+    # New Claude session vs. a new Codex agent — the runtime choice lives right
+    # here (not behind an extra step) so it's visible while resuming Claude
+    # sessions is still a single tap. 🟠 Codex routes to CB_RUNTIME_SELECT.
     buttons.append(
         [
             InlineKeyboardButton(tr("dirb.new_session"), callback_data=CB_SESSION_NEW),
             InlineKeyboardButton(
-                tr("commands.cancel"), callback_data=CB_SESSION_CANCEL
+                tr("dirb.new_codex"), callback_data=f"{CB_RUNTIME_SELECT}codex"
             ),
         ]
+    )
+    buttons.append(
+        [InlineKeyboardButton(tr("commands.cancel"), callback_data=CB_SESSION_CANCEL)]
     )
 
     text = "\n".join(lines)
     return text, InlineKeyboardMarkup(buttons)
+
+
+def build_runtime_picker(
+    directory: str | None = None,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the runtime picker: choose which agent CLI a fresh window runs.
+
+    Shown for a fresh-window creation (a confirmed directory with no existing
+    sessions, or "new session"). Two choices — Claude Code (default) and Codex.
+    Product names are not translated; only the surrounding prose is.
+
+    Returns: (text, keyboard).
+    """
+    lines = [tr("dirb.runtime_header")]
+    if directory:
+        try:
+            shown = "~/" + str(Path(directory).relative_to(Path.home()))
+        except ValueError:
+            shown = directory
+        code = shown.replace("\\", "\\\\").replace("`", "\\`")
+        lines.append(f"📂 `{code}`\n")
+    lines.append(tr("dirb.runtime_prompt"))
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔵 Claude Code", callback_data=f"{CB_RUNTIME_SELECT}claude"
+                ),
+                InlineKeyboardButton(
+                    "🟠 Codex", callback_data=f"{CB_RUNTIME_SELECT}codex"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    tr("commands.cancel"), callback_data=CB_RUNTIME_CANCEL
+                )
+            ],
+        ]
+    )
+    return "\n".join(lines), keyboard
