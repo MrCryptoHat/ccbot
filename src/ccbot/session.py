@@ -31,11 +31,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable, Iterator
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import aiofiles
 
 from . import i18n
+from .agent_session import AgentSession
 from .config import config
 from .docker_driver import docker_driver
 from .runtimes import get_runtime
@@ -94,14 +95,10 @@ class WindowState:
         )
 
 
-@dataclass
-class ClaudeSession:
-    """Information about a Claude Code session."""
-
-    session_id: str
-    summary: str
-    message_count: int
-    file_path: str
+# Backward-compatible alias: the descriptor is runtime-agnostic (also produced
+# by CodexRuntime.list_sessions), so it lives in a neutral module. Old imports
+# `from ..session import ClaudeSession` keep working.
+ClaudeSession: TypeAlias = AgentSession
 
 
 @dataclass

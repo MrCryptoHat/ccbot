@@ -73,14 +73,12 @@ from .handlers.directory_browser import (
     BROWSE_PATH_KEY,
     STATE_BROWSING_DIRECTORY,
     STATE_KEY,
-    STATE_SELECTING_RUNTIME,
     STATE_SELECTING_SESSION,
     STATE_SELECTING_WINDOW,
     UNBOUND_WINDOWS_KEY,
     build_directory_browser,
     build_window_picker,
     clear_browse_state,
-    clear_runtime_picker_state,
     clear_session_picker_state,
     clear_window_picker_state,
 )
@@ -242,11 +240,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             i18n.tr("bot.use_picker_above"),
             clear_session_picker_state,
         ),
-        (
-            STATE_SELECTING_RUNTIME,
-            i18n.tr("bot.use_picker_above"),
-            clear_runtime_picker_state,
-        ),
     ]
     for state_val, prompt_msg, clear_fn in _STATE_CHECKS:
         if context.user_data and context.user_data.get(STATE_KEY) == state_val:
@@ -258,7 +251,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             clear_fn(context.user_data)  # type: ignore[operator]
             context.user_data.pop("_pending_thread_id", None)
             context.user_data.pop("_pending_thread_text", None)
-            if state_val in (STATE_SELECTING_SESSION, STATE_SELECTING_RUNTIME):
+            if state_val == STATE_SELECTING_SESSION:
                 context.user_data.pop("_selected_path", None)
 
     # Must be in a named topic
@@ -651,9 +644,11 @@ async def _create_and_bind_window(
 ) -> None:
     """Create a tmux window, bind it to a topic, and forward pending text.
 
-    Shared by CB_DIR_CONFIRM (no sessions), CB_SESSION_NEW, and CB_SESSION_SELECT.
-    ``runtime`` selects the agent CLI launched in the window ("claude" default /
-    "codex"); it is tagged onto the window state and drives launch + tracking.
+    Shared by the session picker's resume tap (CB_SESSION_SELECT → resume the
+    active runtime's session) and its "➕ New session" button (CB_RUNTIME_SELECT
+    → fresh window on the chosen runtime). ``runtime`` selects the agent CLI
+    ("claude" default / "codex"); it is tagged onto the window state and drives
+    launch + tracking.
     """
     from telegram import CallbackQuery, User
 

@@ -115,3 +115,56 @@ class TestCodexTranscriptParser:
         assert "call_1" in pending
         _, pending2 = CodexTranscriptParser.parse_entries(b2, pending)
         assert pending2 == {}
+
+
+class TestSummarize:
+    """summarize() drives the session-picker row: first real user line +
+    count of user/assistant messages (system machinery excluded)."""
+
+    def test_summary_and_count_on_fixture(self):
+        summary, count = CodexTranscriptParser.summarize(_load())
+        # First real user turn (the <environment_context> wrapper is skipped).
+        assert summary == "list files"
+        # user "list files" + assistant reply = 2 (tool_call/reasoning/event_msg
+        # aren't messages).
+        assert count == 2
+
+    def test_empty_rollout_is_untitled_zero(self):
+        summary, count = CodexTranscriptParser.summarize([])
+        assert summary == "Untitled"
+        assert count == 0
+
+    def test_header_only_rollout_counts_zero(self):
+        """A rollout with only session_meta + a system wrapper has no real turn."""
+        entries = [
+            {"type": "session_meta", "payload": {"cwd": "/x"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "<environment_context>"}
+                    ],
+                },
+            },
+        ]
+        summary, count = CodexTranscriptParser.summarize(entries)
+        assert summary == "Untitled"
+        assert count == 0
+
+    def test_summary_truncated_to_50(self):
+        long = "x" * 80
+        entries = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": long}],
+                },
+            }
+        ]
+        summary, count = CodexTranscriptParser.summarize(entries)
+        assert summary == "x" * 50
+        assert count == 1

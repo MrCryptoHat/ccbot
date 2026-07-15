@@ -7,6 +7,10 @@ so a busy Codex pane (no ─ separator, "(Ns • esc to interrupt)" counter) is 
 mistaken for idle by Claude's status-line detector, and vice-versa.
 """
 
+import json
+
+import pytest
+
 from ccbot.runtimes import CLAUDE, CODEX, get_runtime
 
 _SEP = "─" * 40
@@ -158,3 +162,101 @@ class TestImageInput:
     def test_codex_uses_native_composer(self):
         assert CODEX.native_image_input is True
         assert CODEX.composer_image_token == "[Image #"
+
+
+def _write_rollout(root, sid, cwd, *, ts="2026-07-15T10-00-00", turns=("hi",)):
+    """Write a minimal codex rollout file under root and return its path."""
+    day = root / "2026" / "07" / "15"
+    day.mkdir(parents=True, exist_ok=True)
+    path = day / f"rollout-{ts}-{sid}.jsonl"
+    lines = [{"type": "session_meta", "payload": {"session_id": sid, "cwd": cwd}}]
+    for t in turns:
+        lines.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": t}],
+                },
+            }
+        )
+    path.write_text("\n".join(json.dumps(x) for x in lines))
+    return path
+
+
+class TestCodexListSessions:
+    """CodexRuntime.list_sessions enumerates rollouts by matching
+    session_meta.cwd — the codex analogue of Claude's per-directory glob, so the
+    picker's Codex tab shows resumable codex sessions for the folder."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cache(self):
+        # CODEX is a module singleton; clear its per-path cwd cache so tmp paths
+        # from a prior test don't leak.
+        CODEX._meta_cwd.clear()
+        yield
+        CODEX._meta_cwd.clear()
+
+    def _patch_root(self, monkeypatch, root):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt, "config", MagicMock(codex_command="codex", codex_sessions_path=root)
+        )
+
+    @pytest.mark.asyncio
+    async def test_lists_only_matching_cwd_newest_first(self, tmp_path, monkeypatch):
+        root = tmp_path / "sessions"
+        _write_rollout(
+            root,
+            "019f0000-0000-7000-8000-000000000001",
+            "/home/user/project",
+            ts="2026-07-15T09-00-00",
+            turns=["old task"],
+        )
+        _write_rollout(
+            root,
+            "019f0000-0000-7000-8000-000000000002",
+            "/home/user/project",
+            ts="2026-07-15T11-00-00",
+            turns=["new task", "more"],
+        )
+        _write_rollout(
+            root,
+            "019f0000-0000-7000-8000-000000000003",
+            "/home/user/other",  # different cwd → excluded
+            turns=["elsewhere"],
+        )
+        self._patch_root(monkeypatch, root)
+
+        sessions = await CODEX.list_sessions(None, "/home/user/project")
+        assert [s.session_id[-1] for s in sessions] == ["2", "1"]  # newest first
+        assert sessions[0].summary == "new task"
+        assert sessions[0].message_count == 2
+
+    @pytest.mark.asyncio
+    async def test_missing_root_returns_empty(self, tmp_path, monkeypatch):
+        self._patch_root(monkeypatch, tmp_path / "does-not-exist")
+        assert await CODEX.list_sessions(None, "/home/user/project") == []
+
+    @pytest.mark.asyncio
+    async def test_header_only_rollout_skipped(self, tmp_path, monkeypatch):
+        root = tmp_path / "sessions"
+        # No real turns → count 0 → not listed.
+        _write_rollout(root, "019f0000-0000-7000-8000-000000000009", "/w", turns=[])
+        self._patch_root(monkeypatch, root)
+        assert await CODEX.list_sessions(None, "/w") == []
+
+    def test_claude_delegates_to_session_manager(self):
+        """Claude's list_sessions reuses SessionManager.list_sessions_for_directory."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        sm = MagicMock()
+        sm.list_sessions_for_directory = AsyncMock(return_value=["sentinel"])
+        out = asyncio.run(CLAUDE.list_sessions(sm, "/some/dir"))
+        assert out == ["sentinel"]
+        sm.list_sessions_for_directory.assert_awaited_once_with("/some/dir")

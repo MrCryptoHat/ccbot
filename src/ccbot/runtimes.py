@@ -23,13 +23,18 @@ The interface a runtime implements:
                                    the output type does not).
   - ``latest_context_tokens``   — context-window fill for the context alert
                                    (runtime-specific usage shape; None to skip).
+  - ``list_sessions``           — resumable sessions for a directory, for the
+                                   picker's per-runtime tab (Claude: project
+                                   glob; Codex: rollout-by-cwd; → ``AgentSession``).
 
 Everything downstream of ``parse_entries`` (NewMessage → queue → voice / tables
 / pins) is runtime-agnostic. Adding a third model = one ``AgentRuntime``
-subclass implementing these; no monitor rewrite.
+subclass implementing these; no monitor rewrite, and it becomes a picker tab
+automatically (``pickable_runtimes()`` walks the registry).
 
 Key API: ``get_runtime(name)`` → AgentRuntime; module singletons ``CLAUDE`` /
-``CODEX``; ``RUNTIMES`` registry; ``monitored_runtimes()``; ``is_valid_runtime``.
+``CODEX``; ``RUNTIMES`` registry; ``monitored_runtimes()`` / ``pickable_runtimes()``;
+``is_valid_runtime``.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from .agent_session import AgentSession
 from .codex_transcript_parser import CodexTranscriptParser
 from .config import config
 from .terminal_parser import (
@@ -66,6 +72,12 @@ TranscriptRef = tuple[str, Path]
 _CODEX_ROLLOUT_SID_RE = re.compile(
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
 )
+
+# Newest rollouts scanned when listing a cwd's codex sessions for the picker.
+# Only the cheap cached first-line read runs per file; the full read (summary +
+# count) runs for the ≤10 that match the cwd. Bounds a large ~/.codex tree.
+_CODEX_LIST_SCAN_CAP = 150
+_CODEX_LIST_MAX = 10
 
 
 def _entry_context_tokens(entry: dict) -> int | None:
@@ -103,6 +115,10 @@ class AgentRuntime(abc.ABC):
     #: Short label for UI (the runtime picker, status). Bilingual-neutral —
     #: these are product names, not translated strings.
     display_name: str = ""
+    #: Emoji shown next to ``display_name`` on the picker's runtime tab (inactive
+    #: tab: ``{icon} {display_name}``; active tab swaps it for a ``▸`` pointer,
+    #: matching the agent-panel tab convention). A new runtime just sets its own.
+    picker_icon: str = ""
 
     #: Which of the agent panel's *divergent* buttons this runtime offers, by
     #: logical action id. The panel shows a gated button only when its id is
@@ -168,6 +184,16 @@ class AgentRuntime(abc.ABC):
     def image_marker(self, path: str) -> str:
         """Text-marker form for a text-marker runtime (native_image_input=False)."""
         return f"(image attached: {path})"
+
+    async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
+        """Resumable sessions this runtime has for ``cwd`` (newest first, capped).
+
+        Powers the picker's per-runtime session tab: the user picks Claude Code
+        or Codex on top, and this returns *that* runtime's resume candidates for
+        the folder. Default: none (a runtime with no resumable transcript store).
+        ``session_manager`` is passed as ``Any`` to avoid an import cycle.
+        """
+        return []
 
     @abc.abstractmethod
     def launch_command(
@@ -242,6 +268,7 @@ class ClaudeRuntime(AgentRuntime):
 
     name = CLAUDE_RUNTIME
     display_name = "Claude Code"
+    picker_icon = "🔵"
     # /diff: Claude Code renders "● Update/Write(path)" blocks with numbered
     # ±gutter lines; a block ends at the next tool bullet (● / ⏺).
     edit_tool_names = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
@@ -297,6 +324,11 @@ class ClaudeRuntime(AgentRuntime):
     ) -> tuple[list[ParsedEntry], dict]:
         return TranscriptParser.parse_entries(raw_entries, pending_tools=pending_tools)
 
+    async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
+        # The Claude enumeration already lives on SessionManager (globs
+        # ~/.claude/projects/<encoded cwd>/*.jsonl); reuse it verbatim.
+        return await session_manager.list_sessions_for_directory(cwd)
+
     def latest_context_tokens(self, raw_entries: list[dict]) -> int | None:
         latest: int | None = None
         for raw in raw_entries:
@@ -323,6 +355,7 @@ class CodexRuntime(AgentRuntime):
 
     name = CODEX_RUNTIME
     display_name = "Codex"
+    picker_icon = "🟠"
     # Codex panel set (probed live). Same wire strings as Claude for
     # compact/clear/model/mcp; "mode" reuses Shift+Tab (codex cycles "Plan
     # mode" on back-tab, same key handler); "context" maps to /status (codex has
@@ -448,6 +481,52 @@ class CodexRuntime(AgentRuntime):
                 return f
         return None
 
+    async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
+        """Codex rollouts whose session_meta.cwd matches ``cwd`` (newest first).
+
+        Scans the newest ``_CODEX_LIST_SCAN_CAP`` rollouts (cheap cached
+        first-line cwd read), then fully reads only the ≤10 that match to build
+        summary + count — the same AgentSession the Claude picker shows.
+        """
+        root = config.codex_sessions_path
+        if not root.exists():
+            return []
+        try:
+            files = sorted(
+                root.rglob("rollout-*.jsonl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return []
+
+        sessions: list[AgentSession] = []
+        for f in files[:_CODEX_LIST_SCAN_CAP]:
+            if len(sessions) >= _CODEX_LIST_MAX:
+                break
+            if self._rollout_cwd(f) != cwd:
+                continue
+            match = _CODEX_ROLLOUT_SID_RE.search(f.name)
+            if not match or not is_valid_session_id(match.group(1)):
+                continue
+            try:
+                with open(f, "r", encoding="utf-8") as fh:
+                    entries = [json.loads(ln) for ln in fh if ln.strip()]
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+            summary, count = CodexTranscriptParser.summarize(entries)
+            if count == 0:
+                continue  # header-only rollout (no real turn yet) — skip
+            sessions.append(
+                AgentSession(
+                    session_id=match.group(1),
+                    summary=summary,
+                    message_count=count,
+                    file_path=str(f),
+                )
+            )
+        return sessions
+
     async def iter_transcripts(
         self, session_manager: Any, monitor: Any, active_session_ids: set[str]
     ) -> list[TranscriptRef]:
@@ -487,6 +566,16 @@ CLAUDE = ClaudeRuntime()
 CODEX = CodexRuntime()
 
 RUNTIMES: dict[str, AgentRuntime] = {CLAUDE.name: CLAUDE, CODEX.name: CODEX}
+
+
+def pickable_runtimes() -> list[AgentRuntime]:
+    """Runtimes offered as tabs in the session picker, in display order.
+
+    All registered runtimes (registry insertion order: Claude, Codex, …). A new
+    runtime added to ``RUNTIMES`` becomes a picker tab automatically — the
+    builder never hardcodes a runtime.
+    """
+    return list(RUNTIMES.values())
 
 
 def monitored_runtimes() -> list[AgentRuntime]:

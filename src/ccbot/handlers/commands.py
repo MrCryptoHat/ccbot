@@ -55,6 +55,7 @@ from .callback_data import (
 )
 from .cleanup import clear_topic_state
 from .directory_browser import (
+    PICKER_RUNTIME_KEY,
     SESSIONS_KEY,
     STATE_KEY,
     STATE_SELECTING_SESSION,
@@ -1766,9 +1767,10 @@ async def _auto_bind_to_directory(
         if context.user_data is not None:
             context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
             context.user_data[SESSIONS_KEY] = sessions
+            context.user_data[PICKER_RUNTIME_KEY] = "claude"
             context.user_data["_selected_path"] = str(matching_dir)
             context.user_data["_pending_thread_id"] = thread_id
-        text, keyboard = build_session_picker(sessions, str(matching_dir))
+        text, keyboard = build_session_picker(sessions, str(matching_dir), "claude")
         try:
             await safe_reply(msg, text, reply_markup=keyboard)
         except Exception as e:

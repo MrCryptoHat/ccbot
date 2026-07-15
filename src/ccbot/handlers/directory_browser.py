@@ -19,21 +19,21 @@ from pathlib import Path
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from ..session import ClaudeSession
+from ..agent_session import AgentSession
 
 from ..config import config
 from ..i18n import tr
+from ..runtimes import pickable_runtimes
 from .callback_data import (
     CB_DIR_CANCEL,
     CB_DIR_CONFIRM,
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_UP,
-    CB_RUNTIME_CANCEL,
     CB_RUNTIME_SELECT,
+    CB_RUNTIME_TAB,
     CB_SESSION_BROWSE,
     CB_SESSION_CANCEL,
-    CB_SESSION_NEW,
     CB_SESSION_SELECT,
     CB_WIN_BIND,
     CB_WIN_CANCEL,
@@ -52,15 +52,8 @@ BROWSE_PAGE_KEY = "browse_page"
 BROWSE_DIRS_KEY = "browse_dirs"  # Cache of subdirs for current path
 UNBOUND_WINDOWS_KEY = "unbound_windows"  # Cache of (name, cwd) tuples
 STATE_SELECTING_SESSION = "selecting_session"
-SESSIONS_KEY = "cached_sessions"  # Cache of ClaudeSession list
-STATE_SELECTING_RUNTIME = "selecting_runtime"  # runtime picker (claude/codex) up
-
-
-def clear_runtime_picker_state(user_data: dict | None) -> None:
-    """Clear runtime picker state. ``_selected_path`` is popped by the caller
-    once it has consumed it (mirrors the session picker's handling)."""
-    if user_data is not None:
-        user_data.pop(STATE_KEY, None)
+SESSIONS_KEY = "cached_sessions"  # Cache of AgentSession list (of the active tab)
+PICKER_RUNTIME_KEY = "picker_runtime"  # active runtime tab in the session picker
 
 
 def clear_browse_state(user_data: dict | None) -> None:
@@ -84,6 +77,7 @@ def clear_session_picker_state(user_data: dict | None) -> None:
     if user_data is not None:
         user_data.pop(STATE_KEY, None)
         user_data.pop(SESSIONS_KEY, None)
+        user_data.pop(PICKER_RUNTIME_KEY, None)
 
 
 def build_window_picker(
@@ -220,16 +214,25 @@ def _relative_time(file_path: str) -> str:
 
 
 def build_session_picker(
-    sessions: list[ClaudeSession],
+    sessions: list[AgentSession],
     directory: str | None = None,
+    active_runtime: str = "claude",
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Build session picker UI for resuming an existing Claude session.
+    """Runtime-tabbed session picker.
+
+    Top row = one tab per runtime (Claude Code / Codex / …). The ``active_runtime``
+    tab's resumable ``sessions`` are listed below with resume buttons and a
+    "➕ New session" button that starts a FRESH window on that runtime. Tapping
+    another tab re-renders with that runtime's sessions.
 
     Args:
-        sessions: List of ClaudeSession objects (sorted by recency).
-        directory: Absolute path of the bound directory; shown in the header
-            (with ``$HOME`` collapsed to ``~``) so the user can confirm the
-            topic resolved to the folder they expect.
+        sessions: resumable sessions of ``active_runtime`` for the folder
+            (newest first). May be empty — the tab still shows, with just the
+            "new session" button.
+        directory: absolute path of the folder (``$HOME`` collapsed to ``~`` in
+            the header) so the user can confirm the topic resolved as expected.
+        active_runtime: the runtime whose tab is selected / whose sessions these
+            are.
 
     Returns: (text, keyboard).
     """
@@ -242,15 +245,37 @@ def build_session_picker(
         # Inside a MarkdownV2 code span only backtick and backslash escape.
         code = shown.replace("\\", "\\\\").replace("`", "\\`")
         lines.append(f"📂 `{code}`\n")
-    lines.append(tr("dirb.resume_found"))
-    for i, s in enumerate(sessions):
-        summary = s.summary[:40] + "…" if len(s.summary) > 40 else s.summary
-        rel = _relative_time(s.file_path)
-        time_str = f" ({rel})" if rel else ""
-        msgs = tr("dirb.msgs", n=s.message_count)
-        lines.append(f"{i + 1}. {summary} — {msgs}{time_str}")
+
+    if sessions:
+        lines.append(tr("dirb.resume_found"))
+        for i, s in enumerate(sessions):
+            summary = s.summary[:40] + "…" if len(s.summary) > 40 else s.summary
+            rel = _relative_time(s.file_path)
+            time_str = f" ({rel})" if rel else ""
+            msgs = tr("dirb.msgs", n=s.message_count)
+            lines.append(f"{i + 1}. {summary} — {msgs}{time_str}")
+    else:
+        lines.append(tr("dirb.no_sessions"))
 
     buttons: list[list[InlineKeyboardButton]] = []
+
+    # Runtime tabs (built from the registry, so a new runtime is automatic).
+    tab_row: list[InlineKeyboardButton] = []
+    for rt in pickable_runtimes():
+        if rt.name == active_runtime:
+            label = f"▸ {rt.display_name}"
+        else:
+            label = f"{rt.picker_icon} {rt.display_name}".strip()
+        tab_row.append(
+            InlineKeyboardButton(label, callback_data=f"{CB_RUNTIME_TAB}{rt.name}")
+        )
+        if len(tab_row) == 2:
+            buttons.append(tab_row)
+            tab_row = []
+    if tab_row:
+        buttons.append(tab_row)
+
+    # Resume buttons for the active runtime's sessions (2 per row).
     for i in range(0, len(sessions), 2):
         row = []
         for j in range(min(2, len(sessions) - i)):
@@ -263,6 +288,15 @@ def build_session_picker(
             )
         buttons.append(row)
 
+    # ➕ New session on the active runtime (the tab tells you which agent).
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                tr("dirb.new_session"),
+                callback_data=f"{CB_RUNTIME_SELECT}{active_runtime}",
+            )
+        ]
+    )
     # Escape hatch: the picker is shown after a name-based auto-bind, which
     # can resolve to the wrong folder. This drops into the directory browser
     # rooted at the matched dir (where "📁 .." navigates up) to pick another.
@@ -273,61 +307,9 @@ def build_session_picker(
             )
         ]
     )
-    # New Claude session vs. a new Codex agent — the runtime choice lives right
-    # here (not behind an extra step) so it's visible while resuming Claude
-    # sessions is still a single tap. 🟠 Codex routes to CB_RUNTIME_SELECT.
-    buttons.append(
-        [
-            InlineKeyboardButton(tr("dirb.new_session"), callback_data=CB_SESSION_NEW),
-            InlineKeyboardButton(
-                tr("dirb.new_codex"), callback_data=f"{CB_RUNTIME_SELECT}codex"
-            ),
-        ]
-    )
     buttons.append(
         [InlineKeyboardButton(tr("commands.cancel"), callback_data=CB_SESSION_CANCEL)]
     )
 
     text = "\n".join(lines)
     return text, InlineKeyboardMarkup(buttons)
-
-
-def build_runtime_picker(
-    directory: str | None = None,
-) -> tuple[str, InlineKeyboardMarkup]:
-    """Build the runtime picker: choose which agent CLI a fresh window runs.
-
-    Shown for a fresh-window creation (a confirmed directory with no existing
-    sessions, or "new session"). Two choices — Claude Code (default) and Codex.
-    Product names are not translated; only the surrounding prose is.
-
-    Returns: (text, keyboard).
-    """
-    lines = [tr("dirb.runtime_header")]
-    if directory:
-        try:
-            shown = "~/" + str(Path(directory).relative_to(Path.home()))
-        except ValueError:
-            shown = directory
-        code = shown.replace("\\", "\\\\").replace("`", "\\`")
-        lines.append(f"📂 `{code}`\n")
-    lines.append(tr("dirb.runtime_prompt"))
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🔵 Claude Code", callback_data=f"{CB_RUNTIME_SELECT}claude"
-                ),
-                InlineKeyboardButton(
-                    "🟠 Codex", callback_data=f"{CB_RUNTIME_SELECT}codex"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    tr("commands.cancel"), callback_data=CB_RUNTIME_CANCEL
-                )
-            ],
-        ]
-    )
-    return "\n".join(lines), keyboard

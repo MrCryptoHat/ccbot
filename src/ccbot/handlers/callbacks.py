@@ -72,12 +72,11 @@ from .callback_data import (
     CB_HISTORY_NEXT,
     CB_HISTORY_PREV,
     CB_KEYS_PREFIX,
-    CB_RUNTIME_CANCEL,
     CB_RUNTIME_SELECT,
+    CB_RUNTIME_TAB,
     CB_SCREENSHOT_REFRESH,
     CB_SESSION_BROWSE,
     CB_SESSION_CANCEL,
-    CB_SESSION_NEW,
     CB_SESSION_SELECT,
     CB_STATUS_REFRESH,
     CB_WIN_BIND,
@@ -95,17 +94,15 @@ from .directory_browser import (
     BROWSE_DIRS_KEY,
     BROWSE_PAGE_KEY,
     BROWSE_PATH_KEY,
+    PICKER_RUNTIME_KEY,
     SESSIONS_KEY,
     STATE_BROWSING_DIRECTORY,
     STATE_KEY,
-    STATE_SELECTING_RUNTIME,
     STATE_SELECTING_SESSION,
     UNBOUND_WINDOWS_KEY,
     build_directory_browser,
-    build_runtime_picker,
     build_session_picker,
     clear_browse_state,
-    clear_runtime_picker_state,
     clear_session_picker_state,
     clear_window_picker_state,
 )
@@ -403,7 +400,9 @@ async def _handle_dir_confirm(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Confirm directory selection — show session picker or runtime picker."""
+    """Confirm directory selection — show the runtime-tabbed session picker."""
+    from ..runtimes import get_runtime
+
     selected_path = _get_user_data(context, BROWSE_PATH_KEY)
     if selected_path is None:
         # Stale Select button from before a bot restart: without this check
@@ -423,23 +422,18 @@ async def _handle_dir_confirm(
 
     clear_browse_state(context.user_data)
 
-    sessions = await session_manager.list_sessions_for_directory(selected_path)
-    if sessions:
-        if context.user_data is not None:
-            context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
-            context.user_data[SESSIONS_KEY] = sessions
-            context.user_data["_selected_path"] = selected_path
-        text, keyboard = build_session_picker(sessions, selected_path)
-        await safe_edit(query, text, reply_markup=keyboard)
-        await query.answer()
-        return
-
-    # No existing sessions → pick the runtime (Claude Code / Codex) for the
-    # fresh window. _handle_runtime_select does the actual create+bind.
+    # Always the runtime-tabbed session picker, defaulting to the Claude tab.
+    # Its resume list (possibly empty) shows below the Claude/Codex tabs; the
+    # user switches tabs to see a runtime's sessions, or taps "➕ New session"
+    # to start fresh on the active runtime. This replaces the old two-screen
+    # flow (session picker → separate runtime picker for the no-sessions case).
+    sessions = await get_runtime("claude").list_sessions(session_manager, selected_path)
     if context.user_data is not None:
-        context.user_data[STATE_KEY] = STATE_SELECTING_RUNTIME
+        context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
+        context.user_data[SESSIONS_KEY] = sessions
+        context.user_data[PICKER_RUNTIME_KEY] = "claude"
         context.user_data["_selected_path"] = selected_path
-    text, keyboard = build_runtime_picker(selected_path)
+    text, keyboard = build_session_picker(sessions, selected_path, "claude")
     await safe_edit(query, text, reply_markup=keyboard)
     await query.answer()
 
@@ -471,7 +465,7 @@ async def _handle_session_select(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Resume an existing session."""
+    """Resume a session of the picker's active runtime."""
     from ..bot import _create_and_bind_window
 
     pending_tid = _get_user_data(context, "_pending_thread_id")
@@ -497,6 +491,8 @@ async def _handle_session_select(
     if selected_path is None:
         await _answer_stale(query)
         return
+    # Resume on the runtime whose tab is active — cached_sessions belongs to it.
+    runtime = _get_user_data(context, PICKER_RUNTIME_KEY, "claude")
     clear_session_picker_state(context.user_data)
     if context.user_data is not None:
         context.user_data.pop("_selected_path", None)
@@ -508,23 +504,25 @@ async def _handle_session_select(
         selected_path,
         pending_tid,
         resume_session_id=session.session_id,
+        runtime=runtime,
     )
 
 
-async def _handle_session_new(
+async def _handle_runtime_tab(
     query: CallbackQuery,
     data: str,
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Start a new Claude session (from session picker).
+    """Switch the picker's runtime tab → re-render with that runtime's sessions.
 
-    ``New Session`` is Claude-specific by design: the picker lists Claude
-    sessions to resume, and its sibling ``🟠 Codex`` button (CB_RUNTIME_SELECT)
-    covers starting a Codex agent — so no runtime step is needed here.
+    Edit-in-place (same message): enumerate the tapped runtime's resumable
+    sessions for the selected folder, cache them, and rebuild the picker with
+    that tab active. No window is created — that's ``➕ New session``
+    (CB_RUNTIME_SELECT) or a resume tap.
     """
-    from ..bot import _create_and_bind_window
+    from ..runtimes import get_runtime
 
     pending_tid = _get_user_data(context, "_pending_thread_id")
     if pending_tid is None:
@@ -535,15 +533,20 @@ async def _handle_session_new(
 
     selected_path = _get_user_data(context, "_selected_path")
     if selected_path is None:
-        # ➕ New Session on a picker from before a bot restart would create
-        # a window in the bot's own cwd and bind the topic to it.
+        # Tab from a picker that predates a bot restart — the path is gone.
         await _answer_stale(query)
         return
-    clear_session_picker_state(context.user_data)
-    if context.user_data is not None:
-        context.user_data.pop("_selected_path", None)
 
-    await _create_and_bind_window(query, context, user, selected_path, pending_tid)
+    # get_runtime normalises an unknown suffix to "claude" (safe degrade).
+    runtime = get_runtime(_extract_suffix(data, CB_RUNTIME_TAB)).name
+    sessions = await get_runtime(runtime).list_sessions(session_manager, selected_path)
+    if context.user_data is not None:
+        context.user_data[SESSIONS_KEY] = sessions
+        context.user_data[PICKER_RUNTIME_KEY] = runtime
+
+    text, keyboard = build_session_picker(sessions, selected_path, runtime)
+    await safe_edit(query, text, reply_markup=keyboard)
+    await query.answer()
 
 
 async def _handle_runtime_select(
@@ -553,7 +556,11 @@ async def _handle_runtime_select(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Runtime chosen (Claude Code / Codex) → create + bind the fresh window."""
+    """➕ New session → create + bind a FRESH window on the chosen runtime.
+
+    The button lives under the active runtime tab (payload carries that
+    runtime), so no separate runtime-choice step is needed.
+    """
     from ..bot import _create_and_bind_window
     from ..runtimes import get_runtime
 
@@ -575,36 +582,13 @@ async def _handle_runtime_select(
     # separate validation needed, and an unrecognised value degrades safely.
     runtime = get_runtime(_extract_suffix(data, CB_RUNTIME_SELECT)).name
 
-    clear_runtime_picker_state(context.user_data)
+    clear_session_picker_state(context.user_data)
     if context.user_data is not None:
         context.user_data.pop("_selected_path", None)
-        # When 🟠 Codex is tapped straight from the session picker, the cached
-        # Claude-session list is now stale — drop it too.
-        context.user_data.pop(SESSIONS_KEY, None)
 
     await _create_and_bind_window(
         query, context, user, selected_path, pending_tid, runtime=runtime
     )
-
-
-async def _handle_runtime_cancel(
-    query: CallbackQuery,
-    data: str,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user: User,
-) -> None:
-    """Cancel the runtime picker."""
-    if not _validate_pending_thread(update, context):
-        await _answer_stale(query)
-        return
-    clear_runtime_picker_state(context.user_data)
-    if context.user_data is not None:
-        context.user_data.pop("_selected_path", None)
-        context.user_data.pop("_pending_thread_id", None)
-        context.user_data.pop("_pending_thread_text", None)
-    await safe_edit(query, tr("cb.cancelled"))
-    await query.answer(tr("cb.cancelled"))
 
 
 async def _handle_session_browse(
@@ -1721,10 +1705,8 @@ _EXACT_DISPATCH: dict[str, Any] = {
     CB_DIR_UP: _handle_dir_up,
     CB_DIR_CONFIRM: _handle_dir_confirm,
     CB_DIR_CANCEL: _handle_dir_cancel,
-    CB_SESSION_NEW: _handle_session_new,
     CB_SESSION_BROWSE: _handle_session_browse,
     CB_SESSION_CANCEL: _handle_session_cancel,
-    CB_RUNTIME_CANCEL: _handle_runtime_cancel,
     CB_STATUS_REFRESH: _handle_status_refresh,
     CB_WIN_NEW: _handle_win_new,
     CB_WIN_CANCEL: _handle_win_cancel,
@@ -1739,6 +1721,7 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     (CB_DIR_SELECT, _handle_dir_select),
     (CB_DIR_PAGE, _handle_dir_page),
     (CB_SESSION_SELECT, _handle_session_select),
+    (CB_RUNTIME_TAB, _handle_runtime_tab),
     (CB_RUNTIME_SELECT, _handle_runtime_select),
     (CB_WIN_BIND, _handle_win_bind),
     (CB_SCREENSHOT_REFRESH, _handle_screenshot_refresh),

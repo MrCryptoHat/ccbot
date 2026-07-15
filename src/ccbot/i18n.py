@@ -599,24 +599,16 @@ STRINGS.update(
         "dirb.up": {"ru": "⬆️ Вверх", "en": "⬆️ Up"},
         "dirb.select_here": {"ru": "✅ Эта папка", "en": "✅ This folder"},
         "dirb.resume_header": {
-            "ru": "*Продолжить прошлый разговор?*\n",
-            "en": "*Resume Session?*\n",
-        },
-        "dirb.resume_found": {
-            "ru": "В этой папке уже есть сессии Claude.\n",
-            "en": "Existing sessions found in this directory.\n",
-        },
-        "dirb.new_codex": {
-            "ru": "🟠 Новый Codex",
-            "en": "🟠 New Codex",
-        },
-        "dirb.runtime_header": {
             "ru": "*Какого агента запустить?*\n",
             "en": "*Which agent to run?*\n",
         },
-        "dirb.runtime_prompt": {
-            "ru": "Claude Code — как обычно. Codex — новый вариант от OpenAI.",
-            "en": "Claude Code as usual, or Codex — the new OpenAI option.",
+        "dirb.resume_found": {
+            "ru": "Сохранённые разговоры в этой папке — нажмите, чтобы продолжить:",
+            "en": "Saved conversations here — tap one to resume:",
+        },
+        "dirb.no_sessions": {
+            "ru": "Здесь пока нет сохранённых разговоров с этим агентом.",
+            "en": "No saved conversations with this agent here yet.",
         },
         "dirb.msgs": {"ru": "{n} сообщ.", "en": "{n} msgs"},
         "dirb.time_now": {"ru": "только что", "en": "just now"},

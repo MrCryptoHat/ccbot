@@ -40,12 +40,15 @@ from .transcript_parser import ParsedEntry
 logger = logging.getLogger(__name__)
 
 # A role=user message whose text opens with one of these is a system-context
-# injection Codex adds to the transcript, not something the user typed.
+# injection Codex adds to the transcript, not something the user typed. Codex
+# prepends several of these (env/permissions/plugins) BEFORE the first real user
+# turn, so missing one makes the picker summary show machinery, not the task.
 _SYSTEM_WRAPPERS = (
     "<environment_context>",
     "<user_instructions>",
     "<permissions instructions>",
     "<permissions_instructions>",
+    "<recommended_plugins>",
 )
 
 
@@ -197,6 +200,34 @@ class CodexTranscriptParser:
                 pending.pop(call_id, None)
 
         return results, pending
+
+    @staticmethod
+    def summarize(entries: list[dict]) -> tuple[str, int]:
+        """``(summary, message_count)`` for a rollout, for the session picker.
+
+        ``summary`` is the first real user line (system-context wrappers and
+        non-message items excluded); ``count`` is the number of user/assistant
+        messages. Mirrors what ``list_sessions_for_directory`` derives for a
+        Claude session, so both runtimes' picker rows read the same.
+        """
+        summary = ""
+        count = 0
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") != "response_item":
+                continue
+            payload = entry.get("payload")
+            if not isinstance(payload, dict) or payload.get("type") != "message":
+                continue
+            role = payload.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            text = _extract_text(payload.get("content"))
+            if role == "user" and (not text or _is_system_wrapper(text)):
+                continue
+            count += 1
+            if not summary and role == "user" and text:
+                summary = text[:50]
+        return summary or "Untitled", count
 
     @staticmethod
     def session_meta(entries: list[dict]) -> dict | None:

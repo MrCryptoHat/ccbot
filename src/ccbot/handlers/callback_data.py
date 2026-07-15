@@ -42,17 +42,19 @@ CB_ASK_SPACE = "aq:spc:"  # aq:spc:<window>
 CB_ASK_TAB = "aq:tab:"  # aq:tab:<window>
 CB_ASK_REFRESH = "aq:ref:"  # aq:ref:<window>
 
-# Session picker (resume existing session)
-CB_SESSION_SELECT = "rs:sel:"  # rs:sel:<index>
-CB_SESSION_NEW = "rs:new"  # start a new session
+# Session picker — runtime-tabbed. Top row = runtime tabs (Claude / Codex / …);
+# the active runtime's resumable sessions list below, with a "new session"
+# button for that runtime.
+CB_SESSION_SELECT = "rs:sel:"  # rs:sel:<index>  (resume session of active runtime)
 CB_SESSION_CANCEL = "rs:cancel"  # cancel
 CB_SESSION_BROWSE = "rs:browse"  # open directory browser (wrong auto-bound folder)
 
-# Runtime picker (choose which agent CLI a fresh window runs: Claude / Codex).
-# Shown after a directory confirm with no existing sessions, and on "new
-# session". Payload carries the runtime id; the handler creates+binds with it.
-CB_RUNTIME_SELECT = "rt:sel:"  # rt:sel:<runtime>  (claude|codex)
-CB_RUNTIME_CANCEL = "rt:cancel"  # cancel the runtime picker
+# Runtime tab / new-session. CB_RUNTIME_TAB re-renders the picker with the
+# tapped runtime's sessions; CB_RUNTIME_SELECT starts a FRESH window on that
+# runtime (the "➕ New session" button under the active tab). Both carry the
+# runtime id; the handler creates+binds with it.
+CB_RUNTIME_TAB = "rt:tab:"  # rt:tab:<runtime>  (switch picker tab)
+CB_RUNTIME_SELECT = "rt:sel:"  # rt:sel:<runtime>  (new window on runtime)
 
 # Screenshot control keys
 CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
