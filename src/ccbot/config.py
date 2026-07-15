@@ -251,6 +251,16 @@ class Config:
         # Codex CLI command (launched in a codex-runtime window). No `--name`
         # flag (unlike claude) — the tmux window name is set at creation.
         self.codex_command = os.getenv("CODEX_COMMAND", "codex")
+        # Launch codex with --dangerously-bypass-approvals-and-sandbox. OFF by
+        # default (public repo — keep codex sandboxed). Enable per-deployment
+        # when codex's bundled bubblewrap can't initialize (e.g. a VPS where
+        # nested-userns UID mapping is blocked → "bwrap: setting up uid map:
+        # Permission denied"), which otherwise leaves codex unable to run shell,
+        # edit files, or read documents. The trust model then matches ccbot's
+        # Claude Code agents, which already run with full host access.
+        self.codex_bypass_sandbox = (
+            os.getenv("CODEX_BYPASS_SANDBOX", "false").lower() == "true"
+        )
         # Per-runtime host-side session_map written by that runtime's SessionStart
         # hook (codex hook lands here, keyed like the main map, tagged runtime).
         self.codex_session_map_file = self.config_dir / "codex_session_map.json"

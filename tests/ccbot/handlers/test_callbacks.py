@@ -179,6 +179,7 @@ class TestRestartBusyGuard:
             patch("ccbot.handlers.callbacks._cmd_refresh_photo", new=AsyncMock()),
         ):
             rcfg.codex_command = "codex"
+            rcfg.codex_bypass_sandbox = False
             sm._is_docker_binding.return_value = False
             sm.is_agent_working.return_value = False
             sm.get_window_state.return_value = MagicMock(

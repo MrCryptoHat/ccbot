@@ -115,6 +115,38 @@ class TestEditToolDispatch:
             assert rt.diff_boundary_re is not None
 
 
+class TestCodexSandboxBypass:
+    """Opt-in --dangerously-bypass-approvals-and-sandbox (config.codex_bypass_
+    sandbox) — needed where codex's bundled bwrap can't initialize."""
+
+    _SID = "019f0000-0000-7000-8000-000000000000"
+
+    def _cfg(self, monkeypatch, bypass):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt,
+            "config",
+            MagicMock(codex_command="codex", codex_bypass_sandbox=bypass),
+        )
+
+    def test_off_by_default(self, monkeypatch):
+        self._cfg(monkeypatch, False)
+        assert CODEX.launch_command("proj") == "codex"
+        assert CODEX.launch_command("proj", self._SID) == f"codex resume {self._SID}"
+
+    def test_on_appends_flag_to_fresh_and_resume(self, monkeypatch):
+        self._cfg(monkeypatch, True)
+        flag = "--dangerously-bypass-approvals-and-sandbox"
+        assert CODEX.launch_command("proj") == f"codex {flag}"
+        assert (
+            CODEX.launch_command("proj", self._SID)
+            == f"codex resume {self._SID} {flag}"
+        )
+
+
 class TestImageInput:
     """Claude reads an image from a text marker; Codex attaches the path in its
     composer (native multimodal, client-side read → bypasses the sandbox)."""

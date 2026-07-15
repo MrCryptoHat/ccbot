@@ -357,8 +357,17 @@ class CodexRuntime(AgentRuntime):
         self, window_name: str, resume_session_id: str | None = None
     ) -> str:
         codex = config.codex_command
+        # Opt-in (config.codex_bypass_sandbox): run codex unsandboxed. Needed
+        # where codex's bundled bubblewrap can't initialize (nested-userns UID
+        # mapping blocked) — otherwise codex can't run shell / edit files / read
+        # documents. Accepted as an option by both `codex` and `codex resume`.
+        flag = (
+            " --dangerously-bypass-approvals-and-sandbox"
+            if config.codex_bypass_sandbox
+            else ""
+        )
         if resume_session_id and is_valid_session_id(resume_session_id):
-            return f"{codex} resume {resume_session_id}"
+            return f"{codex} resume {resume_session_id}{flag}"
         elif resume_session_id:
             logger.warning(
                 "Ignoring malformed resume session id for codex window %s; "
@@ -373,7 +382,7 @@ class CodexRuntime(AgentRuntime):
         # surfacing Claude Code's /login uses. Nothing is auto-typed into it
         # (bot.py skips forwarding the first message to codex), so no keypress
         # mis-selects an option.
-        return codex
+        return f"{codex}{flag}"
 
     def parse_entries(
         self, raw_entries: list[dict], pending_tools: dict
