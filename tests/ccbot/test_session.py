@@ -1101,3 +1101,70 @@ class TestRuntimeAwareBusyChecks:
         assert mgr.agent_has_queued_input("@9", self._CODEX_QUEUED) is True
         assert mgr.agent_has_queued_input("@9", self._CODEX_WORKING) is False
         assert mgr.agent_has_queued_input("@9", None) is False
+
+
+class TestSendComposerImage:
+    """Codex image delivery: type path → Enter (attach [Image #N]) → confirm →
+    caption → Enter (submit), all under one send_lock via the tmux primitives."""
+
+    @pytest.mark.asyncio
+    async def test_deterministic_attach_sequence(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ccbot.session import WindowState
+        import ccbot.session as sess
+
+        mgr = SessionManager()
+        mgr.window_states["@9"] = WindowState(runtime="codex")
+
+        tm = MagicMock()
+        tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="w9"))
+        tm.send_keys = AsyncMock(return_value=True)
+        # pane already shows the attach token → the confirm poll breaks at once.
+        tm.capture_pane = AsyncMock(return_value="› [Image #1]\n  model · dir\n")
+        monkeypatch.setattr(sess, "tmux_manager", tm)
+        monkeypatch.setattr(sess.asyncio, "sleep", AsyncMock())
+
+        ok = await mgr.send_composer_image("@9", "/tmp/x.png", "what is this")
+        assert ok is True
+
+        sends = [(c.args[1], c.kwargs) for c in tm.send_keys.await_args_list]
+        # path (literal, no enter) → Enter key → caption (literal) → Enter key
+        assert sends[0] == ("/tmp/x.png", {"enter": False, "literal": True})
+        assert sends[1] == ("Enter", {"enter": False, "literal": False})
+        assert sends[2] == (" what is this", {"enter": False, "literal": True})
+        assert sends[3] == ("Enter", {"enter": False, "literal": False})
+
+    @pytest.mark.asyncio
+    async def test_no_caption_still_submits(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ccbot.session import WindowState
+        import ccbot.session as sess
+
+        mgr = SessionManager()
+        mgr.window_states["@9"] = WindowState(runtime="codex")
+        tm = MagicMock()
+        tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="w9"))
+        tm.send_keys = AsyncMock(return_value=True)
+        tm.capture_pane = AsyncMock(return_value="› [Image #1]\n")
+        monkeypatch.setattr(sess, "tmux_manager", tm)
+        monkeypatch.setattr(sess.asyncio, "sleep", AsyncMock())
+
+        ok = await mgr.send_composer_image("@9", "/tmp/x.png", "")
+        assert ok is True
+        sends = [c.args[1] for c in tm.send_keys.await_args_list]
+        # no caption send: path, Enter, Enter (submit)
+        assert sends == ["/tmp/x.png", "Enter", "Enter"]
+
+    @pytest.mark.asyncio
+    async def test_missing_window_returns_false(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        import ccbot.session as sess
+
+        mgr = SessionManager()
+        tm = MagicMock()
+        tm.find_window_by_id = AsyncMock(return_value=None)
+        monkeypatch.setattr(sess, "tmux_manager", tm)
+        assert await mgr.send_composer_image("@9", "/tmp/x.png", "cap") is False

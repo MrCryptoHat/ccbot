@@ -22,7 +22,9 @@ from .message_sender import safe_reply
 from .task_pin import pin_task_message, should_pin_task
 from ..config import config
 from ..i18n import tr
+from ..runtimes import get_runtime
 from ..session import session_manager
+from ..terminal_parser import is_interactive_ui
 from ..tmux_manager import tmux_manager
 from ..transcribe import transcribe_voice
 from ..utils import ccbot_dir
@@ -232,12 +234,28 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await tg_file.download_to_drive(host_path)
 
     caption = update.message.caption or ""
-    if caption:
-        text_to_send = f"{caption}\n\n(image attached: {marker_path})"
-    else:
-        text_to_send = f"(image attached: {marker_path})"
-
     await update.message.chat.send_action(ChatAction.TYPING)
+
+    runtime = get_runtime(session_manager.window_runtime(wid))
+    if runtime.native_image_input:
+        # Runtime with native multimodal input (Codex): attach via its composer
+        # (a CLIENT-side file read → works even for a path outside the sandbox
+        # workspace, unlike the text marker below, which codex can't open).
+        # Widget guard first: typing a path into an open menu would filter/pick
+        # it. The file is already saved; only delivery waits.
+        pane = await session_manager.capture_pane(wid)
+        if pane and is_interactive_ui(pane):
+            await safe_reply(update.message, tr("media.blocked_widget"))
+            return
+        if not await session_manager.send_composer_image(wid, marker_path, caption):
+            await safe_reply(update.message, tr("media.image_send_failed"))
+            return
+        await safe_reply(update.message, tr("media.image_sent"))
+        return
+
+    # Text-marker runtimes: Claude Code reads the path from the marker itself.
+    marker = runtime.image_marker(marker_path)
+    text_to_send = f"{caption}\n\n{marker}" if caption else marker
 
     # Same pre-send pipeline as typed text: with an interactive widget on
     # screen a raw send_to_window would type the marker into the widget and

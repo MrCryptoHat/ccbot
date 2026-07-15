@@ -1841,6 +1841,65 @@ class SessionManager:
                 window.window_id, keys, enter=enter, literal=literal
             )
 
+    async def send_composer_image(
+        self, binding_value: str, image_path: str, caption: str = ""
+    ) -> bool:
+        """Deliver an image to a runtime with NATIVE composer input (Codex).
+
+        Types the image PATH into the composer — the CLI (codex) auto-attaches a
+        recognized image path as ``[Image #N]`` after a brief idle, a CLIENT-side
+        read that works even when the path is outside the sandbox's workspace
+        (the failure mode of the plain ``(image attached: <path>)`` text marker).
+        Then appends the caption and submits. Order matters: the path must land
+        FIRST and settle into the attach token before any caption text, so this
+        is a multi-step pane write — held under ONE ``send_lock`` (calling the
+        transport primitives directly; the wrapper ``send_keys`` would re-lock).
+
+        Codex is host-tmux only, so this handles the tmux transport; returns
+        False for a docker binding or a missing window.
+        """
+        _POLL_TRIES, _POLL_INTERVAL = 15, 0.2  # ~3s to confirm the attach landed
+        token = (
+            get_runtime(self.window_runtime(binding_value)).composer_image_token
+            or "[Image #"
+        )
+        async with self.send_lock(binding_value):
+            window = await tmux_manager.find_window_by_id(binding_value)
+            if not window:
+                return False
+            wid = window.window_id
+            # 1. Type the path (no Enter).
+            if not await tmux_manager.send_keys(
+                wid, image_path, enter=False, literal=True
+            ):
+                return False
+            # 2. Enter — on a bare recognized image path codex ATTACHES it as
+            #    [Image #N] rather than submitting (a second Enter submits). Doing
+            #    this immediately (before the ~2s idle auto-convert) makes the
+            #    attach deterministic instead of racing the idle timer.
+            await tmux_manager.send_keys(wid, "Enter", enter=False, literal=False)
+            # 3. Confirm the attach token landed (fast — ~200ms after the Enter).
+            for _ in range(_POLL_TRIES):
+                await asyncio.sleep(_POLL_INTERVAL)
+                pane = await tmux_manager.capture_pane(wid)
+                if pane and token in "\n".join(pane.splitlines()[-8:]):
+                    break
+            else:
+                logger.warning(
+                    "send_composer_image: %s never showed %r — submitting anyway",
+                    binding_value,
+                    token,
+                )
+            # 4. Append the caption after the attach token, then submit (Enter).
+            if caption:
+                await tmux_manager.send_keys(
+                    wid, " " + caption, enter=False, literal=True
+                )
+            ok = await tmux_manager.send_keys(wid, "Enter", enter=False, literal=False)
+            if ok:
+                self.mark_generating(binding_value)
+            return ok
+
     async def capture_pane(
         self,
         binding_value: str,

@@ -154,6 +154,21 @@ class AgentRuntime(abc.ABC):
         """True iff a tool_use with this name should trigger a /diff scan."""
         return bool(name) and name in self.edit_tool_names
 
+    #: How the runtime ingests an inbound image. False (default): a text marker
+    #: ``(image attached: <path>)`` is typed and the CLI reads the file itself
+    #: (Claude Code). True: the CLI has NATIVE multimodal input — the path is
+    #: typed into its composer, which attaches the image CLIENT-side (Codex →
+    #: ``[Image #N]``). The client-side read is what makes it work under codex's
+    #: sandbox, which blocks reading a path outside the workspace (the bug this
+    #: fixes). ``composer_image_token`` is the pane text that confirms the
+    #: attach landed, polled by ``session_manager.send_composer_image``.
+    native_image_input: bool = False
+    composer_image_token: str = ""
+
+    def image_marker(self, path: str) -> str:
+        """Text-marker form for a text-marker runtime (native_image_input=False)."""
+        return f"(image attached: {path})"
+
     @abc.abstractmethod
     def launch_command(
         self, window_name: str, resume_session_id: str | None = None
@@ -326,6 +341,11 @@ class CodexRuntime(AgentRuntime):
     edit_tool_names = frozenset({"apply_patch"})
     diff_header_re = re.compile(r"^[•●]\s+\w+.*\(\+\d+")
     diff_boundary_re = re.compile(r"^[•●]|^─{5,}")
+    # Codex has native multimodal input: typing an image path into the composer
+    # auto-attaches it as "[Image #N]" (a client-side read that bypasses the
+    # sandbox). See session_manager.send_composer_image + media.photo_handler.
+    native_image_input = True
+    composer_image_token = "[Image #"
 
     def __init__(self) -> None:
         # rollout path -> its session_meta.cwd (immutable per file); avoids

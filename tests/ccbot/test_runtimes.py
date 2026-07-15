@@ -113,3 +113,16 @@ class TestEditToolDispatch:
         for rt in (CLAUDE, CODEX):
             assert rt.diff_header_re is not None
             assert rt.diff_boundary_re is not None
+
+
+class TestImageInput:
+    """Claude reads an image from a text marker; Codex attaches the path in its
+    composer (native multimodal, client-side read → bypasses the sandbox)."""
+
+    def test_claude_uses_text_marker(self):
+        assert CLAUDE.native_image_input is False
+        assert CLAUDE.image_marker("/p/x.jpg") == "(image attached: /p/x.jpg)"
+
+    def test_codex_uses_native_composer(self):
+        assert CODEX.native_image_input is True
+        assert CODEX.composer_image_token == "[Image #"

@@ -673,7 +673,11 @@ STRINGS.update(
         },
         "media.image_sent": {
             "ru": "📷 Фото передал агенту.",
-            "en": "📷 Image sent to Claude Code.",
+            "en": "📷 Image sent to the agent.",
+        },
+        "media.image_send_failed": {
+            "ru": "❌ Не удалось передать фото агенту.",
+            "en": "❌ Failed to send the image to the agent.",
         },
         "media.file_sent": {
             "ru": "📎 Файл «{name}» передал агенту.",
