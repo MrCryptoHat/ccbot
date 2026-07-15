@@ -185,6 +185,16 @@ class AgentRuntime(abc.ABC):
         """Text-marker form for a text-marker runtime (native_image_input=False)."""
         return f"(image attached: {path})"
 
+    #: tmux ``pane_current_command`` values that mean "the agent is still running
+    #: in this window" — the dead-window health check (status_polling) treats any
+    #: OTHER foreground command (a bare ``bash`` the CLI exited back to) as a
+    #: crash and reaps the window after a grace period. Claude Code's foreground
+    #: is ``claude`` / ``node``; a runtime with a different process name (Codex →
+    #: ``codex``) MUST override this or its windows get killed 30 s after launch,
+    #: sign-in menu and all. Default is Claude's set (matches get_runtime's
+    #: fallback-to-claude).
+    pane_alive_commands: frozenset[str] = frozenset({"claude", "node"})
+
     async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
         """Resumable sessions this runtime has for ``cwd`` (newest first, capped).
 
@@ -268,7 +278,7 @@ class ClaudeRuntime(AgentRuntime):
 
     name = CLAUDE_RUNTIME
     display_name = "Claude Code"
-    picker_icon = "🔵"
+    picker_icon = "🟠"
     # /diff: Claude Code renders "● Update/Write(path)" blocks with numbered
     # ±gutter lines; a block ends at the next tool bullet (● / ⏺).
     edit_tool_names = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
@@ -355,7 +365,12 @@ class CodexRuntime(AgentRuntime):
 
     name = CODEX_RUNTIME
     display_name = "Codex"
-    picker_icon = "🟠"
+    picker_icon = "🔵"
+    # Codex's TUI foreground process is `codex` (a native binary, not node) — the
+    # dead-window health check must accept it or every codex window is reaped 30 s
+    # after launch. codex owns the pane the whole time (subcommands run in its own
+    # PTY, not the tmux pane), so a single value suffices.
+    pane_alive_commands = frozenset({"codex"})
     # Codex panel set (probed live). Same wire strings as Claude for
     # compact/clear/model/mcp; "mode" reuses Shift+Tab (codex cycles "Plan
     # mode" on back-tab, same key handler); "context" maps to /status (codex has

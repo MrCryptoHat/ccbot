@@ -69,6 +69,7 @@ from ..docker_driver import docker_driver
 from ..hook import hook_installed_in_settings
 from .. import i18n, plugins
 from ..i18n import tr
+from ..runtimes import get_runtime
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from ..transcript_parser import TranscriptParser
@@ -788,7 +789,9 @@ def _build_status_text_sync(windows: list) -> str:
         if w.window_name == "__main__":
             continue
         cmd = w.pane_current_command or "?"
-        if cmd in ("claude", "node"):
+        # Runtime-aware: a codex window's foreground is `codex`, not claude/node.
+        runtime = get_runtime(session_manager.window_runtime(w.window_id))
+        if cmd in runtime.pane_alive_commands:
             alive_agents.append(w.window_name)
         else:
             dead_agents.append(w.window_name)
@@ -1533,8 +1536,6 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Runtime-aware exit + relaunch (claude: /exit → `claude --name…`; codex:
     # /quit → `codex [resume …]`). launch_command validates/quotes and knows
     # each CLI's resume flag, so no per-runtime branch here.
-    from ..runtimes import get_runtime
-
     runtime = get_runtime(ws.runtime if ws else None)
     # send_lock across exit → relaunch: anything typed into the pane in the 3s
     # gap would land in bash, not the agent.
@@ -1546,7 +1547,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await asyncio.sleep(8)
     w = await tmux_manager.find_window_by_id(target_window.window_id)
-    if w and w.pane_current_command in ("claude", "node"):
+    if w and w.pane_current_command in runtime.pane_alive_commands:
         await safe_reply(update.message, tr("commands.restarted", name=agent_name))
     else:
         await safe_reply(

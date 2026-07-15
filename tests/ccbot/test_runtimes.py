@@ -164,6 +164,33 @@ class TestImageInput:
         assert CODEX.composer_image_token == "[Image #"
 
 
+class TestPaneAliveCommands:
+    """The dead-window health check keys on the runtime's foreground-command
+    set. Claude's is claude/node; codex's foreground is `codex` — keying on the
+    claude set reaped every codex window 30 s after launch (the bug)."""
+
+    def test_claude_set(self):
+        assert CLAUDE.pane_alive_commands == frozenset({"claude", "node"})
+
+    def test_codex_set(self):
+        # `codex`, NOT node — codex is a native binary.
+        assert CODEX.pane_alive_commands == frozenset({"codex"})
+        assert "codex" in CODEX.pane_alive_commands
+        assert "node" not in CODEX.pane_alive_commands
+
+    def test_unknown_runtime_degrades_to_claude_set(self):
+        # get_runtime(None) → CLAUDE, so an untracked window uses claude's set.
+        assert get_runtime(None).pane_alive_commands == frozenset({"claude", "node"})
+
+
+class TestPickerIcon:
+    """Tab colours: Codex 🔵, Claude Code 🟠 (per operator preference)."""
+
+    def test_icons(self):
+        assert CLAUDE.picker_icon == "🟠"
+        assert CODEX.picker_icon == "🔵"
+
+
 def _write_rollout(root, sid, cwd, *, ts="2026-07-15T10-00-00", turns=("hi",)):
     """Write a minimal codex rollout file under root and return its path."""
     day = root / "2026" / "07" / "15"

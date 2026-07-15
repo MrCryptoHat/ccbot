@@ -37,6 +37,7 @@ from telegram.error import BadRequest
 
 from ..i18n import tr
 from ..rate_limiter import background_context
+from ..runtimes import get_runtime
 from ..session import session_manager
 from ..terminal_parser import (
     detect_model_switch,
@@ -382,7 +383,12 @@ async def status_poll_loop(bot: Bot) -> None:
             for w in all_windows:
                 if w.window_name == "__main__":
                     continue
-                is_alive = w.pane_current_command in ("claude", "node")
+                # Runtime-aware liveness: each runtime declares the foreground
+                # commands that mean "still running" (Claude → claude/node,
+                # Codex → codex). Keying on a hardcoded claude set reaped every
+                # codex window 30 s after launch (sign-in menu included).
+                runtime = get_runtime(session_manager.window_runtime(w.window_id))
+                is_alive = w.pane_current_command in runtime.pane_alive_commands
                 if is_alive:
                     # Agent is running — clear any down timer
                     _agent_down_since.pop(w.window_id, None)
