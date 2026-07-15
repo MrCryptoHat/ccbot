@@ -1377,6 +1377,29 @@ async def _handle_cmd_refresh(
     )
 
 
+async def _wait_agent_exited(window_id: str, runtime, *, timeout: float = 8.0) -> bool:
+    """Poll until the agent process has exited back to the shell.
+
+    Returns True once the pane's foreground command is no longer one of the
+    runtime's alive commands (claude/node, codex) — i.e. ``/exit`` (or ``/quit``)
+    actually took and we're at a bash prompt. False at timeout.
+
+    Why this exists: the restart used a blind ``sleep(3)`` between the exit
+    command and the relaunch. When ``/exit``'s Enter didn't submit (Claude Code's
+    slash-command autocomplete can swallow the first Enter, or a slow exit), the
+    relaunch command was typed onto the lingering ``/exit`` → ``/exitclaude
+    --… --name x`` submitted as a bogus prompt («Unknown command: /exitclaude»).
+    Waiting for the real exit makes the relaunch land in the shell, not the CLI.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        w = await tmux_manager.find_window_by_id(window_id)
+        if w and w.pane_current_command not in runtime.pane_alive_commands:
+            return True
+        await asyncio.sleep(0.3)
+    return False
+
+
 async def _wait_pane_ready(window_id: str, *, timeout: float = 20.0) -> None:
     """Poll until Claude Code's TUI has rendered, bounded by ``timeout``.
 
@@ -1449,11 +1472,17 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
     from ..runtimes import get_runtime
 
     runtime = get_runtime(ws.runtime if ws else None)
-    # send_lock across exit → relaunch: anything typed into the pane in the 3s
-    # gap would land in bash, not the agent.
+    # send_lock across exit → relaunch: anything typed into the pane in the gap
+    # would land in bash, not the agent.
     async with session_manager.send_lock(window_id):
         await tmux_manager.send_keys(window_id, runtime.exit_command())
-        await asyncio.sleep(3)
+        # Wait for the CLI to actually exit before typing the relaunch — a blind
+        # sleep raced a swallowed /exit-Enter and concatenated the two commands
+        # («/exitclaude …»). If it hasn't exited, flush a lingering command line
+        # with a bare Enter and wait again, then proceed fail-visible.
+        if not await _wait_agent_exited(window_id, runtime):
+            await tmux_manager.send_keys(window_id, "Enter", enter=False, literal=False)
+            await _wait_agent_exited(window_id, runtime, timeout=5.0)
         cmd = runtime.launch_command(w.window_name, resume_id or None)
         await tmux_manager.send_keys(window_id, cmd)
     await _wait_pane_ready(window_id)

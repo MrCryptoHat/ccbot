@@ -200,6 +200,87 @@ class TestRestartBusyGuard:
                 "codex resume 019f0000-0000-7000-8000-000000000000",
             ]
 
+    @pytest.mark.asyncio
+    async def test_restart_flushes_lingering_exit_with_enter(self, query, monkeypatch):
+        """If the CLI hasn't exited before the relaunch (the «/exitclaude» bug —
+        /exit's Enter swallowed by slash-autocomplete), a bare Enter is sent to
+        flush the input line BEFORE the launch command, so the two never
+        concatenate onto one prompt line."""
+
+        async def _no_sleep(_):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        with (
+            patch("ccbot.handlers.callbacks.session_manager") as sm,
+            patch("ccbot.handlers.callbacks.tmux_manager") as tm,
+            patch("ccbot.runtimes.config") as rcfg,
+            patch("ccbot.handlers.callbacks._cmd_refresh_photo", new=AsyncMock()),
+            patch("ccbot.handlers.callbacks._wait_pane_ready", new=AsyncMock()),
+            # Simulate /exit not taking → helper reports "still alive".
+            patch(
+                "ccbot.handlers.callbacks._wait_agent_exited",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            rcfg.claude_command = "claude"
+            sm._is_docker_binding.return_value = False
+            sm.is_agent_working.return_value = False
+            sm.get_window_state.return_value = MagicMock(
+                session_id="11111111-2222-3333-4444-555555555555", runtime="claude"
+            )
+            tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_name="proj"))
+            tm.capture_pane = AsyncMock(return_value="❯ ")
+            tm.send_keys = AsyncMock()
+
+            await _restart_agent(query, "@5", fresh=False)
+
+            sent = [c.args[1] for c in tm.send_keys.await_args_list]
+            # /exit → flush Enter → launch (the Enter is the fix).
+            assert sent == [
+                "/exit",
+                "Enter",
+                "claude --name proj --resume 11111111-2222-3333-4444-555555555555",
+            ]
+
+
+class TestWaitAgentExited:
+    """The restart waits for the CLI to actually exit (pane back to a shell)
+    before typing the relaunch — the direct fix for the /exit-Enter race."""
+
+    @pytest.mark.asyncio
+    async def test_true_when_pane_back_to_shell(self):
+        from ccbot.handlers.callbacks import _wait_agent_exited
+        from ccbot.runtimes import CLAUDE
+
+        with patch("ccbot.handlers.callbacks.tmux_manager") as tm:
+            tm.find_window_by_id = AsyncMock(
+                return_value=MagicMock(pane_current_command="bash")
+            )
+            assert await _wait_agent_exited("@5", CLAUDE, timeout=1.0) is True
+
+    @pytest.mark.asyncio
+    async def test_false_when_still_the_agent(self, monkeypatch):
+        from ccbot.handlers.callbacks import _wait_agent_exited
+        from ccbot.runtimes import CLAUDE
+
+        clock = {"t": 0.0}
+        monkeypatch.setattr(
+            "ccbot.handlers.callbacks.time.monotonic", lambda: clock["t"]
+        )
+
+        async def _tick(_):
+            clock["t"] += 0.5
+
+        with (
+            patch("ccbot.handlers.callbacks.tmux_manager") as tm,
+            patch("ccbot.handlers.callbacks.asyncio.sleep", new=_tick),
+        ):
+            tm.find_window_by_id = AsyncMock(
+                return_value=MagicMock(pane_current_command="claude")
+            )
+            assert await _wait_agent_exited("@5", CLAUDE, timeout=1.0) is False
+
 
 class TestGuardedWid:
     """_guarded_wid must recover the window_id from every guarded payload

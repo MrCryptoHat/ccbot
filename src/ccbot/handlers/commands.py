@@ -1536,12 +1536,21 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Runtime-aware exit + relaunch (claude: /exit → `claude --name…`; codex:
     # /quit → `codex [resume …]`). launch_command validates/quotes and knows
     # each CLI's resume flag, so no per-runtime branch here.
+    from .callbacks import _wait_agent_exited
+
     runtime = get_runtime(ws.runtime if ws else None)
-    # send_lock across exit → relaunch: anything typed into the pane in the 3s
-    # gap would land in bash, not the agent.
+    # send_lock across exit → relaunch: anything typed into the pane in the gap
+    # would land in bash, not the agent.
     async with session_manager.send_lock(target_wid):
         await tmux_manager.send_keys(target_window.window_id, runtime.exit_command())
-        await asyncio.sleep(3)
+        # Wait for the real exit before the relaunch — a blind sleep raced a
+        # swallowed /exit-Enter and typed the launch onto a lingering «/exit»
+        # («/exitclaude …»). Fallback Enter flushes it, then proceed fail-visible.
+        if not await _wait_agent_exited(target_wid, runtime):
+            await tmux_manager.send_keys(
+                target_window.window_id, "Enter", enter=False, literal=False
+            )
+            await _wait_agent_exited(target_wid, runtime, timeout=5.0)
         cmd = runtime.launch_command(target_window.window_name, session_id or None)
         await tmux_manager.send_keys(target_window.window_id, cmd)
 
