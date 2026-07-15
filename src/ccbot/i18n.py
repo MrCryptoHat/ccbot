@@ -830,6 +830,10 @@ STRINGS.update(
             "en": "↩ Kept — the agent is still here.",
         },
         "wt.kept_toast": {"ru": "↩ Оставил", "en": "↩ Kept"},
+        "wt.choose_runtime": {
+            "ru": "🌱 Новый агент в проекте {repo}.\nКакого агента запустить в новой ветке?",
+            "en": "🌱 New agent in project {repo}.\nWhich agent to run in the new branch?",
+        },
         "wt.new_agent_prompt": {
             "ru": "🌱 Новый агент в проекте {repo}.\nНапиши коротко, как назвать задачу — например «редизайн шапки». Это станет именем топика и ветки; задачу поставишь уже в новом топике.",
             "en": "🌱 New agent in project {repo}.\nWrite a short name for the task — for example «header redesign». It becomes the topic and branch name; you'll set the actual task in the new topic.",

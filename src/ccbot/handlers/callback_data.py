@@ -94,6 +94,7 @@ CB_CMD_CANCEL = "cm:can:"  # cm:can:<window_id>
 
 # Worktree agents (parallel agents on one project; see handlers/worktrees.py)
 CB_WT_NEW = "wt:new:"  # wt:new:<window_id> — ➕ новый агент в проекте
+CB_WT_RUNTIME = "wt:rt:"  # wt:rt:<runtime> — pick the new worktree agent's runtime
 CB_WT_CANCEL = "wt:abort"  # cancel the "name the task" prompt (exact match)
 CB_WT_DROP = "wt:drop:"  # wt:drop:<thread_id> — 🧨 force-delete on close guard
 CB_WT_KEEP = "wt:keep:"  # wt:keep:<thread_id> — ↩ вернуть (reopen) топик
