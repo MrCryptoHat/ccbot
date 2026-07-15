@@ -1843,19 +1843,25 @@ class SessionManager:
     ) -> bool:
         """Deliver an image to a runtime with NATIVE composer input (Codex).
 
-        Types the image PATH into the composer — the CLI (codex) auto-attaches a
-        recognized image path as ``[Image #N]`` after a brief idle, a CLIENT-side
-        read that works even when the path is outside the sandbox's workspace
+        Types the image PATH into the composer — codex auto-converts a recognized
+        image path to ``[Image #N]`` after a brief IDLE (no keypress), a CLIENT-
+        side read that works even when the path is outside the sandbox's workspace
         (the failure mode of the plain ``(image attached: <path>)`` text marker).
-        Then appends the caption and submits. Order matters: the path must land
-        FIRST and settle into the attach token before any caption text, so this
-        is a multi-step pane write — held under ONE ``send_lock`` (calling the
-        transport primitives directly; the wrapper ``send_keys`` would re-lock).
+        Then appends the caption and submits with a SINGLE Enter, so image +
+        caption land as ONE turn.
 
-        Codex is host-tmux only, so this handles the tmux transport; returns
-        False for a docker binding or a missing window.
+        Enter must NOT be pressed to "attach" — in codex an Enter SUBMITS the
+        composer, so a premature Enter sends ``[Image #N]`` alone and the caption
+        becomes a second, separate turn (verified live: the bug this fixes). The
+        attach is idle-triggered; we WAIT for the ``[Image #N]`` token to appear,
+        then type the caption, then Enter once.
+
+        Multi-step pane write held under ONE ``send_lock`` (calling the transport
+        primitives directly; the wrapper ``send_keys`` would re-lock). Codex is
+        host-tmux only; returns False for a docker binding or a missing window.
         """
-        _POLL_TRIES, _POLL_INTERVAL = 15, 0.2  # ~3s to confirm the attach landed
+        # Codex's idle auto-convert is ~2-3s; poll up to ~6s, break on the token.
+        _POLL_TRIES, _POLL_INTERVAL = 30, 0.2
         token = (
             get_runtime(self.window_runtime(binding_value)).composer_image_token
             or "[Image #"
@@ -1865,17 +1871,14 @@ class SessionManager:
             if not window:
                 return False
             wid = window.window_id
-            # 1. Type the path (no Enter).
+            # 1. Type the path (NO Enter — an Enter here would submit the image
+            #    alone before the caption is typed).
             if not await tmux_manager.send_keys(
                 wid, image_path, enter=False, literal=True
             ):
                 return False
-            # 2. Enter — on a bare recognized image path codex ATTACHES it as
-            #    [Image #N] rather than submitting (a second Enter submits). Doing
-            #    this immediately (before the ~2s idle auto-convert) makes the
-            #    attach deterministic instead of racing the idle timer.
-            await tmux_manager.send_keys(wid, "Enter", enter=False, literal=False)
-            # 3. Confirm the attach token landed (fast — ~200ms after the Enter).
+            # 2. Wait for codex's idle auto-convert: the raw path in the composer
+            #    turns into the [Image #N] attach token on its own.
             for _ in range(_POLL_TRIES):
                 await asyncio.sleep(_POLL_INTERVAL)
                 pane = await tmux_manager.capture_pane(wid)
@@ -1883,11 +1886,13 @@ class SessionManager:
                     break
             else:
                 logger.warning(
-                    "send_composer_image: %s never showed %r — submitting anyway",
+                    "send_composer_image: %s never showed %r (idle auto-convert "
+                    "didn't fire) — submitting anyway",
                     binding_value,
                     token,
                 )
-            # 4. Append the caption after the attach token, then submit (Enter).
+            # 3. Append the caption AFTER the attach token, then submit with ONE
+            #    Enter so [Image #N] + caption go as a single turn.
             if caption:
                 await tmux_manager.send_keys(
                     wid, " " + caption, enter=False, literal=True

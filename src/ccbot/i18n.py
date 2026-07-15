@@ -671,6 +671,10 @@ STRINGS.update(
             "ru": "❌ Не удалось передать фото агенту.",
             "en": "❌ Failed to send the image to the agent.",
         },
+        "media.image_echo": {
+            "ru": "👀 {agent} смотрит это фото",
+            "en": "👀 {agent} is looking at this image",
+        },
         "media.file_sent": {
             "ru": "📎 Файл «{name}» передал агенту.",
             "en": "📎 File '{name}' sent to Claude Code.",

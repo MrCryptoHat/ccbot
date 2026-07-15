@@ -1104,8 +1104,9 @@ class TestRuntimeAwareBusyChecks:
 
 
 class TestSendComposerImage:
-    """Codex image delivery: type path → Enter (attach [Image #N]) → confirm →
-    caption → Enter (submit), all under one send_lock via the tmux primitives."""
+    """Codex image delivery: type path → WAIT for the idle auto-convert to
+    [Image #N] (NO Enter — an Enter would submit the image alone) → caption →
+    ONE Enter (submit), all under one send_lock via the tmux primitives."""
 
     @pytest.mark.asyncio
     async def test_deterministic_attach_sequence(self, monkeypatch):
@@ -1120,7 +1121,7 @@ class TestSendComposerImage:
         tm = MagicMock()
         tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_id="w9"))
         tm.send_keys = AsyncMock(return_value=True)
-        # pane already shows the attach token → the confirm poll breaks at once.
+        # pane already shows the attach token → the wait poll breaks at once.
         tm.capture_pane = AsyncMock(return_value="› [Image #1]\n  model · dir\n")
         monkeypatch.setattr(sess, "tmux_manager", tm)
         monkeypatch.setattr(sess.asyncio, "sleep", AsyncMock())
@@ -1129,14 +1130,17 @@ class TestSendComposerImage:
         assert ok is True
 
         sends = [(c.args[1], c.kwargs) for c in tm.send_keys.await_args_list]
-        # path (literal, no enter) → Enter key → caption (literal) → Enter key
-        assert sends[0] == ("/tmp/x.png", {"enter": False, "literal": True})
-        assert sends[1] == ("Enter", {"enter": False, "literal": False})
-        assert sends[2] == (" what is this", {"enter": False, "literal": True})
-        assert sends[3] == ("Enter", {"enter": False, "literal": False})
+        # path (literal, no enter) → caption (literal) → ONE Enter. Crucially NO
+        # Enter between path and caption — that premature Enter submitted the
+        # image alone and split the caption into a second turn (the bug).
+        assert sends == [
+            ("/tmp/x.png", {"enter": False, "literal": True}),
+            (" what is this", {"enter": False, "literal": True}),
+            ("Enter", {"enter": False, "literal": False}),
+        ]
 
     @pytest.mark.asyncio
-    async def test_no_caption_still_submits(self, monkeypatch):
+    async def test_no_caption_single_submit(self, monkeypatch):
         from unittest.mock import AsyncMock, MagicMock
 
         from ccbot.session import WindowState
@@ -1154,8 +1158,8 @@ class TestSendComposerImage:
         ok = await mgr.send_composer_image("@9", "/tmp/x.png", "")
         assert ok is True
         sends = [c.args[1] for c in tm.send_keys.await_args_list]
-        # no caption send: path, Enter, Enter (submit)
-        assert sends == ["/tmp/x.png", "Enter", "Enter"]
+        # image-only: path, then ONE Enter (submit). No stray extra Enter.
+        assert sends == ["/tmp/x.png", "Enter"]
 
     @pytest.mark.asyncio
     async def test_missing_window_returns_false(self, monkeypatch):

@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 
 from . import get_thread_id, is_user_allowed
 from .delivery import deliver_user_text
-from .message_sender import safe_reply
+from .message_sender import safe_reply, send_photo
 from .task_pin import pin_task_message, should_pin_task
 from ..config import config
 from ..i18n import tr
@@ -250,7 +250,22 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if not await session_manager.send_composer_image(wid, marker_path, caption):
             await safe_reply(update.message, tr("media.image_send_failed"))
             return
-        await safe_reply(update.message, tr("media.image_sent"))
+        # Echo the image the agent is now looking at back to the chat — parity
+        # with Claude Code, whose Read-tool result surfaces the image. Codex
+        # attaches it as bare "[Image #N]" text (no visual), so this is the
+        # user's confirmation that the right image landed. Best-effort: on any
+        # send failure fall back to the plain text ack.
+        try:
+            await send_photo(
+                context.bot,
+                chat.id,
+                [("photo", host_path.read_bytes())],
+                caption=tr("media.image_echo", agent=runtime.display_name),
+                message_thread_id=thread_id,
+            )
+        except Exception as e:
+            logger.debug("codex image echo failed: %s", e)
+            await safe_reply(update.message, tr("media.image_sent"))
         return
 
     # Text-marker runtimes: Claude Code reads the path from the marker itself.
