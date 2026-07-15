@@ -112,8 +112,8 @@ from .handlers.message_sender import (
     safe_send,
     send_with_fallback,
 )
-from .handlers.diff_view import EDIT_TOOLS
 from .handlers.diff_view import capture_and_send as capture_and_send_diffs
+from .runtimes import get_runtime
 from .handlers.reaction_confirm import handle_message_reaction
 from .handlers.task_pin import (
     pin_task_message,
@@ -988,8 +988,10 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             # backstops the last edit of a turn.
             if (
                 msg.content_type == "tool_use"
-                and msg.tool_name in EDIT_TOOLS
                 and session_manager.is_diff_mode(user_id, thread_id)
+                and get_runtime(session_manager.window_runtime(wid)).is_edit_tool(
+                    msg.tool_name
+                )
             ):
                 await capture_and_send_diffs(bot, user_id, wid, thread_id)
             # Tool plumbing (the "🔧 Bash(...)" text) stays out of the chat,

@@ -91,3 +91,25 @@ class TestRuntimeMetadata:
     def test_names(self):
         assert CLAUDE.name == "claude"
         assert CODEX.name == "codex"
+
+
+class TestEditToolDispatch:
+    """/diff triggers on the runtime's edit tool: Claude's Edit/Write/… vs
+    codex's apply_patch (a custom_tool_call). Each runtime also carries the
+    header/boundary patterns that crop its native diff block."""
+
+    def test_is_edit_tool(self):
+        assert CLAUDE.is_edit_tool("Edit") is True
+        assert CLAUDE.is_edit_tool("Write") is True
+        assert CLAUDE.is_edit_tool("apply_patch") is False
+        assert CODEX.is_edit_tool("apply_patch") is True
+        assert CODEX.is_edit_tool("Edit") is False
+
+    def test_none_name_is_not_edit(self):
+        assert CLAUDE.is_edit_tool(None) is False
+        assert CODEX.is_edit_tool(None) is False
+
+    def test_both_runtimes_carry_diff_patterns(self):
+        for rt in (CLAUDE, CODEX):
+            assert rt.diff_header_re is not None
+            assert rt.diff_boundary_re is not None

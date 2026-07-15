@@ -64,6 +64,37 @@ class TestCodexTranscriptParser:
         ]
         assert len(replies) == 1
 
+    def test_custom_tool_call_becomes_tool_use(self):
+        """apply_patch (file edits) is a custom_tool_call, not a function_call —
+        it must still emit a tool_use so /diff can trigger on a codex edit."""
+        entries = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "call_id": "call_p",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** Update File: hello.py\n@@\n-x\n+y",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_p",
+                    "output": "Success. Updated the following files:\nM hello.py",
+                },
+            },
+        ]
+        parsed, pending = CodexTranscriptParser.parse_entries(entries)
+        tool_use = [e for e in parsed if e.content_type == "tool_use"]
+        tool_result = [e for e in parsed if e.content_type == "tool_result"]
+        assert len(tool_use) == 1
+        assert tool_use[0].tool_name == "apply_patch"
+        assert tool_use[0].tool_use_id == "call_p"
+        assert len(tool_result) == 1 and tool_result[0].tool_use_id == "call_p"
+        assert pending == {}  # paired by call_id
+
     def test_session_meta(self):
         meta = CodexTranscriptParser.session_meta(_load())
         assert meta is not None

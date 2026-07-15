@@ -13,6 +13,9 @@ Rollout line shapes (each line is one JSON object with a ``type`` + ``payload``)
                                                 content=[{type, text}]
         payload.type == "function_call"      → tool_use  (name, call_id, arguments)
         payload.type == "function_call_output"→ tool_result (call_id, output)
+        payload.type == "custom_tool_call"    → tool_use  (codex built-ins, incl.
+                                                `apply_patch` edits; same shape)
+        payload.type == "custom_tool_call_output"→ tool_result (call_id, output)
         payload.type == "reasoning"          → thinking
   - ``event_msg``     — an event stream that DUPLICATES the messages
         (user_message / agent_message / token_count / task_*); ignored for text
@@ -160,7 +163,12 @@ class CodexTranscriptParser:
                         )
                     )
 
-            elif ptype == "function_call":
+            elif ptype in ("function_call", "custom_tool_call"):
+                # custom_tool_call is codex's variant for built-in tools — most
+                # notably `apply_patch` (file edits), which is NOT a function_call
+                # but carries the same call_id/name shape. Emitting it as a
+                # tool_use is what lets /diff trigger on a codex edit (bot.py →
+                # runtime.is_edit_tool) and keeps tool pairing consistent.
                 call_id = payload.get("call_id") or ""
                 name = payload.get("name") or "tool"
                 pending[call_id] = {"name": name}
@@ -175,7 +183,7 @@ class CodexTranscriptParser:
                     )
                 )
 
-            elif ptype == "function_call_output":
+            elif ptype in ("function_call_output", "custom_tool_call_output"):
                 call_id = payload.get("call_id") or ""
                 results.append(
                     ParsedEntry(

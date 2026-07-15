@@ -74,6 +74,59 @@ class TestExtractDiffBlocks:
         assert diff_view.extract_diff_blocks(pane) == []
 
 
+# Codex renders a different native diff block; the crop engine is shared, only
+# the header/boundary patterns differ (carried on the runtime). Real captured
+# layout (content generic — no operator data).
+_CODEX_EDIT_PANE = (
+    "• I found both target strings; I'm patching only those literals.\n"
+    "• Edited hello.py (+2 -2)\n"
+    "    1  def greet(name):\n"
+    '    2 -    message = "Hello, " + name + "!"\n'
+    '    2 +    message = "Goodbye, " + name + "!"\n'
+    "    3      return message\n"
+    "      ⋮\n"
+    '    8 -    print("done")\n'
+    '    8 +    print("finished")\n'
+    "────────────────────────────────────────\n"  # codex's post-block separator
+    "• The file is updated. I'll verify the contents next.\n"
+)
+
+
+class TestCodexDiffBlocks:
+    def _pats(self):
+        from ccbot.runtimes import CODEX
+
+        return CODEX.diff_header_re, CODEX.diff_boundary_re
+
+    def test_crops_codex_edited_block(self):
+        h, b = self._pats()
+        blocks = diff_view.extract_diff_blocks(_CODEX_EDIT_PANE, h, b)
+        assert len(blocks) == 1
+        clean = diff_view._clean(blocks[0])
+        assert clean.startswith("• Edited hello.py (+2 -2)")
+        assert "2 -    message" in clean and "2 +    message" in clean
+
+    def test_stops_at_separator_not_swallowing_next_bullet(self):
+        h, b = self._pats()
+        block = diff_view._clean(
+            diff_view.extract_diff_blocks(_CODEX_EDIT_PANE, h, b)[0]
+        )
+        # The ─ separator ends the block; the trailing prose bullet is excluded.
+        assert "file is updated" not in block
+        assert "─" not in block
+
+    def test_claude_patterns_find_nothing_in_codex_pane(self):
+        # Cross-runtime isolation: Claude's "● Update(" header never matches codex.
+        blocks = diff_view.extract_diff_blocks(_CODEX_EDIT_PANE)  # Claude defaults
+        assert blocks == []
+
+    def test_codex_summary_line_without_gutter_is_skipped(self):
+        # "• Updated hello.py:2: …" is prose (no ± gutter) → not a diff block.
+        h, b = self._pats()
+        pane = "• Updated hello.py:2: Hello is now Goodbye.\n" + "─" * 80 + "\n"
+        assert diff_view.extract_diff_blocks(pane, h, b) == []
+
+
 class TestDedup:
     def test_mark_and_seen(self):
         assert not diff_view._already_seen("@1", "h1")

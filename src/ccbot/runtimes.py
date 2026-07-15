@@ -139,6 +139,21 @@ class AgentRuntime(abc.ABC):
         """Slash command this runtime types for a panel action (None if none)."""
         return self.panel_slash_commands.get(action)
 
+    #: /diff (opt-in edit-diff screenshots). ``edit_tool_names`` are the tool_use
+    #: names whose activity triggers a pane scan; ``diff_header_re`` matches the
+    #: line that STARTS the runtime's native diff block and ``diff_boundary_re``
+    #: a line that ENDS it (besides a blank line). Empty / None → the runtime
+    #: renders no croppable diff and /diff no-ops for it. diff_view owns the
+    #: shared crop engine and reads these (kept as data here to avoid a runtimes
+    #: → handlers import cycle).
+    edit_tool_names: frozenset[str] = frozenset()
+    diff_header_re: re.Pattern[str] | None = None
+    diff_boundary_re: re.Pattern[str] | None = None
+
+    def is_edit_tool(self, name: str | None) -> bool:
+        """True iff a tool_use with this name should trigger a /diff scan."""
+        return bool(name) and name in self.edit_tool_names
+
     @abc.abstractmethod
     def launch_command(
         self, window_name: str, resume_session_id: str | None = None
@@ -212,6 +227,13 @@ class ClaudeRuntime(AgentRuntime):
 
     name = CLAUDE_RUNTIME
     display_name = "Claude Code"
+    # /diff: Claude Code renders "● Update/Write(path)" blocks with numbered
+    # ±gutter lines; a block ends at the next tool bullet (● / ⏺).
+    edit_tool_names = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
+    diff_header_re = re.compile(
+        r"^[●⏺]\s+(Update|Write|Create|Edit|MultiEdit|NotebookEdit)\("
+    )
+    diff_boundary_re = re.compile(r"^[●⏺]")
     # Claude Code offers the full panel — this is the historical baseline.
     panel_actions = frozenset(
         {
@@ -297,6 +319,13 @@ class CodexRuntime(AgentRuntime):
         **AgentRuntime.panel_slash_commands,
         "context": "/status",  # codex's session-status command (no /context)
     }
+    # /diff: codex edits via the apply_patch tool (logged as a custom_tool_call,
+    # which codex_transcript_parser now emits as a tool_use). Its native pane
+    # block is "• Edited <file> (+N -M)" + numbered ±gutter lines, ended by the
+    # next • bullet or the long ─ separator codex draws after a tool block.
+    edit_tool_names = frozenset({"apply_patch"})
+    diff_header_re = re.compile(r"^[•●]\s+\w+.*\(\+\d+")
+    diff_boundary_re = re.compile(r"^[•●]|^─{5,}")
 
     def __init__(self) -> None:
         # rollout path -> its session_meta.cwd (immutable per file); avoids
