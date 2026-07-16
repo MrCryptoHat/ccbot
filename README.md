@@ -1,7 +1,7 @@
 <h1 align="center">ccbot</h1>
 
-<p align="center"><b>The command center for your terminal AI agents — in one Telegram group.</b></p>
-<p align="center"><sub>ccbot = <b>C</b>ommand <b>C</b>enter <b>bot</b>. (It started as a Claude Code bot — then outgrew the name.)</sub></p>
+<p align="center"><b>Call sign “Charlie-Charlie”: your whole fleet of terminal AI agents, on the radio in one Telegram group.</b></p>
+<p align="center"><sub>“cc” reads <i>Charlie-Charlie</i> on the radio — and it once meant Claude Code. The bot outgrew one of those. 📻</sub></p>
 
 <p align="center">
   <a href="https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml"><img src="https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
@@ -99,9 +99,10 @@ the TUI shows arrives as a screenshot with an <code>↑ ↓ ⏎ Esc</code> keybo
 <td>
 
 ### Always know what your agent is doing
-👀 on your message means it actually **entered the agent's context** (not just
-got delivered). `typing…` means it's working. The panel shows you the raw
-terminal whenever you're curious. No more "what is it even doing right now?"
+👀 on your message is the agent's *"copy that"* — it actually **entered the
+context** (not just got delivered). `typing…` means it's working. The panel
+shows you the raw terminal whenever you're curious. No more "what is it even
+doing right now?"
 
 </td>
 </tr>
@@ -306,6 +307,11 @@ the picker.
 Those run through a hosted app or cloud relay. ccbot is self-hosted, uses a
 chat app you already have, gives raw keypress control of the real terminal —
 and you can always `tmux attach` back. See [How it compares](#how-it-compares).
+
+**Why "ccbot" — what does "cc" mean?**
+On the radio, "cc" reads *Charlie-Charlie* — fitting for a bot whose job is
+keeping your agent fleet on the air. Historically it meant *Claude Code*.
+And yes, it can also literally press `Ctrl-C` — from your phone.
 
 **Is my code exposed to a third party?**
 No middleman: traffic flows between your server and Telegram's Bot API under
