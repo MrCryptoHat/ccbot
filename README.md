@@ -1,7 +1,6 @@
-<h1 align="center">ccbot</h1>
+<h1 align="center">ccbot — “Charlie-Charlie” 📻</h1>
 
-<p align="center"><b>Call sign “Charlie-Charlie”: your whole fleet of terminal AI agents, on the radio in one Telegram group.</b></p>
-<p align="center"><sub>“cc” reads <i>Charlie-Charlie</i> on the radio — and it once meant Claude Code. The bot outgrew one of those. 📻</sub></p>
+<p align="center"><b>Your whole fleet of terminal AI agents, on the radio in one Telegram group.</b></p>
 
 <p align="center">
   <a href="https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml"><img src="https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
