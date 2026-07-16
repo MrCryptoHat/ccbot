@@ -307,6 +307,31 @@ class TestAvailabilityGating:
         assert default_runtime() is CLAUDE
 
 
+class TestCliVersion:
+    """Self-update canary probe: first line of `<cli> --version`, None on any
+    failure (a broken probe must never break the poll loop)."""
+
+    def _patch_cmd(self, monkeypatch, command: str):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(rt, "config", MagicMock(codex_command=command))
+
+    @pytest.mark.asyncio
+    async def test_reads_first_version_line(self, tmp_path, monkeypatch):
+        fake = tmp_path / "fake-cli"
+        fake.write_text('#!/bin/sh\necho "fake-cli 1.2.3"\necho "extra line"\n')
+        fake.chmod(0o755)
+        self._patch_cmd(monkeypatch, str(fake))
+        assert await CODEX.cli_version() == "fake-cli 1.2.3"
+
+    @pytest.mark.asyncio
+    async def test_missing_binary_returns_none(self, tmp_path, monkeypatch):
+        self._patch_cmd(monkeypatch, str(tmp_path / "does-not-exist"))
+        assert await CODEX.cli_version() is None
+
+
 def _write_rollout(root, sid, cwd, *, ts="2026-07-15T10-00-00", turns=("hi",)):
     """Write a minimal codex rollout file under root and return its path."""
     day = root / "2026" / "07" / "15"

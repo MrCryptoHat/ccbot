@@ -211,6 +211,11 @@ class SessionManager:
     # runtime axis). Kept as a parallel map so old state.json files load
     # unchanged.
     thread_runtime_memory: dict[int, dict[int, str]] = field(default_factory=dict)
+    # Last seen CLI version per runtime name (the self-update canary's
+    # persistence): runtime → `--version` first line. Compared periodically by
+    # status_polling's version watcher; a change means every TUI anchor is now
+    # unverified against the new build, so it's surfaced instead of drifting.
+    runtime_versions: dict[str, str] = field(default_factory=dict)
     # Worktree-agent metadata: user_id -> {thread_id -> WorktreeMeta}. Keyed by
     # the permanent thread_id (same as every other per-topic structure), so the
     # teardown guard — which receives (user, thread) — looks it up directly,
@@ -314,6 +319,7 @@ class SessionManager:
                 str(uid): {str(tid): r for tid, r in rts.items()}
                 for uid, rts in self.thread_runtime_memory.items()
             },
+            "runtime_versions": dict(self.runtime_versions),
             "worktree_meta": {
                 str(uid): {str(tid): m.to_dict() for tid, m in metas.items()}
                 for uid, metas in self.worktree_meta.items()
@@ -412,6 +418,9 @@ class SessionManager:
                     int(uid): {int(tid): r for tid, r in rts.items()}
                     for uid, rts in state.get("thread_runtime_memory", {}).items()
                 }
+                self.runtime_versions = {
+                    str(k): str(v) for k, v in state.get("runtime_versions", {}).items()
+                }
                 self.group_chat_ids = {
                     k: int(v) for k, v in state.get("group_chat_ids", {}).items()
                 }
@@ -489,6 +498,7 @@ class SessionManager:
                 self.window_display_names = {}
                 self.thread_directory_memory = {}
                 self.thread_runtime_memory = {}
+                self.runtime_versions = {}
                 self.group_chat_ids = {}
                 self.voice_mode_topics = set()
                 self.diff_mode_topics = set()
@@ -1196,6 +1206,18 @@ class SessionManager:
         (e.g. a runtime mutating WindowState it was handed). Same scheduled
         atomic write as the internal ``_save_state``."""
         self._save_state()
+
+    def note_runtime_version(self, runtime: str, version: str) -> str | None:
+        """Record a runtime CLI's current version; return the PREVIOUS one iff
+        it changed (the self-update canary's trigger). First sighting and
+        no-change both return None — only a real bump warrants the alert.
+        """
+        prev = self.runtime_versions.get(runtime)
+        if prev == version:
+            return None
+        self.runtime_versions[runtime] = version
+        self._save_state()
+        return prev
 
     def tag_window_runtime(self, window_id: str, runtime: str, cwd: str) -> None:
         """Stamp a freshly created window with its runtime (and cwd if needed).

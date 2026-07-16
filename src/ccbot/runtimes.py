@@ -48,6 +48,7 @@ Key API: ``get_runtime(name)`` → AgentRuntime; module singletons ``CLAUDE`` /
 from __future__ import annotations
 
 import abc
+import asyncio
 import json
 import logging
 import os
@@ -217,6 +218,33 @@ class AgentRuntime(abc.ABC):
         if not parts:
             return False
         return shutil.which(os.path.expanduser(parts[0])) is not None
+
+    async def cli_version(self) -> str | None:
+        """First line of ``<cli> --version`` output (None if the probe fails).
+
+        Feeds the self-update canary (status_polling's version watcher): agent
+        CLIs update themselves in place — codex does so silently — and every
+        TUI anchor (busy counter, /status box, diff crop, menu chrome) is
+        pinned to the version its patterns were captured on. A version bump is
+        the moment those anchors need re-verification, so it must not pass
+        unnoticed.
+        """
+        parts = self.cli_command().split()
+        if not parts:
+            return None
+        binary = os.path.expanduser(parts[0])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        except (OSError, asyncio.TimeoutError):
+            return None
+        lines = out.decode(errors="replace").strip().splitlines()
+        return lines[0].strip() if lines else None
 
     def panel_slash(self, action: str) -> str | None:
         """Slash command this runtime types for a panel action (None if none)."""

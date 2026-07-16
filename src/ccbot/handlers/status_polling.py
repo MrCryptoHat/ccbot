@@ -72,6 +72,15 @@ WT_TOPIC_CHECK_INTERVAL = 10.0  # seconds
 # Agent health check interval
 AGENT_HEALTH_CHECK_INTERVAL = 30.0  # seconds
 
+# Self-update canary: agent CLIs update themselves in place (codex silently),
+# and every TUI anchor — busy counter, /status box, diff crop, menu chrome —
+# is pinned to the version its patterns were captured on. Probe `--version`
+# this often; on a change, warn loudly instead of letting the anchors drift.
+# First probe runs shortly after boot (catches an update that happened while
+# the bot was down).
+RUNTIME_VERSION_CHECK_INTERVAL = 6 * 3600.0  # seconds
+_FIRST_VERSION_CHECK_DELAY = 120.0  # seconds after boot
+
 # Track agent down state: window_id -> monotonic time when first detected dead
 _agent_down_since: dict[str, float] = {}
 
@@ -330,11 +339,57 @@ async def _probe_topic_alive(bot: Bot, user_id: int, thread_id: int, wid: str) -
         logger.debug("Topic probe error for %s: %s", wid, e)
 
 
+async def _check_runtime_versions(bot: Bot) -> None:
+    """Self-update canary: compare each installed runtime's `--version` with
+    the persisted last-seen value; on a bump, WARN + push to the notifications
+    chat (if configured). See RUNTIME_VERSION_CHECK_INTERVAL for the why.
+    """
+    from ..config import config
+    from ..runtimes import RUNTIMES
+
+    for rt in RUNTIMES.values():
+        try:
+            if not rt.is_available():
+                continue
+            version = await rt.cli_version()
+            if not version:
+                continue
+            prev = session_manager.note_runtime_version(rt.name, version)
+            if prev is None:
+                continue
+            logger.warning(
+                "%s CLI self-updated: %r -> %r — TUI anchors (busy counter, "
+                "/status box, diff crop, menu chrome) are pinned to the old "
+                "layout; re-verify them against the new build.",
+                rt.display_name,
+                prev,
+                version,
+            )
+            if config.notifications_chat_id:
+                with background_context():
+                    await safe_send(
+                        bot,
+                        config.notifications_chat_id,
+                        tr(
+                            "runtime.version_changed",
+                            agent=rt.display_name,
+                            old=prev,
+                            new=version,
+                        ),
+                    )
+        except Exception as e:  # noqa: BLE001 — canary must never kill the poll loop
+            logger.debug("Runtime version check failed for %s: %s", rt.name, e)
+
+
 async def status_poll_loop(bot: Bot) -> None:
     """Background task to poll terminal status for all thread-bound windows."""
     logger.info("Status polling started (interval: %ss)", STATUS_POLL_INTERVAL)
     last_topic_check = 0.0
     last_wt_check = 0.0
+    # Schedule the first version probe _FIRST_VERSION_CHECK_DELAY after boot.
+    last_version_check = (
+        time.monotonic() - RUNTIME_VERSION_CHECK_INTERVAL + _FIRST_VERSION_CHECK_DELAY
+    )
     topic_probe_pos = 0
     while True:
         try:
@@ -348,6 +403,11 @@ async def status_poll_loop(bot: Bot) -> None:
                     topic_probe_pos %= len(bindings)
                     await _probe_topic_alive(bot, *bindings[topic_probe_pos])
                     topic_probe_pos += 1
+
+            # Self-update canary (cheap: two --version subprocesses per 6 h).
+            if now - last_version_check >= RUNTIME_VERSION_CHECK_INTERVAL:
+                last_version_check = now
+                await _check_runtime_versions(bot)
 
             # Worktree topics: probe ALL of them on a short interval so a
             # hard-deleted worktree agent is reclaimed in seconds (they're few;

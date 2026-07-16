@@ -250,6 +250,22 @@ STRINGS.update(
                 "Device Code”; I'll post the sign-in link as a separate message."
             ),
         },
+        "runtime.version_changed": {
+            "ru": (
+                "⚠️ {agent} сам обновился: {old} → {new}.\n"
+                "Бот распознаёт его экран по прошлой версии. Если заметите "
+                "странности (агент «висит» без ответа, пустой Context, битые "
+                "скриншоты правок) — перезапустите сессию и проверьте разбор "
+                "экрана."
+            ),
+            "en": (
+                "⚠️ {agent} updated itself: {old} → {new}.\n"
+                "The bot's screen parsing is pinned to the previous version. "
+                "If anything looks off (agent seems stuck, empty Context, "
+                "broken edit screenshots) — restart the session and re-verify "
+                "the screen parsing."
+            ),
+        },
         "bot.same_dir_conflict": {
             "ru": (
                 "⚠️ В папке `{dir}` уже работает агент {agent} из другого топика. "

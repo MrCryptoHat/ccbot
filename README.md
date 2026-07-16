@@ -211,6 +211,10 @@ in [`CLAUDE.md`](CLAUDE.md) and [`.claude/rules/`](.claude/rules/) —
 `architecture.md` is the orientation map. Every `.py` file also carries a
 module docstring describing its responsibilities.
 
+Want ccbot to drive another agent CLI (Gemini CLI, Aider, …)? The runtime
+abstraction makes that one subclass —
+see **[docs/adding-a-runtime.md](docs/adding-a-runtime.md)**.
+
 Tech stack: Python, [python-telegram-bot](https://python-telegram-bot.org/),
 tmux, [uv](https://docs.astral.sh/uv/).
 

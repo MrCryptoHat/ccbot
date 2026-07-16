@@ -1183,15 +1183,26 @@ async def _post_slash_context(
         return
     marker, parse, fmt = spec
     parsed = None
+    marker_seen = False
     for _ in range(10):
         pane = await session_manager.capture_pane(window_id, scrollback_lines=200)
         if pane and marker in pane:
+            marker_seen = True
             parsed = parse(pane)
             if parsed:
                 break
         await asyncio.sleep(0.5)
     if not parsed:
-        logger.debug("post-slash context: no parseable block in pane after ~5s")
+        if marker_seen:
+            # The box rendered but no longer parses — the layout-drift canary:
+            # agent CLIs self-update and can reshape this output silently.
+            logger.warning(
+                "post-slash context: output box present but unparseable — the "
+                "CLI's layout may have changed after a self-update (runtime=%s)",
+                session_manager.window_runtime(window_id),
+            )
+        else:
+            logger.debug("post-slash context: no parseable block in pane after ~5s")
         return
     body = fmt(parsed)
     thread_id = get_thread_id(update)

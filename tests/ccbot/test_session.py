@@ -149,6 +149,39 @@ class TestThreadRuntimeMemory:
         assert mgr.get_remembered_runtime(100, 42) is None
 
 
+class TestNoteRuntimeVersion:
+    """Self-update canary persistence: only a real version BUMP returns the
+    previous value (the alert trigger); first sighting and no-change are None."""
+
+    def test_first_sighting_records_silently(self, mgr: SessionManager) -> None:
+        assert mgr.note_runtime_version("codex", "codex-cli 0.144.5") is None
+        assert mgr.runtime_versions["codex"] == "codex-cli 0.144.5"
+
+    def test_no_change_returns_none(self, mgr: SessionManager) -> None:
+        mgr.note_runtime_version("codex", "codex-cli 0.144.5")
+        assert mgr.note_runtime_version("codex", "codex-cli 0.144.5") is None
+
+    def test_bump_returns_previous(self, mgr: SessionManager) -> None:
+        mgr.note_runtime_version("codex", "codex-cli 0.144.5")
+        prev = mgr.note_runtime_version("codex", "codex-cli 0.146.0")
+        assert prev == "codex-cli 0.144.5"
+        assert mgr.runtime_versions["codex"] == "codex-cli 0.146.0"
+
+    def test_state_roundtrip(self, monkeypatch, tmp_path) -> None:
+        from ccbot import session as session_mod
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps({"runtime_versions": {"claude": "2.0.1 (Claude Code)"}})
+        )
+        monkeypatch.setattr(session_mod.config, "state_file", state_file)
+        mgr = SessionManager()
+        assert mgr.note_runtime_version("claude", "2.0.1 (Claude Code)") is None
+        assert mgr.note_runtime_version("claude", "2.1.0 (Claude Code)") == (
+            "2.0.1 (Claude Code)"
+        )
+
+
 class TestTagWindowRuntime:
     """The shared bootstrap stamp: runtime tag always; cwd persisted only for
     hookless runtimes (their transcript resolves by cwd)."""
