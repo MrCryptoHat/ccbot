@@ -59,8 +59,9 @@ ALLOWED_USERS=123456789
 ```
 
 Everything else in `.env.example` is optional — almost all of it off by
-default (the two exceptions: 👍-to-confirm and 👀 read-ack reactions are on;
-see the REACTIONS section there to turn them off). Add a voice
+default (the on-by-default exceptions: 👍-to-confirm, 👀 read-ack reactions,
+task pinning and rich-message rendering; each has an env switch documented
+there). Add a voice
 key (Deepgram/OpenAI/Gemini/ElevenLabs) if you want speech; leave the whole
 **SERVER-SPECIFIC** section blank — it wires into one particular server's
 extra infra and does nothing unless configured.
@@ -81,7 +82,11 @@ uv run ccbot hook --install
 
 This adds a `SessionStart` hook to `~/.claude/settings.json` so the bot can map
 each tmux window to its Claude session (survives `/clear` and restarts). Or add
-it manually — see the README "Hook Setup" section.
+it manually to `~/.claude/settings.json`:
+
+```json
+{ "hooks": { "SessionStart": [ { "hooks": [{ "type": "command", "command": "ccbot hook", "timeout": 5 }] } ] } }
+```
 
 (If you later remove ccbot, run `uv run ccbot hook --uninstall` **before**
 deleting the checkout, otherwise every future Claude Code session will keep

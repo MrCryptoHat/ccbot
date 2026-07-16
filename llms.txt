@@ -1,6 +1,6 @@
 # ccbot
 
-> Self-hosted Telegram bot that turns one Telegram forum group into a command center for terminal AI coding agents — Claude Code first-class, OpenAI Codex built-in, other CLIs pluggable — running in tmux on your own machine or server. Full terminal control from a phone: live pane screenshots with key presses, interactive prompt approvals (permissions, plans, option pickers), one-tap parallel agents on git worktrees, two-way voice, session resume. No cloud middleman and no API keys: it drives the real CLI under your existing subscription, and you can always tmux attach back into the same session.
+> Self-hosted Telegram bot that turns one Telegram forum group into a command center for terminal AI coding agents — Claude Code first-class, OpenAI Codex built-in, other CLIs pluggable — running in tmux on your own machine or server. Full terminal control from a phone: live pane screenshots with key presses, interactive prompt approvals (permissions, plans, option pickers), one-tap parallel agents on git worktrees, optional two-way voice (provider keys), session resume. No third-party relay and no LLM API keys: it drives the real CLI under your existing subscription, and you can always tmux attach back into the same session.
 
 ## Docs
 
