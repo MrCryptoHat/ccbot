@@ -1,95 +1,168 @@
-# ccbot: control Claude Code (and other terminal agents) from Telegram
+<h1 align="center">ccbot</h1>
 
-[![Tests](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg)](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
+<p align="center"><b>The command center for your terminal AI agents — in one Telegram group.</b></p>
+<p align="center"><sub>ccbot = <b>C</b>ommand <b>C</b>enter <b>bot</b>. (It started as a Claude Code bot — then outgrew the name.)</sub></p>
 
-A Telegram remote for terminal AI agents — **Claude Code** first-class,
-**OpenAI Codex** built-in, [others pluggable](docs/adding-a-runtime.md).
-Sessions run in **tmux** on your machine or server; the bot streams replies
-into forum **topics** (one topic = one session) and types your answers back
-into the pane. Press keys, approve permission prompts, switch models, run
-several projects — and several agents — side by side.
+<p align="center">
+  <a href="https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml"><img src="https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.12+-blue.svg" alt="Python 3.12+"></a>
+  <img src="https://img.shields.io/badge/agents-Claude_Code_%2B_Codex-8A2BE2" alt="Agents: Claude Code + Codex">
+  <img src="https://img.shields.io/badge/self--hosted-no_cloud_middleman-2ea44f" alt="Self-hosted, no cloud middleman">
+</p>
 
-Start a refactor at your desk, approve it from your phone, `tmux attach` back
-into the same terminal whenever you want.
+<p align="center">
+  <a href="docs/images/hero.mp4">
+    <img src="docs/images/hero.gif" width="560" alt="ccbot demo: create a Telegram topic, an agent auto-binds, runs a task, streams live edit diffs, and reports all tests pass — controlled from a phone.">
+  </a>
+</p>
+<p align="center"><sub>▶︎ 30-second demo — <a href="docs/images/hero.mp4">click for HD video</a></sub></p>
 
-<!-- screenshots: drop 2-3 images here (agent panel, interactive prompt,
-     streaming reply). Recommended width ~1000px. -->
+ccbot is a **self-hosted Telegram bot** that remote-controls terminal AI coding
+agents — **Claude Code** first-class, **OpenAI Codex** built-in,
+[others pluggable](docs/adding-a-runtime.md) — running in **tmux** on your own
+machine or server. One forum group becomes mission control for the whole
+fleet: each topic is one agent, replies stream in, and you steer the **real
+CLI** — your existing subscription, config and MCP servers work as-is. No API
+keys, no token costs, no cloud middleman. Sessions outlive the bot:
+`tmux attach` back into the same terminal anytime.
 
-## Why ccbot?
+<p align="center">
+  <img src="docs/images/fleet-topics.png" width="30%" alt="Telegram forum topic list showing nine AI agents in one group — dev projects plus personal assistant, health, coach, travel and finances agents.">
+  <img src="docs/images/agent-panel.png" width="30%" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session (Model, Context, MCP, Resume, Worktree).">
+  <img src="docs/images/plan-approval.png" width="30%" alt="Claude Code ExitPlanMode plan-approval screen surfaced in Telegram with arrow, Enter and Esc buttons.">
+</p>
 
-Your coding agent runs in your terminal. When you step away — commuting, on
-the couch, away from the desk — the session keeps working, but you lose
-visibility and control.
+- **Start a refactor at your desk, approve its plan from the couch,** `tmux attach` back whenever you want.
+- **Fork a second agent onto a git worktree with one tap** and let them work the same repo in parallel.
+- **Always know what your agents are doing** — live pane screenshots, 👀 read-acks, typing indicators.
 
-ccbot lets you **continue the same session from Telegram**. The key design
-choice is that it drives **tmux**, not an agent SDK. Your agent process stays
-exactly where it is; ccbot reads its transcript and sends keystrokes to the
-pane. So:
+## What you can do from your phone
 
-- **Switch desktop → phone mid-conversation** — the agent is on a long
-  refactor? Walk away and keep monitoring/answering from Telegram.
-- **Switch back anytime** — the tmux session was never interrupted; just
-  `tmux attach` and you're back in the terminal with full scrollback.
-- **Run sessions in parallel** — each topic maps to its own tmux window, so you
-  juggle several projects (and mix Claude Code / Codex topics) from one chat
-  group.
-- **Nothing to migrate** — no SDK wrapper, no cloud middleman. Your existing
-  agent setup, plan and MCP servers work as-is.
+<table>
+<tr>
+<td width="42%"><img src="docs/images/agent-panel.png" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session."></td>
+<td>
 
-Because it's a thin control layer over tmux, the terminal stays the source of
-truth and you never lose the ability to switch back.
+### Control the real terminal
+Screenshot the live pane any moment, press any key — arrows, Enter, Esc,
+Ctrl-C — interrupt the agent mid-turn, switch model or mode, compact or clear
+the session. **Your terminal, in your pocket** — not a chat that paraphrases it.
 
-## Features
+</td>
+</tr>
+<tr>
+<td>
 
-**Core (any install):**
+### One-tap parallel agents on git worktrees
+Tap 🌳, name the task — and in ~10 seconds you get a branch, a `git worktree`
+and a fresh agent in its own topic. Agents never step on each other. Merged
+work cleans up automatically; **unmerged work is never silently destroyed.**
 
-- **Topic-based sessions** — 1 topic = 1 tmux window = 1 Claude session.
-- **Live delivery** — assistant replies (and, opt-in, edit diffs / thinking)
-  stream to the bound topic; a `typing…` indicator signals liveness.
-- **Interactive prompts as screenshots** — AskUserQuestion, ExitPlanMode,
-  permission prompts and the model/MCP pickers are sent as pane screenshots
-  with an inline `↑ ↓ ⏎ Esc 🔄` keyboard.
-- **Agent panel** — `/screenshot` opens a live pane view with key-press and
-  session controls (mode, model, context, compact, clear, restart, resume…).
-- **Voice** — inbound voice messages are transcribed (Deepgram → OpenAI); with
-  a TTS key the bot can reply in voice (`/voice`).
-- **Directory browser & resume** — start or resume Claude sessions from a topic.
-- **MarkdownV2 rendering** with auto-fallback; long code/tables/box-art are
-  delivered out-of-band so a phone never mangles them.
-- **Task pinning** — a big message (150+ chars) sent to an idle agent is
-  auto-pinned, so a topic's pinned list reads as its task history (on by
-  default; `/pin` toggles per topic, `CCBOT_PIN_DEFAULT=false` flips the
-  default).
-- **Bilingual UI** — `ru` / `en`, switchable at runtime with `/lang`.
-- **Hook-based tracking** — a `SessionStart` hook maps windows ↔ sessions,
-  surviving `/clear` and restarts.
+</td>
+<td width="42%"><img src="docs/images/worktree-topic.png" alt="A git-worktree agent topic in Telegram with Path and Branch info buttons for the isolated branch."></td>
+</tr>
+<tr>
+<td width="42%"><img src="docs/images/fleet-topics.png" alt="Telegram forum topic list showing nine AI agents in one group."></td>
+<td>
 
-**Optional (off unless configured):**
+### One bot = the whole fleet
+Many projects, many agents, personal assistants — side by side in one group,
+under one bot token. **No bot-per-agent, no key zoo.** Topics are created and
+bound by name; close a topic, and its agent is gone.
 
-- **Codex runtime** — a topic can run OpenAI's Codex CLI instead of Claude
-  Code: install `codex` and the session picker grows a Codex tab (nothing to
-  configure; `CCBOT_DEFAULT_RUNTIME=codex` makes it the default). Sign-in,
-  approval menus, `/diff`, images and the agent panel all work; each topic
-  remembers its runtime across restarts.
-- **Docker agents** — route a topic to Claude Code inside a container
-  (advanced, bring-your-own-container — see [docs/docker-agents.md](docs/docker-agents.md)).
-- **Worktree agents** — fork a repo into a `git worktree` + branch and run a
-  parallel agent, all from Telegram.
-- **Reaction controls** — 👍-to-confirm and 👀 read-acks, both **on by default**
-  (env switches: `REACTION_CONFIRM_ENABLED=false` / `CCBOT_REACTION_ACK=false`;
-  the runtime `/react` toggle flips the 👀 read-ack only).
-- **Automation hooks** — a localhost task-injection socket
-  (`CCBOT_INJECT_TOKEN`) for scripting tasks into agents.
+</td>
+</tr>
+<tr>
+<td>
 
-See **"Core vs optional"** below and [`.env.example`](.env.example) for the
-full switch list.
+### Answer any interactive prompt
+Permission dialogs, plan approvals, option pickers, login screens — whatever
+the TUI shows arrives as a screenshot with an <code>↑ ↓ ⏎ Esc</code> keyboard.
+**Approve a commit from the couch.** Or just 👍 the agent's question to say yes.
+
+</td>
+<td width="42%"><img src="docs/images/permission-commit.png" alt="Claude Code git-commit permission prompt in Telegram — approving an agent commit from a phone."></td>
+</tr>
+<tr>
+<td width="42%"><img src="docs/images/hero-convo.png" alt="ccbot chat: a Claude Code agent working a rate-limiter task, with an eyes read-ack reaction on the user's message."></td>
+<td>
+
+### Always know what your agent is doing
+👀 on your message means it actually **entered the agent's context** (not just
+got delivered). `typing…` means it's working. The panel shows you the raw
+terminal whenever you're curious. No more "what is it even doing right now?"
+
+</td>
+</tr>
+<tr>
+<td>
+
+### Run Claude Code and Codex side by side
+Each topic picks its runtime. The resume picker has a tab per installed CLI
+with every past session ready to continue. A third agent CLI is
+[one subclass away](docs/adding-a-runtime.md).
+
+</td>
+<td width="42%"><img src="docs/images/resume-picker.png" alt="Session resume picker with per-runtime tabs (Claude Code / Codex) listing saved resumable sessions."></td>
+</tr>
+<tr>
+<td width="42%"><img src="docs/images/voice-loop.png" alt="Two-way voice in ccbot: a voice message, its transcript, and a spoken agent reply."></td>
+<td>
+
+### Talk to your agents
+Dictate a task on the walk home — it's transcribed and delivered. With a TTS
+key the agent **answers in voice** too.
+
+</td>
+</tr>
+<tr>
+<td>
+
+### Get real work products, rendered right
+Red/green **diff screenshots** of every edit (opt-in `/diff`), native Telegram
+tables, long code as files, auto-pinned task history — and the agent can send
+you **any file from the server** straight into the chat.
+
+</td>
+<td width="42%"><img src="docs/images/diff-screenshot.png" alt="Red-green edit diff screenshots of an agent's file changes, captured from Claude Code's native pane rendering."></td>
+</tr>
+</table>
+
+<details>
+<summary><b>More screenshots</b> — options widget, Codex approvals, /context, tables, pinned tasks, file delivery</summary>
+<p align="center">
+  <img src="docs/images/ask-question.png" width="24%" alt="Claude Code AskUserQuestion options widget sent to Telegram as a screenshot, answered with arrow and Enter buttons.">
+  <img src="docs/images/codex-approval.png" width="24%" alt="OpenAI Codex approval menu shown as a screenshot in Telegram with navigation buttons.">
+  <img src="docs/images/context-tree.png" width="24%" alt="Claude Code /context token-usage tree rendered as a Telegram message showing context breakdown by category.">
+  <img src="docs/images/table.png" width="24%" alt="A compact table from an agent reply rendered natively in a Telegram chat.">
+</p>
+<p align="center">
+  <img src="docs/images/pinned-tasks.png" width="24%" alt="A Telegram topic's pinned-messages list acting as auto-pinned task history for an agent.">
+  <img src="docs/images/file-delivery.png" width="24%" alt="An AI agent sending a summary.md file from the server to Telegram as a document.">
+</p>
+</details>
+
+## How it compares
+
+| | **ccbot** | Claude Code remote (official) | Happy | Omnara | API-wrapper Telegram bots |
+|---|---|---|---|---|---|
+| Client | Telegram — nothing to install | Claude app / web | dedicated mobile app | dedicated app + web | Telegram |
+| Where the agent runs | your machine, in tmux | Anthropic-hosted | your machine, via relay | via relay / cloud | the bot re-runs an LLM via API |
+| Agents | Claude Code + Codex + pluggable | Claude Code only | Claude Code-focused | several, via SDK | whatever the API is |
+| Your existing plan, no per-token cost | ✅ | ✅ | ✅ | ✅ | ❌ pays per API token |
+| Raw-terminal keypress control | ✅ any key, live pane | partial | partial | partial | ❌ |
+| 1-tap parallel git-worktree agents | ✅ | — | — | — | ❌ |
+| Cloud middleman / relay | **none** — straight to the Bot API | Anthropic cloud | relay server | relay / cloud | varies |
+| `tmux attach` back into the session | ✅ | ❌ | ❌ | ❌ | ❌ |
+| License / price | MIT, free | proprietary | app + relay | freemium SaaS | varies |
+
+<sup>Comparisons reflect each product's architecture as of mid-2026, not a feature-by-feature audit — verify current capabilities before relying on any cell.</sup>
 
 ## Quick start
 
-Prerequisites: **tmux**, the **`claude`** CLI, and **`uv`**
-(https://docs.astral.sh/uv/). Then:
+Prerequisites: **tmux**, the **`claude`** CLI (and/or **`codex`**), and
+**[uv](https://docs.astral.sh/uv/)**. Then:
 
 ```bash
 git clone https://github.com/MrCryptoHat/ccbot.git
@@ -100,10 +173,9 @@ uv run ccbot hook --install  # session-tracking hook
 ./scripts/restart.sh         # create the tmux session and launch
 ```
 
-A full walkthrough (BotFather, enabling group Topics, first session) is in
-**[SETUP.md](SETUP.md)**.
-
-## Configuration
+Create a Telegram group, enable **Topics**, add your bot as admin — every
+topic you create becomes an agent. A full walkthrough (BotFather, group
+setup, first session) is in **[SETUP.md](SETUP.md)**.
 
 Only two variables are required:
 
@@ -112,158 +184,126 @@ Only two variables are required:
 | `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | `ALLOWED_USERS`      | Comma-separated Telegram numeric user IDs          |
 
-Everything else is optional with a sane default. All variables — core toggles,
-voice keys, docker agents, and the server-specific integrations — are
-documented inline in **[`.env.example`](.env.example)**. `.env` is loaded from
-the repo root or from `$CCBOT_DIR` (default `~/.ccbot/`) and is gitignored;
-never commit real tokens.
+Everything else is optional with a sane default — see
+[`.env.example`](.env.example) for the full annotated list.
 
 > On a headless VPS with no terminal to approve permissions:
 > `CLAUDE_COMMAND=claude --dangerously-skip-permissions`
 > ⚠️ This lets the agent run shell commands and edit files without asking —
 > use it only on a host where that's acceptable.
 
-## Core vs optional
+## Why drive tmux instead of an API?
 
-ccbot is one codebase that runs as a **minimal tmux↔Claude bridge** out of the
-box, and grows extra capabilities as you set env vars. Nothing optional runs
-unless you turn it on, so a plain deployment carries no dead code paths.
+Your coding agent runs in your terminal. When you step away, the session
+keeps working — but you lose visibility and control. ccbot's key design
+choice is that it drives **tmux**, not an agent SDK: the agent process stays
+exactly where it is; ccbot reads its transcript and sends keystrokes to the
+pane. So:
+
+- **Switch desktop → phone mid-conversation** — the session was never interrupted.
+- **Switch back anytime** — `tmux attach` and you're in the terminal with full scrollback.
+- **Nothing to migrate** — your agent setup, plan, memory and MCP servers work as-is.
+- **Nothing is lost if the bot dies** — sessions live in tmux, not in ccbot; every topic remembers its project and can resume any session.
+
+The terminal stays the source of truth; ccbot is a thin control layer over it.
+
+<details>
+<summary><b>Core vs optional</b> — what runs out of the box vs what you switch on</summary>
+
+ccbot runs as a **minimal tmux↔agent bridge** out of the box and grows extra
+capabilities as you set env vars. Nothing optional runs unless you turn it on.
 
 | Feature                    | Enabled by                                   |
 | -------------------------- | -------------------------------------------- |
 | Core tmux bridge           | always on (the two required vars)            |
 | Codex runtime (2nd CLI)    | `codex` on PATH (auto-detected; `CODEX_*` vars tune it) |
 | Voice transcription / TTS  | a provider key (`DEEPGRAM_/OPENAI_/GEMINI_/ELEVENLABS_…`) |
-| Docker agents              | `DOCKER_AGENTS_ENABLED=true` + `DOCKER_AGENTS` |
+| Docker agents              | `DOCKER_AGENTS_ENABLED=true` + `DOCKER_AGENTS` ([docs](docs/docker-agents.md)) |
 | 👍-to-confirm reactions     | `REACTION_CONFIRM_ENABLED` (on by default)   |
+| 👀 read-ack reactions       | `CCBOT_REACTION_ACK` (on by default)         |
 | Task pinning               | `CCBOT_PIN_DEFAULT` (on by default)          |
+| Edit-diff screenshots      | `/diff` per topic                             |
 | Task-injection socket      | `CCBOT_INJECT_TOKEN`                          |
 
-Everything **server-specific** lives as separate `ccbot.<name>` **plugin
-packages** rather than in the core tree — the public repo ships none. The
-reference deployment runs an inter-agent mail bus, external chat gateways,
-`drive` (rclone mounts: `/mount`/`/umount`/`/remount`, a Mounts section and
-Fix-Drive button in `/status`) and `fleet` (a preview-server fleet + live
-browser dashboards for docker agents). List the ones you have in
-`CCBOT_PLUGINS` (comma-separated) and they load at startup; the loader
-tolerates a missing package, so the core always runs standalone. The plugin
-hook contract (i18n, commands, handlers, startup/shutdown, `/status`
-sections/buttons, callback dispatch) is documented in
+</details>
+
+<details>
+<summary><b>Plugins</b> — deployment-specific extensions without touching core</summary>
+
+Heavier integrations live as separate `ccbot.<name>` packages, loaded only
+when named in `CCBOT_PLUGINS` (comma-separated); the public tree ships none
+and always runs standalone. A plugin can contribute i18n strings, bot
+commands, handlers, startup/shutdown hooks, `/status` sections and buttons,
+and its own inline-keyboard callbacks. Drop `src/ccbot/<name>/` into your
+checkout, list `<name>` in `CCBOT_PLUGINS`, done — core never references
+specific plugins. Full contract with docstrings:
 [`src/ccbot/plugins.py`](src/ccbot/plugins.py).
 
-## Writing a plugin
+</details>
 
-Extensions that don't belong in core (a new gateway, a notification bus, …)
-live as self-contained `ccbot.<name>` packages: drop `src/ccbot/<name>/` into
-your checkout, list `<name>` in `CCBOT_PLUGINS`, and the loader picks it up at
-startup. Core never references specific plugins — new plugins are pure
-additions, no core edit needed.
+<details>
+<summary><b>Architecture &amp; internals</b></summary>
 
-A plugin package optionally exposes: `STRINGS` (i18n catalog merges),
-`bot_commands()`, `register_handlers(app)`, `async on_startup(app)`,
-`async on_shutdown()`, `status_sections()` / `status_buttons()` (contribute
-to `/status`), and `callback_dispatch()` (own inline-button prefixes). If it
-has secrets, put them in a `config.py` submodule
-that reads env at import — the plugin loader imports it before the tmux server
-spawns, so tokens get captured and scrubbed cleanly.
-
-Full contract with docstrings: [`src/ccbot/plugins.py`](src/ccbot/plugins.py).
-Missing/broken plugin names are logged and skipped, so a config referencing an
-uninstalled plugin never crashes the bot.
-
-## Hook setup
-
-```bash
-uv run ccbot hook --install    # or just `ccbot hook --install` if on PATH
-```
-
-Or add manually to `~/.claude/settings.json` (or
-`$CLAUDE_CONFIG_DIR/settings.json` if you relocate Claude's config):
-
-```json
-{ "hooks": { "SessionStart": [ { "hooks": [{ "type": "command", "command": "ccbot hook", "timeout": 5 }] } ] } }
-```
-
-This writes window↔session mappings to `$CCBOT_DIR/session_map.json` so the bot
-tracks which Claude session runs in each window, even after `/clear`.
-
-Uninstalling ccbot? Run `uv run ccbot hook --uninstall` **before** deleting the
-checkout — the hook entry records an absolute path into it, and a deleted repo
-would leave every future Claude Code session running a dead hook command.
-
-## Usage
-
-```bash
-uv run ccbot            # or just `ccbot` if installed on PATH
-```
-
-**1 Topic = 1 Window = 1 Session.** Create a topic, send a message, pick a
-directory (or resume an existing session); text/voice then flow to Claude and
-its replies come back to the topic. Close the topic to kill the window. Any
-unrecognized `/command` (e.g. `/clear`, `/compact`, `/review`) is forwarded to
-Claude Code as-is.
-
-The persistent menu keyboard (🖥️ Server / 👾 Agent) attaches automatically to
-each topic's bind confirmation or first reply (Telegram scopes reply keyboards
-per forum topic); `/menu` re-attaches it if dismissed.
-
-## Architecture & internals
-
-The design, module map, topic/binding lifecycle, and per-subsystem rules live
+The design, module map, topic/binding lifecycle and per-subsystem rules live
 in [`CLAUDE.md`](CLAUDE.md) and [`.claude/rules/`](.claude/rules/) —
-`architecture.md` is the orientation map. Every `.py` file also carries a
-module docstring describing its responsibilities.
+`architecture.md` is the orientation map. Every `.py` file carries a module
+docstring describing its responsibilities.
 
-Want ccbot to drive another agent CLI (Gemini CLI, Aider, …)? The runtime
-abstraction makes that one subclass —
+Session tracking is hook-based: `uv run ccbot hook --install` registers a
+`SessionStart` hook that maps tmux windows to agent sessions (uninstall with
+`--uninstall` **before** deleting the checkout). Want ccbot to drive another
+agent CLI (Gemini CLI, Aider, …)? That's one runtime subclass —
 see **[docs/adding-a-runtime.md](docs/adding-a-runtime.md)**.
 
 Tech stack: Python, [python-telegram-bot](https://python-telegram-bot.org/),
-tmux, [uv](https://docs.astral.sh/uv/).
+tmux, [uv](https://docs.astral.sh/uv/). Dev checks: `uv run ruff check`,
+`uv run pyright src/ccbot/`, `uv run pytest -q`.
 
-Dev checks (must pass before committing):
-
-```bash
-uv run ruff check src/ tests/
-uv run pyright src/ccbot/
-uv run pytest -q
-```
+</details>
 
 ## FAQ
 
 **How do I control Claude Code from my phone?**
-Run ccbot on the machine where Claude Code runs (laptop, home server, VPS)
-and add its bot to a Telegram group with Topics enabled. Each topic becomes
-a remote for one session: replies stream in, you answer, press keys, approve
-prompts.
+Run ccbot on the machine where Claude Code runs and add its bot to a Telegram
+group with Topics enabled. Each topic becomes a remote for one session —
+replies stream in, you press keys, approve prompts, and see the live terminal.
 
-**Is this a separate AI agent or a wrapper around the API?**
-Neither. ccbot doesn't call any LLM API and doesn't re-implement an agent —
-it remote-controls the **real Claude Code CLI** in tmux by reading its
-transcript and typing into its pane. Your subscription/plan, config, memory
-and MCP servers apply unchanged, and there's no extra token cost.
+**Does ccbot use the Claude API or my Claude subscription?**
+Your subscription. It drives the real `claude` CLI in tmux, so your plan,
+config, memory and MCP servers apply unchanged and there is **no extra token
+cost** — ccbot never calls an LLM API itself.
 
-**What happens if the bot dies or the server reboots?**
-Nothing is lost: sessions live in tmux/Claude Code, not in the bot. ccbot
-reconnects on restart, each topic remembers its project directory, and any
-session can be resumed from the panel (`⏪ Resume`).
+**Can I run several coding agents in parallel on one project?**
+Yes — each topic is its own tmux window, and the 🌳 button forks a
+`git worktree` + branch into a fresh topic, so parallel agents never collide.
 
-**Can I run several projects at once?**
-Yes — that's the core design. Each Telegram topic binds to its own tmux
-window (or Docker container). There are also worktree agents: fork a repo
-into a `git worktree` and run a parallel agent on a branch, from the chat.
+**How do I approve agent permission prompts remotely?**
+Permission dialogs, plan approvals and option pickers arrive as pane
+screenshots with an `↑ ↓ ⏎ Esc` keyboard — tap to answer. A 👍 reaction on
+the agent's question also confirms it.
 
-**Does it work with voice?**
-Yes, both ways (optional): send voice messages (Deepgram/OpenAI
-transcription) and get spoken replies (Gemini / ElevenLabs / OpenAI TTS).
+**Does it support OpenAI Codex or other CLI agents?**
+Codex is built in: install `codex` and a Codex tab appears in the session
+picker — nothing to configure. Other terminal agents are one runtime subclass
+away ([guide](docs/adding-a-runtime.md)).
+
+**What happens if the bot or the server restarts?**
+Nothing is lost. Sessions live in tmux/Claude Code, not in the bot; ccbot
+reconnects, each topic remembers its directory, and any session resumes from
+the picker.
+
+**How is this different from Happy, Omnara, or Claude Code's own remote control?**
+Those run through a hosted app or cloud relay. ccbot is self-hosted, uses a
+chat app you already have, gives raw keypress control of the real terminal —
+and you can always `tmux attach` back. See [How it compares](#how-it-compares).
 
 **Is my code exposed to a third party?**
 No middleman: traffic flows between your server and Telegram's Bot API under
-your own bot token. But mind the trust boundary inside Telegram itself:
+your own bot token. Mind the trust boundary inside Telegram itself:
 `ALLOWED_USERS` controls who can *drive* the bot, while everything the bot
-posts — agent replies with code, pane screenshots, sent files — is visible to
-**every member of the group**. Keep the group private and invite only people
-you'd let read your terminal.
+posts — replies, pane screenshots, files — is visible to **every member of
+the group**. Keep the group private and invite only people you'd let read
+your terminal.
 
 ## Credits & license
 

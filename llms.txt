@@ -1,0 +1,12 @@
+# ccbot
+
+> Self-hosted Telegram bot that turns one Telegram forum group into a command center for terminal AI coding agents — Claude Code first-class, OpenAI Codex built-in, other CLIs pluggable — running in tmux on your own machine or server. Full terminal control from a phone: live pane screenshots with key presses, interactive prompt approvals (permissions, plans, option pickers), one-tap parallel agents on git worktrees, two-way voice, session resume. No cloud middleman and no API keys: it drives the real CLI under your existing subscription, and you can always tmux attach back into the same session.
+
+## Docs
+
+- [README](https://github.com/MrCryptoHat/ccbot/blob/main/README.md): features, screenshots, comparison with alternatives, FAQ
+- [Setup guide](https://github.com/MrCryptoHat/ccbot/blob/main/SETUP.md): BotFather, enabling group Topics, first session
+- [Adding a runtime](https://github.com/MrCryptoHat/ccbot/blob/main/docs/adding-a-runtime.md): drive another agent CLI (Gemini CLI, Aider, …)
+- [Docker agents](https://github.com/MrCryptoHat/ccbot/blob/main/docs/docker-agents.md): routing topics to containerized agents
+- [Security policy](https://github.com/MrCryptoHat/ccbot/blob/main/SECURITY.md)
+- [Changelog](https://github.com/MrCryptoHat/ccbot/blob/main/CHANGELOG.md)
