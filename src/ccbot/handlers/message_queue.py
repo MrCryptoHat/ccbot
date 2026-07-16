@@ -967,12 +967,12 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                         continue
                     try:
                         audio_data = await synthesize_speech(chunk)
-                        await send_voice(
-                            bot,
-                            chat_id,
-                            audio_data,
-                            **send_kw,  # type: ignore[arg-type]
-                        )
+                        # Bill the budget at SYNTH time, not send time (the
+                        # safety.py contract): the provider has charged for
+                        # this call regardless of whether the Telegram send
+                        # below succeeds. Recording after send left a flood
+                        # RetryAfter re-synth (up to MAX_FLOOD_REQUEUES per
+                        # segment) invisible to the daily ceiling.
                         event = session_manager.voice_budget_record(chunk_chars)
                         logger.info(
                             "TTS billed: chunk=%dch, daily=%d/%d",
@@ -980,10 +980,20 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                             event.chars_used,
                             event.daily_limit,
                         )
+                        # Threshold notices fire before the voice send:
+                        # record() flips its one-shot flags, so if they ran
+                        # after a send that raises RetryAfter they'd be
+                        # swallowed for the rest of the day.
                         if event.crossed_80pct:
                             await _notify_budget_warning(bot, event)
                         if event.crossed_exhausted:
                             await _notify_budget_exhausted(bot)
+                        await send_voice(
+                            bot,
+                            chat_id,
+                            audio_data,
+                            **send_kw,  # type: ignore[arg-type]
+                        )
                     except (RetryAfter, NetworkError):
                         # Incl. BadRequest (a NetworkError subclass) — the
                         # outer clauses sort them out. The point here is to
