@@ -398,3 +398,93 @@ class TestContextThresholds:
         assert monitor._check_context_thresholds("a", 305_000) is not None
         # Different session starts fresh — its own first crossing fires.
         assert monitor._check_context_thresholds("b", 305_000) is not None
+
+
+class TestDuplicateSessionIdAcrossDirs:
+    """`claude --resume <id>` from a DIFFERENT cwd keeps the session id but
+    writes a new JSONL under the new cwd's project dir — the same id then
+    exists in two files. The monitor must follow the LIVE one (newest mtime)
+    and re-track at EOF when the chosen path switches; the old "first found
+    wins" arbitrarily silenced the topic (notes → notes-writer incident,
+    2026-07-16)."""
+
+    @pytest.fixture
+    def monitor(self, tmp_path):
+        return SessionMonitor(
+            projects_path=tmp_path / "projects",
+            state_file=tmp_path / "monitor_state.json",
+        )
+
+    def _two_copies(self, tmp_path, sid="dup-sid"):
+        import os
+
+        root = tmp_path / "projects"
+        old_dir = root / "-home-user-agents-notes"
+        new_dir = root / "-home-user-projects-notes-writer"
+        old_dir.mkdir(parents=True)
+        new_dir.mkdir(parents=True)
+        old = old_dir / f"{sid}.jsonl"
+        new = new_dir / f"{sid}.jsonl"
+        old.write_text('{"type":"user","message":{"content":"old"}}\n')
+        new.write_text('{"type":"user","message":{"content":"old"}}\n' * 2)
+        now = 1_752_650_000
+        os.utime(old, (now - 3600, now - 3600))
+        os.utime(new, (now, now))
+        return old, new
+
+    async def test_scan_prefers_newest_mtime(self, monitor, tmp_path) -> None:
+        old, new = self._two_copies(tmp_path)
+        sessions = await monitor.scan_projects()
+        by_id = {s.session_id: s.file_path for s in sessions}
+        assert by_id["dup-sid"] == new
+
+    async def test_scan_prefers_newest_regardless_of_dir_order(
+        self, monitor, tmp_path
+    ) -> None:
+        # Same layout but the NEWER file sorts first alphabetically — the
+        # winner must still be chosen by mtime, not directory iteration order.
+        import os
+
+        root = tmp_path / "projects"
+        a = root / "-a-first"
+        b = root / "-b-second"
+        a.mkdir(parents=True)
+        b.mkdir(parents=True)
+        first = a / "dup2.jsonl"
+        second = b / "dup2.jsonl"
+        first.write_text("{}\n")
+        second.write_text("{}\n")
+        now = 1_752_650_000
+        os.utime(first, (now, now))
+        os.utime(second, (now - 60, now - 60))
+        sessions = await monitor.scan_projects()
+        by_id = {s.session_id: s.file_path for s in sessions}
+        assert by_id["dup2"] == first
+
+    async def test_path_switch_retracks_at_eof(self, monitor, tmp_path) -> None:
+        from ccbot.runtimes import CLAUDE
+
+        old, new = self._two_copies(tmp_path)
+        # Track the OLD file first (as the pre-fix state would have).
+        msgs = await monitor._process_transcript(CLAUDE, "dup-sid", old)
+        assert msgs == []  # first track = EOF start
+        tracked = monitor.state.get_session("dup-sid")
+        assert tracked is not None and tracked.file_path == str(old)
+
+        # The scan now points at the NEW file → re-track at its EOF, no
+        # reflood of the copied history, offset valid for the new file.
+        msgs = await monitor._process_transcript(CLAUDE, "dup-sid", new)
+        assert msgs == []
+        tracked = monitor.state.get_session("dup-sid")
+        assert tracked is not None
+        assert tracked.file_path == str(new)
+        assert tracked.last_byte_offset == new.stat().st_size
+
+        # An append to the new file after the switch IS delivered.
+        with open(new, "a") as f:
+            f.write(
+                '{"type":"assistant","message":{"content":'
+                '[{"type":"text","text":"reply after switch"}]}}\n'
+            )
+        msgs = await monitor._process_transcript(CLAUDE, "dup-sid", new)
+        assert any("reply after switch" in m.text for m in msgs)

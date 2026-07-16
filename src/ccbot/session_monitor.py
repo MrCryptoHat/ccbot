@@ -147,18 +147,35 @@ class SessionMonitor:
         back to a phantom path and the session looks "not active" even
         though it's clearly running and listed in session_map).
         """
-        sessions: list[SessionInfo] = []
-        seen_ids: set[str] = set()  # first root wins if the same session_id
-        # somehow appears under two roots (shouldn't happen but guard anyway).
+        # The same session_id CAN legitimately appear in several files:
+        # `claude --resume <id>` from a DIFFERENT cwd keeps the id but writes a
+        # new JSONL under the new cwd's project dir (e.g. a session started in
+        # ~/agents/notes continued in ~/projects/notes-writer). Newest mtime
+        # wins — that's the live continuation; picking the stale copy silences
+        # the topic entirely (the bug this replaced "first wins" caused).
+        best: dict[str, SessionInfo] = {}
         for projects_root in self._project_roots():
-            await self._scan_one_root(projects_root, sessions, seen_ids)
-        return sessions
+            await self._scan_one_root(projects_root, best)
+        return list(best.values())
+
+    @staticmethod
+    def _offer_session(best: dict[str, SessionInfo], candidate: SessionInfo) -> None:
+        """Keep the newest-mtime file per session_id (collisions are rare, so
+        the extra stat runs only when a duplicate id is actually seen)."""
+        current = best.get(candidate.session_id)
+        if current is None:
+            best[candidate.session_id] = candidate
+            return
+        try:
+            if candidate.file_path.stat().st_mtime > current.file_path.stat().st_mtime:
+                best[candidate.session_id] = candidate
+        except OSError:
+            pass  # unstatable candidate loses
 
     async def _scan_one_root(
         self,
         projects_root: Path,
-        sessions: list[SessionInfo],
-        seen_ids: set[str],
+        best: dict[str, SessionInfo],
     ) -> None:
         for project_dir in projects_root.iterdir():
             if not project_dir.is_dir():
@@ -180,17 +197,15 @@ class SessionMonitor:
                         if not session_id or not full_path:
                             continue
                         indexed_ids.add(session_id)
-                        if session_id in seen_ids:
-                            continue
                         file_path = Path(full_path)
                         if file_path.exists():
-                            sessions.append(
+                            self._offer_session(
+                                best,
                                 SessionInfo(
                                     session_id=session_id,
                                     file_path=file_path,
-                                )
+                                ),
                             )
-                            seen_ids.add(session_id)
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug(f"Error reading index {index_file}: {e}")
 
@@ -198,15 +213,15 @@ class SessionMonitor:
             try:
                 for jsonl_file in project_dir.glob("*.jsonl"):
                     session_id = jsonl_file.stem
-                    if session_id in indexed_ids or session_id in seen_ids:
+                    if session_id in indexed_ids:
                         continue
-                    sessions.append(
+                    self._offer_session(
+                        best,
                         SessionInfo(
                             session_id=session_id,
                             file_path=jsonl_file,
-                        )
+                        ),
                     )
-                    seen_ids.add(session_id)
             except OSError as e:
                 logger.debug(f"Error scanning jsonl files in {project_dir}: {e}")
 
@@ -412,6 +427,32 @@ class SessionMonitor:
                     session_id,
                     file_size,
                 )
+                return new_messages
+
+            if tracked.file_path != str(file_path):
+                # The session moved to a different transcript file — a
+                # cross-directory `--resume` keeps the session id but writes
+                # under the new cwd's project dir. The old byte offset is
+                # meaningless against the new file (reading with it would
+                # either reflood the copied history or start mid-line), so
+                # re-track at the new file's EOF; appends flow from next tick.
+                try:
+                    st = file_path.stat()
+                    new_size, new_mtime = st.st_size, st.st_mtime
+                except OSError:
+                    return new_messages
+                logger.info(
+                    "Session %s switched transcript %s -> %s — re-tracking at "
+                    "EOF (%d bytes)",
+                    session_id,
+                    tracked.file_path,
+                    file_path,
+                    new_size,
+                )
+                tracked.file_path = str(file_path)
+                tracked.last_byte_offset = new_size
+                self.state.update_session(tracked)
+                self._file_mtimes[session_id] = new_mtime
                 return new_messages
 
             try:
