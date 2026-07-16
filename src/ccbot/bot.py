@@ -98,7 +98,7 @@ from .handlers.media import (
     photo_handler,
     voice_handler,
 )
-from .rich_message import flatten_rich_message
+from .rich_message import flatten_rich_message, is_rich_safe
 from .handlers.message_queue import (
     enqueue_content_message,
     get_message_queue,
@@ -1089,7 +1089,8 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
         # [i/N] pages — carry the ORIGINAL markdown alongside; the queue
         # worker tries one native sendRichMessage and falls back to the
         # legacy parts on any failure. Plain short replies keep the proven
-        # MarkdownV2 path untouched.
+        # MarkdownV2 path untouched, as do texts is_rich_safe rejects
+        # (Telegram accepts but MANGLES those — no error to fall back on).
         rich_markdown = ""
         if (
             config.rich_messages_enabled
@@ -1097,6 +1098,7 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             and msg.role == "assistant"
             and len(msg.text) <= RICH_MESSAGE_MAX_CHARS
             and (table_texts or code_files or len(parts) > 1)
+            and is_rich_safe(msg.text)
         ):
             rich_markdown = msg.text
 

@@ -3,9 +3,10 @@
 Pins the markdown the agent receives for each block kind, and the PTB seam:
 an unknown Message field (rich_message) must surface in api_kwargs so the
 rich_message_filter can catch what filters.TEXT never will (text is None).
+Plus the outbound is_rich_safe gate (what may go through sendRichMessage).
 """
 
-from ccbot.rich_message import flatten_rich_message
+from ccbot.rich_message import flatten_rich_message, is_rich_safe
 
 
 def _msg(*blocks) -> dict:
@@ -148,6 +149,40 @@ class TestRobustness:
         rich = _msg({"type": "paragraph", "text": node})
         # Must not raise; content beyond the depth cap may be dropped.
         flatten_rich_message(rich)
+
+
+class TestIsRichSafe:
+    """Outbound gate: Telegram's rich parser desyncs on emphasis markers
+    inside inline code spans (accepted-but-mangled, so the send-failure
+    fallback never fires — the gate is the only protection)."""
+
+    def test_plain_prose_is_safe(self):
+        assert is_rich_safe("Just **bold** and *italic* prose with `code`.")
+
+    def test_star_inside_inline_code_is_unsafe(self):
+        # The live-regression SHAPE (text rebuilt synthetically): * inside the
+        # span pairs as italic across the backtick, shifting every later code
+        # span by one.
+        text = (
+            "**example-app: 443 файла `data/cache/*.json` + "
+            "изменённая `state.db` не в git.** Надо решить: коммитить "
+            "`data/` в репо, завести бэкап-поток в `_backups/`."
+        )
+        assert not is_rich_safe(text)
+
+    def test_underscore_inside_inline_code_is_unsafe(self):
+        assert not is_rich_safe("см. каталог `_backups/` на диске")
+
+    def test_emphasis_only_in_fenced_block_is_safe(self):
+        text = "Пример:\n```python\nx = a * b\nname_with_underscore = 1\n```\nГотово."
+        assert is_rich_safe(text)
+
+    def test_inline_code_without_emphasis_chars_is_safe(self):
+        assert is_rich_safe("запусти `uv run ruff check` и `pytest -q`")
+
+    def test_risky_span_outside_fence_still_caught(self):
+        text = "```\nsafe * here\n```\nа вот `glob *.json` снаружи"
+        assert not is_rich_safe(text)
 
 
 class TestPtbApiKwargsSeam:

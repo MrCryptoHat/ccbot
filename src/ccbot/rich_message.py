@@ -13,10 +13,15 @@ Defensive by design: the shapes come from a community spec, not yet from PTB —
 unknown block/text nodes degrade to their concatenated inner strings, never an
 exception. Media blocks (photo/video/…) inside a rich message can't be
 downloaded here, so they flatten to a ``(photo: caption)`` stub.
+
+Also hosts :func:`is_rich_safe` — the outbound gate deciding whether a given
+markdown text may go through ``sendRichMessage`` at all (Telegram's own parser
+mangles some constructs; details on the function).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Spec cap is 16; leave headroom but bound recursion against hostile payloads.
@@ -188,6 +193,27 @@ def _block(block: Any, out: list[str], depth: int = 0) -> None:
             out.append(s)
         for sub in block.get("blocks") or []:
             _block(sub, out, depth + 1)
+
+
+# Outbound safety gate. Telegram's rich-markdown parser is NOT CommonMark:
+# an emphasis marker (* or _) INSIDE an inline code span is taken as an
+# emphasis delimiter, which consumes one backtick — every later code span
+# then pairs shifted by one, turning whole prose stretches into monospace
+# and merging words where span-edge spaces get trimmed (verified live on a
+# `*.json` glob inside a code span). Fenced blocks are parsed at block level
+# and are fine, so they're stripped before the scan.
+_FENCED_BLOCK_RE = re.compile(r"^[ \t]*```.*?^[ \t]*```[ \t]*$", re.M | re.S)
+_RISKY_INLINE_CODE_RE = re.compile(r"`[^`\n]*[*_][^`\n]*`")
+
+
+def is_rich_safe(markdown: str) -> bool:
+    """True when *markdown* has no construct known to desync Telegram's parser.
+
+    False → the caller must keep the legacy MarkdownV2 path (which escapes
+    everything itself and renders these texts correctly).
+    """
+    prose = _FENCED_BLOCK_RE.sub("", markdown)
+    return _RISKY_INLINE_CODE_RE.search(prose) is None
 
 
 def flatten_rich_message(rich: Any) -> str:
