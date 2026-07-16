@@ -163,6 +163,27 @@ class TestExtractInteractiveContent:
         assert result.name == "ExitPlanMode"
         assert "Claude has written up a plan" in result.content
 
+    def test_exit_plan_mode_v213x_render(self):
+        """v2.1.3x: `ctrl+g` (plus, not dash) in the footer. The drift used to
+        demote this widget to the generic PermissionPrompt match — plan-text
+        surfacing keys on the ExitPlanMode name, so the name must survive."""
+        pane = (
+            "   Claude has written up a plan and is ready to execute. Would you like to\n"
+            "   proceed?\n"
+            "\n"
+            "   ❯ 1. Yes, and use auto mode\n"
+            "     2. Yes, manually approve edits\n"
+            "     3. No, refine with Ultraplan on Claude Code on the web\n"
+            "     4. Tell Claude what to change\n"
+            "\n"
+            "   ctrl+g to edit in Vim  ·\n"
+            "                         ~/.claude/plans/plan-a-tiny-refactor.md\n"
+        )
+        result = extract_interactive_content(pane)
+        assert result is not None
+        assert result.name == "ExitPlanMode"
+        assert "ctrl+g to edit in" in result.content
+
     def test_ask_user_multi_tab(self, sample_pane_ask_user_multi_tab: str):
         result = extract_interactive_content(sample_pane_ask_user_multi_tab)
         assert result is not None

@@ -275,7 +275,7 @@ class TestSurfaceAskQuestionText:
         assert "Type something" not in sent_text
         assert "Напиши два абзаца" not in sent_text
         # Bookkeeping recorded so the post-answer copies can be de-duped.
-        assert iui._pending_auq["sess-abc"] == (777, "Какой чай тебе ближе всего?")
+        assert iui._pending_auq["sess-abc"] == ((777,), "Какой чай тебе ближе всего?")
         assert iui._auq_text_sent[(1, 42)] == 777
 
     @pytest.mark.asyncio
@@ -286,6 +286,81 @@ class TestSurfaceAskQuestionText:
         assert "минимальный заказ — 10 шт" in sent_text  # the question text
         assert "Берём 10 шт" not in sent_text  # option label, not surfaced
         assert iui._pending_auq["sess-abc"][1].startswith("У варианта 2")
+
+    @pytest.mark.asyncio
+    async def test_long_prose_splits_instead_of_bailing(self):
+        """A >4096-char preamble used to surface NOTHING (the old length bail) —
+        exactly the long-plan/long-explanation case where pre-answer reading
+        matters most. Now it splits; all message ids are recorded so the
+        post-answer upgrade can clean up the extras."""
+        from ccbot.handlers import interactive_ui as iui
+
+        prose_lines = "\n".join(
+            "  строка длинной преамбулы номер %03d — много подробностей тут" % i
+            for i in range(100)
+        )
+        pane = (
+            "● Начало длинного объяснения перед вопросом.\n"
+            f"{prose_lines}\n"
+            "────────────────────────────────────────────────────────────────────────────────\n"
+            " ☐ Выбор\n"
+            "\n"
+            "Какой вариант берём?\n"
+            "\n"
+            "❯ 1. Первый\n"
+            "  2. Второй\n"
+            "  3. Type something.\n"
+            "\n"
+            "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+        )
+        bot = AsyncMock()
+        ids = iter(range(700, 720))
+        sends: list[str] = []
+
+        async def fake_send(bot_, chat_id_, text, **kw):
+            sends.append(text)
+            m = MagicMock()
+            m.message_id = next(ids)
+            return m
+
+        with (
+            patch.object(iui, "session_manager") as mock_sm,
+            patch.object(iui, "send_with_fallback", AsyncMock(side_effect=fake_send)),
+            patch.object(iui, "note_topic_message"),
+        ):
+            mock_sm.capture_pane = AsyncMock(return_value=pane)
+            sess = MagicMock()
+            sess.session_id = "sess-long"
+            mock_sm.resolve_session_for_window = AsyncMock(return_value=sess)
+            await _surface_ask_question_text(
+                bot, chat_id=100, window_id="@5", ikey=(1, 42), thread_kwargs={}
+            )
+        assert len(sends) > 1  # split, not dropped
+        assert "Какой вариант берём?" in sends[-1]
+        msg_ids, question = iui._pending_auq["sess-long"]
+        assert len(msg_ids) == len(sends)
+        assert msg_ids[0] == 700
+        assert question == "Какой вариант берём?"
+
+    @pytest.mark.asyncio
+    async def test_home_paths_relativized(self):
+        """Absolute home paths lifted off the pane read as clutter (and leak the
+        operator's username in screenshots) — rewritten to ``~``."""
+        from pathlib import Path
+
+        home = str(Path.home())
+        pane = (
+            f"● Файл {home}/projects/demo/app.py готов к правке.\n"
+            "────────────────────────────────────────────────────────────────────────────────\n"
+            " ☐ Выбор\n"
+            "Правим?\n"
+            "❯ 1. Да\n"
+            "  2. Нет\n"
+            "Enter to select · Esc to cancel\n"
+        )
+        sent_text = await self._surface(pane)
+        assert "~/projects/demo/app.py" in sent_text
+        assert home not in sent_text
 
     @pytest.mark.asyncio
     async def test_parse_miss_surfaces_nothing(self):
@@ -313,7 +388,7 @@ class TestConsumePostAnswerCopies:
     async def test_prose_upgrade_keeps_question_and_does_not_evict(self):
         from ccbot.handlers import interactive_ui as iui
 
-        iui._pending_auq["s1"] = (501, "Какой вариант берём?")
+        iui._pending_auq["s1"] = ((501,), "Какой вариант берём?")
         bot = AsyncMock()
         with (
             patch.object(iui, "session_manager") as mock_sm,
@@ -334,6 +409,30 @@ class TestConsumePostAnswerCopies:
         assert "s1" in iui._pending_auq
 
     @pytest.mark.asyncio
+    async def test_prose_upgrade_deletes_extra_surfaced_messages(self):
+        """A multi-message surface (long preamble) upgrades the FIRST message in
+        place and drops the extras before the clean re-delivery sends its own
+        follow-ups — otherwise the old chunks would sit as duplicates."""
+        from ccbot.handlers import interactive_ui as iui
+
+        iui._pending_auq["s1"] = ((501, 502, 503), "Вопрос?")
+        bot = AsyncMock()
+        with (
+            patch.object(iui, "session_manager") as mock_sm,
+            patch.object(iui, "safe_edit", AsyncMock()) as mock_edit,
+            patch.object(iui, "_safe_delete_message", AsyncMock()) as mock_del,
+        ):
+            mock_sm.resolve_chat_id.return_value = 100
+            ok = await consume_pending_prose_upgrade(
+                bot, "s1", user_id=1, thread_id=None, jsonl_text="Чистая проза."
+            )
+        assert ok is True
+        deleted = {c.args[2] for c in mock_del.call_args_list}
+        assert deleted == {502, 503}
+        # The first message got the in-place upgrade.
+        assert mock_edit.call_args.kwargs.get("message_id") == 501
+
+    @pytest.mark.asyncio
     async def test_prose_upgrade_no_pending_returns_false(self):
         bot = AsyncMock()
         ok = await consume_pending_prose_upgrade(
@@ -350,7 +449,7 @@ class TestConsumePostAnswerCopies:
         from ccbot.handlers import interactive_ui as iui
         from ccbot.handlers import message_queue as mq
 
-        iui._pending_auq["s1"] = (501, "Какой объём выполнить?")
+        iui._pending_auq["s1"] = ((501,), "Какой объём выполнить?")
         jsonl_text = (
             "Вот сравнение по весу бандлов:\n\n"
             "| Снять из layout | gzip |\n"
@@ -397,7 +496,7 @@ class TestConsumePostAnswerCopies:
         (with the question) is sent as follow-up messages."""
         from ccbot.handlers import interactive_ui as iui
 
-        iui._pending_auq["s1"] = (501, "Финальный вопрос?")
+        iui._pending_auq["s1"] = ((501,), "Финальный вопрос?")
         jsonl_text = "А" * 5000  # no table; just longer than 4096
         sent = MagicMock()
         sent.message_id = 888
@@ -425,7 +524,7 @@ class TestConsumePostAnswerCopies:
     def test_tool_use_consume_evicts_and_returns_true_then_false(self):
         from ccbot.handlers import interactive_ui as iui
 
-        iui._pending_auq["s1"] = (501, "Q?")
+        iui._pending_auq["s1"] = ((501,), "Q?")
         assert consume_pending_ask_tool_use("s1") is True
         assert "s1" not in iui._pending_auq
         # Second time (or parse-miss case): nothing to suppress.
@@ -436,8 +535,118 @@ class TestConsumePostAnswerCopies:
         from ccbot.handlers.interactive_ui import _PENDING_AUQ_CAP, _record_pending_auq
 
         for i in range(_PENDING_AUQ_CAP + 10):
-            _record_pending_auq(f"s{i}", i, f"q{i}")
+            _record_pending_auq(f"s{i}", (i,), f"q{i}")
         assert len(iui._pending_auq) == _PENDING_AUQ_CAP
         # Oldest evicted, newest kept.
         assert "s0" not in iui._pending_auq
         assert f"s{_PENDING_AUQ_CAP + 9}" in iui._pending_auq
+
+
+# The ExitPlanMode widget footer as v2.1.3x renders it (real capture, trimmed).
+_PLAN_WIDGET_PANE = """\
+   Claude has written up a plan and is ready to execute. Would you like to
+   proceed?
+
+   ❯ 1. Yes, and use auto mode
+     2. Yes, manually approve edits
+     4. Tell Claude what to change
+
+   ctrl+g to edit in Vim  ·
+                         ~/.claude/plans/test-plan-quiet-otter.md
+"""
+
+
+@pytest.fixture
+def _clear_plan_state():
+    """Wipe the ExitPlanMode surface bookkeeping before/after each test."""
+    from ccbot.handlers.interactive_ui import _pending_plan_sessions, _plan_text_sent
+
+    _plan_text_sent.clear()
+    _pending_plan_sessions.clear()
+    yield
+    _plan_text_sent.clear()
+    _pending_plan_sessions.clear()
+
+
+@pytest.mark.usefixtures("_clear_plan_state")
+class TestSurfacePlanText:
+    """Before approval, the plan is surfaced from the plan FILE (whose basename
+    the widget footer shows); the JSONL copy is held until the user answers and
+    is then de-duplicated via consume_pending_plan_text."""
+
+    async def _surface(self, pane: str, plans_dir, window_id: str = "@5"):
+        """Run _surface_plan_text against ``pane``; return list of sent texts."""
+        from ccbot.handlers import interactive_ui as iui
+        from ccbot.handlers.interactive_ui import _surface_plan_text
+
+        bot = AsyncMock()
+        sent = MagicMock()
+        sent.message_id = 555
+        with (
+            patch.object(iui, "session_manager") as mock_sm,
+            patch.object(
+                iui, "send_with_fallback", AsyncMock(return_value=sent)
+            ) as mock_send,
+            patch.object(iui, "note_topic_message"),
+        ):
+            mock_sm.plans_dir_for_binding.return_value = plans_dir
+            sess = MagicMock()
+            sess.session_id = "plan-sess"
+            mock_sm.resolve_session_for_window = AsyncMock(return_value=sess)
+            await _surface_plan_text(
+                bot,
+                chat_id=100,
+                window_id=window_id,
+                ikey=(1, 42),
+                thread_kwargs={},
+                pane_plain=pane,
+            )
+            return [c.args[2] for c in mock_send.call_args_list]
+
+    @pytest.mark.asyncio
+    async def test_plan_file_content_surfaced(self, tmp_path):
+        from ccbot.handlers import interactive_ui as iui
+
+        (tmp_path / "test-plan-quiet-otter.md").write_text(
+            "# Plan: split auth.py\n\n## Context\n\nOne module per concern.",
+            encoding="utf-8",
+        )
+        texts = await self._surface(_PLAN_WIDGET_PANE, tmp_path)
+        assert len(texts) == 1
+        assert "split auth.py" in texts[0]
+        assert "One module per concern." in texts[0]
+        # Bookkeeping: post-answer JSONL copy will be skipped, once.
+        assert iui._plan_text_sent[(1, 42)] == 555
+        from ccbot.handlers.interactive_ui import consume_pending_plan_text
+
+        assert consume_pending_plan_text("plan-sess") is True
+        assert consume_pending_plan_text("plan-sess") is False
+
+    @pytest.mark.asyncio
+    async def test_no_footer_path_fails_open(self, tmp_path):
+        from ccbot.handlers import interactive_ui as iui
+
+        texts = await self._surface("Would you like to proceed?\n", tmp_path)
+        assert texts == []
+        # Recorded as "tried, nothing" so the 1 s poll doesn't retry every tick.
+        assert iui._plan_text_sent[(1, 42)] == 0
+        assert iui._pending_plan_sessions == {}
+
+    @pytest.mark.asyncio
+    async def test_missing_plan_file_fails_open(self, tmp_path):
+        from ccbot.handlers import interactive_ui as iui
+
+        # Footer names a file that doesn't exist (yet) → photo-only fallback.
+        texts = await self._surface(_PLAN_WIDGET_PANE, tmp_path)
+        assert texts == []
+        assert iui._plan_text_sent[(1, 42)] == 0
+
+    @pytest.mark.asyncio
+    async def test_long_plan_splits_across_messages(self, tmp_path):
+        (tmp_path / "test-plan-quiet-otter.md").write_text(
+            "# Plan\n\n" + ("шаг плана — подробное описание строки\n" * 300),
+            encoding="utf-8",
+        )
+        texts = await self._surface(_PLAN_WIDGET_PANE, tmp_path)
+        assert len(texts) > 1  # not dropped, not truncated
+        assert sum("шаг плана" in t for t in texts) >= 2

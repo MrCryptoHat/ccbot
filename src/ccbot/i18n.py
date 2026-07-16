@@ -672,6 +672,10 @@ STRINGS.update(
             "ru": "Одноразовый код (введи где попросят):\n`{code}`",
             "en": "One-time code (enter it where prompted):\n`{code}`",
         },
+        "iui.plan_header": {
+            "ru": "📋 *План на одобрение* — прочитай и ответь кнопками под фото ниже:",
+            "en": "📋 *Plan awaiting approval* — read it, then answer with the keys under the photo below:",
+        },
         # -- lboard --
         # -- links --
         "links.header": {"ru": "🔗 Ссылки", "en": "🔗 Links"},

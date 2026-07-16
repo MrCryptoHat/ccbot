@@ -72,6 +72,9 @@ class NewMessage:
     # True for the assistant text block that precedes an AskUserQuestion call —
     # see ParsedEntry.precedes_interactive_prompt and consume_pending_prose_upgrade.
     precedes_interactive_prompt: bool = False
+    # True for the ExitPlanMode plan text — see ParsedEntry.is_plan_text and
+    # consume_pending_plan_text.
+    is_plan_text: bool = False
 
 
 class SessionMonitor:
@@ -387,6 +390,7 @@ class SessionMonitor:
                     image_data=entry.image_data,
                     entry_ts_iso=entry.timestamp,
                     precedes_interactive_prompt=entry.precedes_interactive_prompt,
+                    is_plan_text=entry.is_plan_text,
                 )
             )
         return msgs

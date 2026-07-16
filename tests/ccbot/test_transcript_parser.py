@@ -392,7 +392,11 @@ class TestParseEntries:
         tool_uses = [e for e in result if e.content_type == "tool_use"]
         assert len(texts) == 1
         assert "Step 1: do X" in texts[0].text
+        # Flagged so handle_new_message can skip it when the plan was already
+        # surfaced pre-approval from the plan file (consume_pending_plan_text).
+        assert texts[0].is_plan_text is True
         assert len(tool_uses) >= 1
+        assert tool_uses[0].is_plan_text is False
 
     def test_edit_tool_diff_stats(
         self,

@@ -67,6 +67,12 @@ _META_BULLET_RE = re.compile(
 # in the dash-prefix sense — we only treat lines that are mostly dashes here).
 _DASH_LINE_RE = re.compile(r"^─{20,}")
 
+# A line that is ONLY dash-family decoration (widget border, pane separator,
+# a rendered markdown hr).  Filtered out of the surfaced prose/question text:
+# collected verbatim it reaches Telegram as a full-width wall of dashes that
+# wraps into several ugly lines on a phone.
+_HR_LINE_RE = re.compile(r"^[─╌━—–-]{10,}$")
+
 
 # The widget footer (single-question form).  Older builds: just "Enter to
 # select"; current: "Enter to select · ↑/↓ to navigate · Esc to cancel".
@@ -128,6 +134,12 @@ def _extract_prose(lines: list[str], boundary_idx: int) -> str:
         # Tool-result output, or the user's own prompt → no prose here.
         if stripped.startswith("⎿") or stripped.startswith("❯"):
             return ""
+        # Pure dash decoration (a border of an older widget, a rendered hr) —
+        # skip it rather than collect: in Telegram it renders as a giant
+        # wrapped wall of dashes.
+        if _HR_LINE_RE.match(line.strip()):
+            i -= 1
+            continue
         if stripped[:1] in _BULLET_CHARS:
             body = stripped[1:].strip()
             if not body or _META_BULLET_RE.match(body):
@@ -137,9 +149,12 @@ def _extract_prose(lines: list[str], boundary_idx: int) -> str:
         # A continuation line of the prose block (or a blank inside it).
         collected.append(_strip_continuation_indent(line) if line.strip() else "")
         i -= 1
-        if len(collected) > 80:
+        if len(collected) > 300:
             # Walked a long way without finding the opening bullet — bail rather
-            # than glue unrelated transcript into the "prose".
+            # than glue unrelated transcript into the "prose". (Generous cap:
+            # a long preamble is exactly what pre-answer surfacing is for — the
+            # capture depth (400 lines of scrollback) is the real bound; this
+            # only guards against a top-truncated block with no bullet at all.)
             return ""
     return ""
 
@@ -219,7 +234,7 @@ def parse_ask_question(pane_text: str) -> ParsedAskQuestion | None:
             first_opt_pos = pos
             break
         s = line.strip()
-        if s:
+        if s and not _HR_LINE_RE.match(s):  # drop dash-only separator rows
             question_parts.append(s)
     question = " ".join(question_parts).strip()
 

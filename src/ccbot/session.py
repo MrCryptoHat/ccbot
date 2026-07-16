@@ -1402,6 +1402,17 @@ class SessionManager:
                 return agent.claude_home_host_path / "projects"
         return config.claude_projects_path
 
+    def plans_dir_for_binding(self, binding_value: str) -> Path:
+        """Where this binding's Claude Code writes its plan-mode files.
+
+        Sibling of the ``projects`` dir: host tmux → ``~/.claude/plans`` (or the
+        custom CLAUDE_CONFIG_DIR), docker → the agent's bind-mounted
+        claude-home. Used by plan-text surfacing to resolve the basename parsed
+        from the ExitPlanMode widget footer against a KNOWN directory — the
+        pane never supplies a usable path (see handlers/plan_parser.py).
+        """
+        return self._projects_root_for_binding(binding_value).parent / "plans"
+
     def _build_session_file_path(
         self,
         session_id: str,

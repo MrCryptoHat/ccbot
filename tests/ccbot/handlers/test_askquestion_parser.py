@@ -152,6 +152,44 @@ Enter to select · Esc to cancel
             parse_ask_question("Would you like to proceed?\n  ctrl-g to edit\n") is None
         )
 
+    def test_dash_rows_dropped_from_prose(self):
+        # A dash-only decoration line inside the prose walk (an older widget's
+        # border, a rendered markdown hr) must not reach the surfaced text —
+        # in Telegram it renders as a giant wrapped wall of dashes.
+        pane = """\
+● Вот два варианта миграции.
+
+  ──────────────────────────────
+  Первый проще, второй быстрее.
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Выбор
+Какой берём?
+❯ 1. Первый
+  2. Второй
+Enter to select · Esc to cancel
+"""
+        parsed = parse_ask_question(pane)
+        assert parsed is not None
+        assert "─" not in parsed.prose
+        assert "Вот два варианта миграции." in parsed.prose
+        assert "Первый проще, второй быстрее." in parsed.prose
+
+    def test_dash_rows_dropped_from_question(self):
+        # Separator rows between the header line and the first option must not
+        # be glued into the question text.
+        pane = """\
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Выбор
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+Какой берём?
+❯ 1. Первый
+  2. Второй
+Enter to select · Esc to cancel
+"""
+        parsed = parse_ask_question(pane)
+        assert parsed is not None
+        assert parsed.question == "Какой берём?"
+
     def test_question_without_header_line(self):
         # Some renders may not show the "☐" tab line; if there's no tab anchor
         # we currently can't locate the widget → None (fails open, photo shows it).

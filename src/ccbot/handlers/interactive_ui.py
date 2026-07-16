@@ -18,6 +18,12 @@ Provides:
     place to the clean markdown prose (`consume_pending_prose_upgrade`) and
     skipping the `**AskUserQuestion**(…)` tool_use message
     (`consume_pending_ask_tool_use`) — see `_surface_ask_question_text`.
+  - For ExitPlanMode: surfacing the FULL plan text *before* approval by reading
+    the plan file whose basename the widget footer shows (Claude Code writes
+    `<claude-home>/plans/<slug>.md` before asking; the JSONL copy is held until
+    the user answers, and the screenshot crops all but the plan's tail), then
+    skipping that JSONL copy after the answer (`consume_pending_plan_text`) —
+    see `_surface_plan_text`.
 
 State dicts are keyed by (user_id, thread_id_or_0) for Telegram topic support.
 """
@@ -27,6 +33,7 @@ import io
 import logging
 import re
 import time
+from pathlib import Path
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import BadRequest
@@ -44,6 +51,7 @@ from ..terminal_parser import (
 )
 from . import pane_cache
 from .askquestion_parser import parse_ask_question
+from .plan_parser import extract_plan_file_name
 from .callback_data import (
     CB_ASK_DOWN,
     CB_ASK_ENTER,
@@ -89,9 +97,12 @@ _interactive_locks: dict[tuple[int, int], asyncio.Lock] = {}
 # value is the surfaced message_id, or 0 when nothing was parseable.
 _auq_text_sent: dict[tuple[int, int], int] = {}
 
-# session_id -> (surfaced_msg_id, question_text). Set by _surface_ask_question_text.
-# After the user answers, the held turn lands in JSONL and this drives two
-# de-duplications in handle_new_message:
+# session_id -> (surfaced_msg_ids, question_text). Set by
+# _surface_ask_question_text; msg_ids is a tuple because a long surfaced text
+# splits across several messages (the first is the upgrade-in-place target,
+# the rest are deleted before the clean re-delivery). After the user answers,
+# the held turn lands in JSONL and this drives two de-duplications in
+# handle_new_message:
 #   • the assistant prose text block (precedes_interactive_prompt) → edit the
 #     surfaced message in place to the clean markdown prose + the question
 #     (consume_pending_prose_upgrade) instead of sending a duplicate;
@@ -100,8 +111,25 @@ _auq_text_sent: dict[tuple[int, int], int] = {}
 # Tiny, in-memory; a restart drops it (worst case: the pane render isn't upgraded
 # and the post-answer copies aren't suppressed). Soft-capped against abandoned
 # (never-answered) prompts.
-_pending_auq: dict[str, tuple[int, str]] = {}
+_pending_auq: dict[str, tuple[tuple[int, ...], str]] = {}
 _PENDING_AUQ_CAP = 100
+
+# ExitPlanMode only — Claude Code writes the proposed plan to
+# `<claude-home>/plans/<slug>.md` and shows that path in the widget footer,
+# while the JSONL copy (the ExitPlanMode tool_use input) is held until the
+# user answers. Pre-approval the file is the only full-text source: read it
+# and post the plan as text BEFORE the photo, so the user can actually read
+# what they're approving (the screenshot crops all but the tail). Done once
+# per widget appearance (cleared by clear_interactive_msg); the value is the
+# first surfaced message_id, or 0 when nothing was readable.
+_plan_text_sent: dict[tuple[int, int], int] = {}
+
+# Sessions whose plan text was surfaced from the file. After the answer the
+# held turn lands in JSONL and transcript_parser re-emits the plan as a text
+# entry (is_plan_text) — handle_new_message consumes this to skip the
+# would-be duplicate. Same in-memory/fail-open semantics as _pending_auq.
+_pending_plan_sessions: dict[str, bool] = {}
+_PENDING_PLAN_CAP = 100
 
 # LoginPrompt only — the `/login` OAuth URL lives in the pane (TUI-only, never
 # in JSONL, like AskUserQuestion). We post it once per appearance as a clickable
@@ -111,10 +139,45 @@ _PENDING_AUQ_CAP = 100
 _login_url_sent: dict[tuple[int, int], int] = {}
 
 
-def _record_pending_auq(session_id: str, msg_id: int, question: str) -> None:
+def _record_pending_auq(
+    session_id: str, msg_ids: tuple[int, ...], question: str
+) -> None:
     if len(_pending_auq) >= _PENDING_AUQ_CAP and session_id not in _pending_auq:
         _pending_auq.pop(next(iter(_pending_auq)), None)
-    _pending_auq[session_id] = (msg_id, question)
+    _pending_auq[session_id] = (msg_ids, question)
+
+
+def _record_pending_plan(session_id: str) -> None:
+    if (
+        len(_pending_plan_sessions) >= _PENDING_PLAN_CAP
+        and session_id not in _pending_plan_sessions
+    ):
+        _pending_plan_sessions.pop(next(iter(_pending_plan_sessions)), None)
+    _pending_plan_sessions[session_id] = True
+
+
+def consume_pending_plan_text(session_id: str) -> bool:
+    """The plan text just reached JSONL — i.e. the user answered the widget.
+
+    Returns ``True`` when ``_surface_plan_text`` already posted this session's
+    plan from the plan file, so the caller skips the would-be duplicate.
+    ``False`` (surfacing failed / never ran / restart dropped the bookkeeping)
+    → the caller delivers the JSONL copy normally, exactly as before this
+    feature existed.
+    """
+    return _pending_plan_sessions.pop(session_id, None) is not None
+
+
+# The bot's own home prefix, for de-noising pane-parsed surfaced text: the pane
+# shows absolute paths (`/home/user/project/...`) that read as clutter — and,
+# screenshotted for docs, leak the operator's username. Agent-authored content
+# from JSONL is never rewritten; this applies only to text ccbot itself lifts
+# off the pane.
+_HOME_PREFIX_RE = re.compile(re.escape(str(Path.home())) + r"(?=/|\s|$)")
+
+
+def _relativize_home(text: str) -> str:
+    return _HOME_PREFIX_RE.sub("~", text)
 
 
 def _join_prose_question(prose: str, question: str) -> str:
@@ -228,16 +291,21 @@ async def consume_pending_prose_upgrade(
     entry = _pending_auq.get(session_id)
     if entry is None:
         return False
-    msg_id, question = entry
+    msg_ids, question = entry
     full_text = _join_prose_question(jsonl_text, question)
-    if full_text:
+    if full_text and msg_ids:
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        # A long surfaced text was split across several messages; the clean
+        # re-delivery below sends its own follow-ups, so drop the extras first
+        # (best-effort) and upgrade the first message in place.
+        for extra_id in msg_ids[1:]:
+            await _safe_delete_message(bot, chat_id, extra_id)
         await _deliver_upgraded_prose(
-            bot, chat_id, msg_id, full_text, thread_id, user_id
+            bot, chat_id, msg_ids[0], full_text, thread_id, user_id
         )
     logger.info(
         "AskUserQuestion surface upgraded in place (msg %s, session %s)",
-        msg_id,
+        msg_ids[0] if msg_ids else "?",
         session_id[:8],
     )
     return True
@@ -433,17 +501,20 @@ async def _surface_ask_question_text(
     not repeated as text.
 
     Captures with scrollback (the prose can run past the visible viewport) and
-    parses the pane. Records ``_auq_text_sent[ikey]`` either way so the 1 s status
-    poll doesn't retry every tick; the photo that follows is the fallback (parse
-    miss / nothing parseable → photo only). When text is posted, ``(msg_id,
-    question)`` goes into ``_pending_auq`` so the JSONL copies that arrive after
-    the answer don't duplicate it (see ``consume_pending_prose_upgrade`` /
-    ``consume_pending_ask_tool_use``).
+    parses the pane; a long surfaced text splits across several messages instead
+    of being dropped (the old >4096 bail surfaced nothing at all — exactly the
+    long-preamble case where reading it matters most). Absolute home paths are
+    rewritten to ``~`` (pane-lifted text only). Records ``_auq_text_sent[ikey]``
+    either way so the 1 s status poll doesn't retry every tick; the photo that
+    follows is the fallback (parse miss / nothing parseable → photo only). When
+    text is posted, ``(msg_ids, question)`` goes into ``_pending_auq`` so the
+    JSONL copies that arrive after the answer don't duplicate it (see
+    ``consume_pending_prose_upgrade`` / ``consume_pending_ask_tool_use``).
     """
-    pane = await session_manager.capture_pane(window_id, scrollback_lines=200)
+    pane = await session_manager.capture_pane(window_id, scrollback_lines=400)
     parsed = parse_ask_question(pane) if pane else None
     surfaced = _join_prose_question(parsed.prose, parsed.question) if parsed else ""
-    if parsed is None or not surfaced or len(surfaced) > 4096:
+    if parsed is None or not surfaced:
         _auq_text_sent[ikey] = 0
         logger.debug(
             "AskUserQuestion: nothing to surface for %s (parsed=%s)",
@@ -454,20 +525,89 @@ async def _surface_ask_question_text(
         )
         return
 
-    sent = await send_with_fallback(bot, chat_id, surfaced, **thread_kwargs)
-    msg_id = sent.message_id if sent is not None else 0
+    surfaced = _relativize_home(surfaced)
+    sent_ids: list[int] = []
+    for chunk in split_message(surfaced):
+        sent = await send_with_fallback(bot, chat_id, chunk, **thread_kwargs)
+        if sent is None:
+            break
+        sent_ids.append(sent.message_id)
+        note_topic_message(chat_id, sent.message_id, ikey[0], ikey[1])
+    msg_id = sent_ids[0] if sent_ids else 0
     if msg_id:
         session_id = await _session_id_for(window_id)
         if session_id:
-            _record_pending_auq(session_id, msg_id, parsed.question)
-        note_topic_message(chat_id, msg_id, ikey[0], ikey[1])
+            _record_pending_auq(session_id, tuple(sent_ids), parsed.question)
     _auq_text_sent[ikey] = msg_id
     logger.info(
-        "AskUserQuestion text surfaced for %s: %dch (%s), question=%r",
+        "AskUserQuestion text surfaced for %s: %dch in %d msg(s) (%s), question=%r",
         window_id,
         len(surfaced),
+        len(sent_ids),
         "sent" if msg_id else "send failed",
         parsed.question[:60],
+    )
+
+
+async def _surface_plan_text(
+    bot: Bot,
+    chat_id: int,
+    window_id: str,
+    ikey: tuple[int, int],
+    thread_kwargs: dict[str, int],
+    pane_plain: str,
+) -> None:
+    """Post the full plan text before the ExitPlanMode approval photo.
+
+    Claude Code writes the plan to ``<claude-home>/plans/<slug>.md`` before
+    asking for approval and shows that path in the widget footer; the JSONL
+    copy (the tool_use ``input.plan``) is held until the user answers, and the
+    screenshot crops all but the tail — pre-approval, the file is the only
+    readable source. Only the basename is taken from the pane (agent-controlled
+    text); it resolves against the binding's own plans dir, so a hostile pane
+    can't point us at an arbitrary host file. Long plans split across messages.
+
+    Records ``_plan_text_sent[ikey]`` either way (no per-tick retry); the photo
+    is the fallback on any miss, and the JSONL copy after the answer is the
+    delivery of last resort (suppressed via ``_pending_plan_sessions`` only
+    when the surface actually went out).
+    """
+    name = extract_plan_file_name(pane_plain)
+    if not name:
+        _plan_text_sent[ikey] = 0
+        logger.debug("ExitPlanMode: no plan-file path in pane for %s", window_id)
+        return
+    path = session_manager.plans_dir_for_binding(window_id) / name
+    try:
+        content = (await asyncio.to_thread(path.read_text, "utf-8")).strip()
+    except OSError as e:
+        _plan_text_sent[ikey] = 0
+        logger.warning("ExitPlanMode: plan file unreadable (%s): %s", path, e)
+        return
+    if not content:
+        _plan_text_sent[ikey] = 0
+        return
+
+    sent_ids: list[int] = []
+    for chunk in split_message(tr("iui.plan_header") + "\n\n" + content):
+        sent = await send_with_fallback(bot, chat_id, chunk, **thread_kwargs)
+        if sent is None:
+            break
+        sent_ids.append(sent.message_id)
+        note_topic_message(chat_id, sent.message_id, ikey[0], ikey[1])
+    msg_id = sent_ids[0] if sent_ids else 0
+    if msg_id:
+        session_id = await _session_id_for(window_id)
+        if session_id:
+            _record_pending_plan(session_id)
+    _plan_text_sent[ikey] = msg_id
+    logger.info(
+        "Plan text surfaced for %s from %s: %dch in %d msg(s) (%s)",
+        window_id,
+        name,
+        len(content),
+        len(sent_ids),
+        "sent" if msg_id else "send failed",
     )
 
 
@@ -578,6 +718,20 @@ async def _handle_interactive_ui_locked(
         except Exception as e:  # never let this block the photo, which is the fallback
             logger.warning("AskUserQuestion text surfacing failed: %s", e)
             _auq_text_sent.setdefault(ikey, 0)
+
+    # ExitPlanMode: post the plan file's content as text before the photo —
+    # the plan is held out of JSONL until the user answers, and the screenshot
+    # shows only the widget's tail, so the plan file (whose path the widget
+    # footer shows) is the only readable pre-approval source. Once per widget
+    # appearance — _plan_text_sent is cleared when the widget goes away.
+    if iui.name == "ExitPlanMode" and ikey not in _plan_text_sent:
+        try:
+            await _surface_plan_text(
+                bot, chat_id, window_id, ikey, thread_kwargs, pane_plain
+            )
+        except Exception as e:  # never block the photo, which is the fallback
+            logger.warning("Plan text surfacing failed: %s", e)
+            _plan_text_sent.setdefault(ikey, 0)
 
     # Any login screen (is_login): surface the sign-in URL as a clickable link
     # + button, once per appearance. Provider-agnostic — Claude Code's /login
@@ -714,8 +868,9 @@ async def clear_interactive_msg(
     ikey = (user_id, thread_id or 0)
     msg_id = _interactive_msgs.pop(ikey, None)
     _interactive_mode.pop(ikey, None)
-    # The widget is gone — next AskUserQuestion / login (if any) re-surfaces.
+    # The widget is gone — next AskUserQuestion / plan / login re-surfaces.
     _auq_text_sent.pop(ikey, None)
+    _plan_text_sent.pop(ikey, None)
     _login_url_sent.pop(ikey, None)
     logger.debug(
         "Clear interactive msg: user=%d, thread=%s, msg_id=%s",

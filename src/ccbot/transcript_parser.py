@@ -55,6 +55,12 @@ class ParsedEntry:
     # duplicate. (The whole message is held out of JSONL until the answer, so
     # this entry only ever arrives after interactive_ui has had its chance.)
     precedes_interactive_prompt: bool = False
+    # True on the synthetic text entry carrying an ExitPlanMode plan
+    # (input.plan). Like AskUserQuestion, the turn is held out of JSONL until
+    # the user answers — interactive_ui surfaces the plan FILE's content
+    # pre-approval, and this flag lets handle_new_message skip the JSONL copy
+    # that lands after the answer (consume_pending_plan_text).
+    is_plan_text: bool = False
 
 
 @dataclass
@@ -570,7 +576,11 @@ class TranscriptParser:
                         inp = block.get("input", {})
                         summary = cls.format_tool_use_summary(name, inp)
 
-                        # ExitPlanMode: emit plan content as text before tool_use entry
+                        # ExitPlanMode: emit plan content as text before tool_use
+                        # entry. is_plan_text lets handle_new_message skip it when
+                        # the plan was already surfaced pre-approval from the plan
+                        # file (the whole turn is held out of JSONL until the user
+                        # answers the widget).
                         if name == "ExitPlanMode" and isinstance(inp, dict):
                             plan = inp.get("plan", "")
                             if plan:
@@ -580,6 +590,7 @@ class TranscriptParser:
                                         text=plan,
                                         content_type="text",
                                         timestamp=entry_timestamp,
+                                        is_plan_text=True,
                                     )
                                 )
                         if tool_id:

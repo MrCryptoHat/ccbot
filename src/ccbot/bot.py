@@ -87,6 +87,7 @@ from .handlers.interactive_ui import (
     clear_interactive_mode,
     clear_interactive_msg,
     consume_pending_ask_tool_use,
+    consume_pending_plan_text,
     consume_pending_prose_upgrade,
     get_interactive_msg_id,
     get_interactive_window,
@@ -937,6 +938,12 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             ):
                 await _bump_read_offset_to_eof(user_id, wid)
                 continue
+            # ExitPlanMode tool_use reaching JSONL = the widget was answered.
+            # Its plan text (if any) rode the preceding is_plan_text entry and
+            # was consumed there; this pop only covers the empty-plan edge so
+            # the bookkeeping can't linger.
+            if msg.tool_name == "ExitPlanMode":
+                consume_pending_plan_text(msg.session_id)
             # Mark interactive mode BEFORE sleeping so polling skips this window
             set_interactive_mode(user_id, wid, thread_id)
             # Flush pending messages (e.g. plan content) in THIS topic's
@@ -994,6 +1001,24 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 bot, msg.session_id, user_id, thread_id, msg.text
             )
         ):
+            await _bump_read_offset_to_eof(user_id, wid)
+            continue
+
+        # The ExitPlanMode plan text landing in JSONL after the user answered:
+        # interactive_ui already surfaced the full plan from the plan FILE
+        # while the approval widget was up (the turn is held out of JSONL
+        # until the answer), so this copy would be a duplicate. Consume-miss
+        # (surfacing failed / bot restarted) → delivered normally, as before.
+        if (
+            msg.content_type == "text"
+            and msg.role == "assistant"
+            and msg.is_plan_text
+            and consume_pending_plan_text(msg.session_id)
+        ):
+            logger.info(
+                "Plan JSONL copy skipped (surfaced pre-approval): session=%s",
+                msg.session_id[:8],
+            )
             await _bump_read_offset_to_eof(user_id, wid)
             continue
 

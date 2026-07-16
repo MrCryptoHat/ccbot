@@ -73,7 +73,10 @@ UI_PATTERNS: list[UIPattern] = [
             re.compile(r"^\s*Claude has written up a plan"),
         ),
         bottom=(
-            re.compile(r"^\s*ctrl-g to edit in "),
+            # v2.1.3x renders "ctrl+g", older builds "ctrl-g" — accept both.
+            # (The drift silently demoted this widget to the generic
+            # PermissionPrompt match; plan-text surfacing keys on the name.)
+            re.compile(r"^\s*ctrl[-+]g to edit in "),
             re.compile(r"^\s*Esc to (cancel|exit)"),
         ),
     ),
