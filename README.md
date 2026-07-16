@@ -42,16 +42,16 @@ the same terminal anytime.
 </table>
 
 <p align="center">
-  <img src="docs/images/fleet-topics.png" width="30%" alt="Telegram forum topic list showing nine AI agents in one group — dev projects plus personal assistant, health, coach, travel and finances agents.">
-  <img src="docs/images/agent-panel.png" width="30%" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session (Model, Context, MCP, Resume, Worktree).">
-  <img src="docs/images/plan-approval.png" width="30%" alt="Claude Code ExitPlanMode plan-approval screen surfaced in Telegram with arrow, Enter and Esc buttons.">
+  <img src="docs/images/fleet-topics.webp" width="30%" alt="Telegram forum topic list showing nine AI agents in one group — dev projects plus personal assistant, health, coach, travel and finances agents.">
+  <img src="docs/images/agent-panel.webp" width="30%" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session (Model, Context, MCP, Resume, Worktree).">
+  <img src="docs/images/plan-approval.webp" width="30%" alt="Claude Code ExitPlanMode plan-approval screen surfaced in Telegram with arrow, Enter and Esc buttons.">
 </p>
 
 ## What you can do from your phone
 
 <table>
 <tr>
-<td width="42%"><img src="docs/images/agent-panel.png" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session."></td>
+<td width="42%"><img src="docs/images/agent-panel.webp" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session."></td>
 <td>
 
 ### Control the real terminal
@@ -70,10 +70,10 @@ and a fresh agent in its own topic. Agents never step on each other. Merged
 work cleans up automatically; **unmerged work is never silently destroyed.**
 
 </td>
-<td width="42%"><img src="docs/images/worktree-topic.png" alt="A git-worktree agent topic in Telegram with Path and Branch info buttons for the isolated branch."></td>
+<td width="42%"><img src="docs/images/worktree-topic.webp" alt="A git-worktree agent topic in Telegram with Path and Branch info buttons for the isolated branch."></td>
 </tr>
 <tr>
-<td width="42%"><img src="docs/images/fleet-topics.png" alt="Telegram forum topic list showing nine AI agents in one group."></td>
+<td width="42%"><img src="docs/images/fleet-topics.webp" alt="Telegram forum topic list showing nine AI agents in one group."></td>
 <td>
 
 ### One bot = the whole fleet
@@ -92,10 +92,10 @@ the TUI shows arrives as a screenshot with an <code>↑ ↓ ⏎ Esc</code> keybo
 **Approve a commit from the couch.** Or just 👍 the agent's question to say yes.
 
 </td>
-<td width="42%"><img src="docs/images/permission-commit.png" alt="Claude Code git-commit permission prompt in Telegram — approving an agent commit from a phone."></td>
+<td width="42%"><img src="docs/images/permission-commit.webp" alt="Claude Code git-commit permission prompt in Telegram — approving an agent commit from a phone."></td>
 </tr>
 <tr>
-<td width="42%"><img src="docs/images/hero-convo.png" alt="ccbot chat: a Claude Code agent working a rate-limiter task, with an eyes read-ack reaction on the user's message."></td>
+<td width="42%"><img src="docs/images/hero-convo.webp" alt="ccbot chat: a Claude Code agent working a rate-limiter task, with an eyes read-ack reaction on the user's message."></td>
 <td>
 
 ### Always know what your agent is doing
@@ -115,10 +115,10 @@ with every past session ready to continue. A third agent CLI is
 [one subclass away](docs/adding-a-runtime.md).
 
 </td>
-<td width="42%"><img src="docs/images/resume-picker.png" alt="Session resume picker with per-runtime tabs (Claude Code / Codex) listing saved resumable sessions."></td>
+<td width="42%"><img src="docs/images/resume-picker.webp" alt="Session resume picker with per-runtime tabs (Claude Code / Codex) listing saved resumable sessions."></td>
 </tr>
 <tr>
-<td width="42%"><img src="docs/images/voice-loop.png" alt="Two-way voice in ccbot: a voice message, its transcript, and a spoken agent reply."></td>
+<td width="42%"><img src="docs/images/voice-loop.webp" alt="Two-way voice in ccbot: a voice message, its transcript, and a spoken agent reply."></td>
 <td>
 
 ### Talk to your agents
@@ -136,21 +136,21 @@ tables, long code as files, auto-pinned task history — and the agent can send
 you **any file from the server** straight into the chat.
 
 </td>
-<td width="42%"><img src="docs/images/diff-screenshot.png" alt="Red-green edit diff screenshots of an agent's file changes, captured from Claude Code's native pane rendering."></td>
+<td width="42%"><img src="docs/images/diff-screenshot.webp" alt="Red-green edit diff screenshots of an agent's file changes, captured from Claude Code's native pane rendering."></td>
 </tr>
 </table>
 
 <details>
 <summary><b>More screenshots</b> — options widget, Codex approvals, /context, tables, pinned tasks, file delivery</summary>
 <p align="center">
-  <img src="docs/images/ask-question.png" width="24%" alt="Claude Code AskUserQuestion options widget sent to Telegram as a screenshot, answered with arrow and Enter buttons.">
-  <img src="docs/images/codex-approval.png" width="24%" alt="OpenAI Codex approval menu shown as a screenshot in Telegram with navigation buttons.">
-  <img src="docs/images/context-tree.png" width="24%" alt="Claude Code /context token-usage tree rendered as a Telegram message showing context breakdown by category.">
-  <img src="docs/images/table.png" width="24%" alt="A compact table from an agent reply rendered natively in a Telegram chat.">
+  <img src="docs/images/ask-question.webp" width="24%" alt="Claude Code AskUserQuestion options widget sent to Telegram as a screenshot, answered with arrow and Enter buttons.">
+  <img src="docs/images/codex-approval.webp" width="24%" alt="OpenAI Codex approval menu shown as a screenshot in Telegram with navigation buttons.">
+  <img src="docs/images/context-tree.webp" width="24%" alt="Claude Code /context token-usage tree rendered as a Telegram message showing context breakdown by category.">
+  <img src="docs/images/table.webp" width="24%" alt="A compact table from an agent reply rendered natively in a Telegram chat.">
 </p>
 <p align="center">
-  <img src="docs/images/pinned-tasks.png" width="24%" alt="A Telegram topic's pinned-messages list acting as auto-pinned task history for an agent.">
-  <img src="docs/images/file-delivery.png" width="24%" alt="An AI agent sending a summary.md file from the server to Telegram as a document.">
+  <img src="docs/images/pinned-tasks.webp" width="24%" alt="A Telegram topic's pinned-messages list acting as auto-pinned task history for an agent.">
+  <img src="docs/images/file-delivery.webp" width="24%" alt="An AI agent sending a summary.md file from the server to Telegram as a document.">
 </p>
 </details>
 
