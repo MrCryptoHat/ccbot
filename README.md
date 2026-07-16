@@ -11,31 +11,41 @@
   <img src="https://img.shields.io/badge/self--hosted-no_cloud_middleman-2ea44f" alt="Self-hosted, no cloud middleman">
 </p>
 
-<p align="center">
+<table>
+<tr>
+<td width="345" valign="top">
   <a href="docs/images/hero.mp4">
-    <img src="docs/images/hero.gif" width="560" alt="ccbot demo: create a Telegram topic, an agent auto-binds, runs a task, streams live edit diffs, and reports all tests pass — controlled from a phone.">
+    <img src="docs/images/hero.gif" width="335" alt="ccbot demo: create a Telegram topic, an agent auto-binds, runs a task, streams live edit diffs, and reports all tests pass — controlled from a phone.">
   </a>
-</p>
-<p align="center"><sub>▶︎ 30-second demo — <a href="docs/images/hero.mp4">click for HD video</a></sub></p>
+  <p align="center"><sub>▶︎ 30-second demo — <a href="docs/images/hero.mp4">HD video</a></sub></p>
+</td>
+<td valign="top">
 
-ccbot is a **self-hosted Telegram bot** that remote-controls terminal AI coding
-agents — **Claude Code** first-class, **OpenAI Codex** built-in,
-[others pluggable](docs/adding-a-runtime.md) — running in **tmux** on your own
-machine or server. One forum group becomes mission control for the whole
-fleet: each topic is one agent, replies stream in, and you steer the **real
-CLI** — your existing subscription, config and MCP servers work as-is. No API
-keys, no token costs, no cloud middleman. Sessions outlive the bot:
-`tmux attach` back into the same terminal anytime.
+ccbot is a **self-hosted Telegram bot** that remote-controls terminal AI
+coding agents — **Claude Code** first-class, **OpenAI Codex** built-in,
+[others pluggable](docs/adding-a-runtime.md) — running in **tmux** on your
+own machine or server.
+
+One forum group becomes mission control for the whole fleet: each topic is
+one agent, replies stream in, and you steer the **real CLI** — your existing
+subscription, config and MCP servers work as-is. No API keys, no token
+costs, no cloud middleman. Sessions outlive the bot: `tmux attach` back into
+the same terminal anytime.
+
+- **Start a refactor at your desk, approve its plan from the couch,** `tmux attach` back whenever you want.
+- **Fork a second agent onto a git worktree with one tap** and let them work the same repo in parallel.
+- **Always know what your agents are doing** — live pane screenshots, 👀 read-acks, typing indicators.
+- **One bot, one group, no key zoo** — dev projects and personal agents side by side.
+
+</td>
+</tr>
+</table>
 
 <p align="center">
   <img src="docs/images/fleet-topics.png" width="30%" alt="Telegram forum topic list showing nine AI agents in one group — dev projects plus personal assistant, health, coach, travel and finances agents.">
   <img src="docs/images/agent-panel.png" width="30%" alt="ccbot agent panel with a live terminal screenshot and three tabs — Keys, Actions, Session (Model, Context, MCP, Resume, Worktree).">
   <img src="docs/images/plan-approval.png" width="30%" alt="Claude Code ExitPlanMode plan-approval screen surfaced in Telegram with arrow, Enter and Esc buttons.">
 </p>
-
-- **Start a refactor at your desk, approve its plan from the couch,** `tmux attach` back whenever you want.
-- **Fork a second agent onto a git worktree with one tap** and let them work the same repo in parallel.
-- **Always know what your agents are doing** — live pane screenshots, 👀 read-acks, typing indicators.
 
 ## What you can do from your phone
 
