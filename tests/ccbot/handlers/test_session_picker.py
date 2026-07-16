@@ -6,6 +6,8 @@ starts a fresh window on the active runtime. Tabs come from the runtime registry
 so a new runtime appears automatically.
 """
 
+import pytest
+
 from ccbot.agent_session import AgentSession
 from ccbot.handlers.callback_data import (
     CB_RUNTIME_SELECT,
@@ -13,6 +15,14 @@ from ccbot.handlers.callback_data import (
     CB_SESSION_SELECT,
 )
 from ccbot.handlers.directory_browser import build_session_picker
+from ccbot.runtimes import AgentRuntime
+
+
+@pytest.fixture(autouse=True)
+def _all_runtimes_available(monkeypatch):
+    # pickable_runtimes() gates tabs on an installed CLI (shutil.which); pin
+    # every runtime "installed" so tab assertions don't depend on the host.
+    monkeypatch.setattr(AgentRuntime, "is_available", lambda self: True)
 
 
 def _flat(keyboard):

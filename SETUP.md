@@ -14,6 +14,12 @@ Linux/macOS host with tmux, the `claude` CLI, and `uv`.
   sign-in link, so it's recoverable, but logging in beforehand is smoother).
 - **uv** — https://docs.astral.sh/uv/ (installs Python + deps).
 - **ffmpeg** — only if you want Gemini voice replies (PCM→OGG); skip otherwise.
+- **Codex CLI** *(optional)* — install OpenAI's `codex` if you also want topics
+  running Codex: the session picker then shows a Codex tab automatically
+  (no config needed; see the AGENT RUNTIMES section of `.env.example` for
+  tuning). Without the binary the tab simply never appears. A fresh Codex
+  window opens on its own sign-in menu — the bot detects it and walks you
+  through with nav buttons and the device-code link.
 
 ## 2. Create the bot and enable topics
 

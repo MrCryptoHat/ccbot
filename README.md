@@ -65,6 +65,11 @@ truth and you never lose the ability to switch back.
 
 **Optional (off unless configured):**
 
+- **Codex runtime** — a topic can run OpenAI's Codex CLI instead of Claude
+  Code: install `codex` and the session picker grows a Codex tab (nothing to
+  configure; `CCBOT_DEFAULT_RUNTIME=codex` makes it the default). Sign-in,
+  approval menus, `/diff`, images and the agent panel all work; each topic
+  remembers its runtime across restarts.
 - **Docker agents** — route a topic to Claude Code inside a container
   (advanced, bring-your-own-container — see [docs/docker-agents.md](docs/docker-agents.md)).
 - **Worktree agents** — fork a repo into a `git worktree` + branch and run a
@@ -124,6 +129,7 @@ unless you turn it on, so a plain deployment carries no dead code paths.
 | Feature                    | Enabled by                                   |
 | -------------------------- | -------------------------------------------- |
 | Core tmux bridge           | always on (the two required vars)            |
+| Codex runtime (2nd CLI)    | `codex` on PATH (auto-detected; `CODEX_*` vars tune it) |
 | Voice transcription / TTS  | a provider key (`DEEPGRAM_/OPENAI_/GEMINI_/ELEVENLABS_…`) |
 | Docker agents              | `DOCKER_AGENTS_ENABLED=true` + `DOCKER_AGENTS` |
 | 👍-to-confirm reactions     | `REACTION_CONFIRM_ENABLED` (on by default)   |

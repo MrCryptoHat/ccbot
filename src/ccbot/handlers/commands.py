@@ -69,7 +69,7 @@ from ..docker_driver import docker_driver
 from ..hook import hook_installed_in_settings
 from .. import i18n, plugins
 from ..i18n import tr
-from ..runtimes import get_runtime
+from ..runtimes import default_runtime, get_runtime
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from ..transcript_parser import TranscriptParser
@@ -612,7 +612,12 @@ async def screenshot_command(
 
 
 async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send Escape + Ctrl+C to interrupt Claude in any state."""
+    """Interrupt the agent with its runtime's interrupt keys.
+
+    Claude Code: Escape (agent turn) + Ctrl-C (running bash command). Codex:
+    Escape only — an idle Ctrl-C arms its TUI quit sequence, so the trailing
+    press must not be sent (``AgentRuntime.interrupt_keys``).
+    """
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         return
@@ -625,18 +630,18 @@ async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await safe_reply(update.message, tr("commands.no_session_in_topic"))
         return
 
+    keys = get_runtime(session_manager.window_runtime(wid)).interrupt_keys
     if session_manager._is_docker_binding(wid):
         agent = config.get_docker_agent(wid[len("docker:") :])
         if not agent or not await docker_driver.is_container_alive(agent.container):
             await safe_reply(update.message, tr("commands.container_not_running"))
             return
-        await docker_driver.send_keys(
-            agent.container, "Escape", enter=False, literal=False
-        )
-        await asyncio.sleep(0.1)
-        await docker_driver.send_keys(
-            agent.container, "C-c", enter=False, literal=False
-        )
+        for i, key in enumerate(keys):
+            if i:
+                await asyncio.sleep(0.1)
+            await docker_driver.send_keys(
+                agent.container, key, enter=False, literal=False
+            )
     else:
         w = await tmux_manager.find_window_by_id(wid)
         if not w:
@@ -645,11 +650,10 @@ async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 update.message, tr("commands.window_not_exist", name=display)
             )
             return
-        # Escape — прерывает генерацию Claude Code
-        await tmux_manager.send_keys(w.window_id, "Escape", enter=False, literal=False)
-        await asyncio.sleep(0.1)
-        # Ctrl+C — прерывает Bash-команды
-        await tmux_manager.send_keys(w.window_id, "C-c", enter=False, literal=False)
+        for i, key in enumerate(keys):
+            if i:
+                await asyncio.sleep(0.1)
+            await tmux_manager.send_keys(w.window_id, key, enter=False, literal=False)
 
     await safe_reply(update.message, tr("commands.interrupted"))
 
@@ -1750,9 +1754,24 @@ async def _auto_bind_to_directory(
     ``None`` (no rename). Records the directory in memory up front so the topic
     re-resolves here next time regardless of its current name.
     """
-    session_manager.record_thread_directory(user_id, thread_id, str(matching_dir))
+    # Rebind on the runtime this topic last ran (a codex topic must come back
+    # as codex, not silently as Claude); never-bound topics take the default.
+    # A remembered runtime whose CLI is gone degrades to the default rather
+    # than typing a missing command into the fresh pane.
+    remembered_rt = session_manager.get_remembered_runtime(user_id, thread_id)
+    rt = get_runtime(remembered_rt) if remembered_rt else default_runtime()
+    if not rt.is_available():
+        logger.warning(
+            "Auto-bind: runtime %s unavailable for thread %d — using default",
+            rt.name,
+            thread_id,
+        )
+        rt = default_runtime()
+    session_manager.record_thread_directory(
+        user_id, thread_id, str(matching_dir), runtime=rt.name
+    )
     shown = _display_home_path(matching_dir)
-    sessions = await session_manager.list_sessions_for_directory(str(matching_dir))
+    sessions = await rt.list_sessions(session_manager, str(matching_dir))
 
     resume_id: str | None = None
     if sessions and config.auto_resume_agents:
@@ -1771,16 +1790,17 @@ async def _auto_bind_to_directory(
             thread_id,
         )
     elif sessions:
-        # Existing Claude history in this folder — let the user pick.
-        # State below is the same shape _handle_session_{select,new,cancel}
-        # already consume, so the picker callbacks Just Work without changes.
+        # Existing history in this folder — let the user pick. State below is
+        # the same shape _handle_session_{select,new,cancel} already consume,
+        # so the picker callbacks Just Work without changes. The active tab is
+        # the topic's remembered/default runtime.
         if context.user_data is not None:
             context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
             context.user_data[SESSIONS_KEY] = sessions
-            context.user_data[PICKER_RUNTIME_KEY] = "claude"
+            context.user_data[PICKER_RUNTIME_KEY] = rt.name
             context.user_data["_selected_path"] = str(matching_dir)
             context.user_data["_pending_thread_id"] = thread_id
-        text, keyboard = build_session_picker(sessions, str(matching_dir), "claude")
+        text, keyboard = build_session_picker(sessions, str(matching_dir), rt.name)
         try:
             await safe_reply(msg, text, reply_markup=keyboard)
         except Exception as e:
@@ -1796,8 +1816,22 @@ async def _auto_bind_to_directory(
 
     # No sessions (fresh window) or auto-resume enabled (continue the newest
     # session) — create the window and bind right away.
+    # Same-cwd guard for hookless runtimes: their transcript resolves by cwd
+    # ("newest wins"), so a second live window on this directory would make
+    # both topics mirror the same session.
+    if not rt.uses_session_map and await session_manager.has_live_agent_on_cwd(
+        rt.name, str(matching_dir)
+    ):
+        try:
+            await safe_reply(
+                msg,
+                tr("bot.same_dir_conflict", agent=rt.display_name, dir=matching_dir),
+            )
+        except Exception as e:
+            logger.debug("same-dir conflict reply failed: %s", e)
+        return True
     success, message, created_wname, created_wid = await tmux_manager.create_window(
-        str(matching_dir), resume_session_id=resume_id
+        str(matching_dir), resume_session_id=resume_id, runtime=rt.name
     )
     if not success:
         logger.warning(
@@ -1813,13 +1847,16 @@ async def _auto_bind_to_directory(
             pass
         return True
 
-    hook_ok = await session_manager.wait_for_session_map_entry(
-        created_wid, timeout=15.0 if resume_id else 5.0
-    )
+    session_manager.tag_window_runtime(created_wid, rt.name, str(matching_dir))
+    hook_ok = False
+    if rt.uses_session_map:
+        hook_ok = await session_manager.wait_for_session_map_entry(
+            created_wid, timeout=15.0 if resume_id else 5.0
+        )
     session_manager.bind_thread(
         user_id, thread_id, created_wid, window_name=created_wname
     )
-    if resume_id:
+    if resume_id and rt.uses_session_map:
         # `--resume` makes the SessionStart hook report a NEW session_id while
         # messages keep writing to the ORIGINAL JSONL — pin window_state to the
         # resumed id so the monitor tracks the right transcript. Mirrors the

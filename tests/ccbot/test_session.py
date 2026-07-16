@@ -91,6 +91,88 @@ class TestThreadDirectoryMemory:
         assert mgr.get_remembered_directory(100, 42) == "/home/user/agents/demo"
 
 
+class TestThreadRuntimeMemory:
+    """Runtime remembered alongside the directory — a codex topic must rebind
+    as codex after its window dies, not silently as Claude."""
+
+    def test_record_with_runtime(self, mgr: SessionManager) -> None:
+        mgr.record_thread_directory(100, 42, "/p", runtime="codex")
+        assert mgr.get_remembered_runtime(100, 42) == "codex"
+
+    def test_unknown_returns_none(self, mgr: SessionManager) -> None:
+        # Legacy rows predate the runtime axis — callers pick the fallback.
+        assert mgr.get_remembered_runtime(100, 42) is None
+
+    def test_record_without_runtime_keeps_previous(self, mgr: SessionManager) -> None:
+        mgr.record_thread_directory(100, 42, "/p", runtime="codex")
+        mgr.record_thread_directory(100, 42, "/p")  # runtime omitted
+        assert mgr.get_remembered_runtime(100, 42) == "codex"
+
+    def test_runtime_change_alone_triggers_save(self, mgr: SessionManager) -> None:
+        calls = {"n": 0}
+        mgr._save_state = lambda: calls.__setitem__("n", calls["n"] + 1)  # type: ignore[method-assign]
+        mgr.record_thread_directory(100, 42, "/same", runtime="claude")
+        mgr.record_thread_directory(100, 42, "/same", runtime="codex")
+        mgr.record_thread_directory(100, 42, "/same", runtime="codex")
+        assert calls["n"] == 2
+        assert mgr.get_remembered_runtime(100, 42) == "codex"
+
+    def test_load_coerces_int_keys(self, monkeypatch, tmp_path) -> None:
+        from ccbot import session as session_mod
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "thread_directory_memory": {"100": {"42": "/w"}},
+                    "thread_runtime_memory": {"100": {"42": "codex"}},
+                }
+            )
+        )
+        monkeypatch.setattr(session_mod.config, "state_file", state_file)
+        mgr = SessionManager()
+        assert mgr.get_remembered_runtime(100, 42) == "codex"
+
+    def test_legacy_state_without_runtime_map_loads(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # Old state.json has no thread_runtime_memory key — must load clean.
+        from ccbot import session as session_mod
+
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps({"thread_directory_memory": {"100": {"42": "/w"}}})
+        )
+        monkeypatch.setattr(session_mod.config, "state_file", state_file)
+        mgr = SessionManager()
+        assert mgr.get_remembered_directory(100, 42) == "/w"
+        assert mgr.get_remembered_runtime(100, 42) is None
+
+
+class TestTagWindowRuntime:
+    """The shared bootstrap stamp: runtime tag always; cwd persisted only for
+    hookless runtimes (their transcript resolves by cwd)."""
+
+    def test_claude_tags_runtime_but_not_cwd(self, mgr: SessionManager) -> None:
+        mgr.tag_window_runtime("@1", "claude", "/p")
+        ws = mgr.get_window_state("@1")
+        assert ws.runtime == "claude"
+        assert ws.cwd == ""  # claude's cwd comes from its SessionStart hook
+
+    def test_codex_tags_runtime_and_cwd(self, mgr: SessionManager) -> None:
+        mgr.tag_window_runtime("@2", "codex", "/p")
+        ws = mgr.get_window_state("@2")
+        assert ws.runtime == "codex"
+        assert ws.cwd == "/p"
+
+    def test_idempotent_skips_save(self, mgr: SessionManager) -> None:
+        calls = {"n": 0}
+        mgr._save_state = lambda: calls.__setitem__("n", calls["n"] + 1)  # type: ignore[method-assign]
+        mgr.tag_window_runtime("@3", "codex", "/p")
+        mgr.tag_window_runtime("@3", "codex", "/p")
+        assert calls["n"] == 1
+
+
 class TestWorktreeMeta:
     """Worktree-agent metadata keyed by permanent thread_id."""
 

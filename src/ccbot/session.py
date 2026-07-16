@@ -204,6 +204,13 @@ class SessionManager:
     # for never-before-bound topics. Docker bindings are not recorded (their
     # lifecycle is the container's, not a tmux window's).
     thread_directory_memory: dict[int, dict[int, str]] = field(default_factory=dict)
+    # Companion to thread_directory_memory: user_id -> {thread_id -> runtime}.
+    # Remembers which agent CLI the topic ran, so the memory rebind relaunches
+    # the SAME runtime (a codex topic must not silently come back as Claude
+    # after its window dies). Absent entry = "claude" (legacy rows predate the
+    # runtime axis). Kept as a parallel map so old state.json files load
+    # unchanged.
+    thread_runtime_memory: dict[int, dict[int, str]] = field(default_factory=dict)
     # Worktree-agent metadata: user_id -> {thread_id -> WorktreeMeta}. Keyed by
     # the permanent thread_id (same as every other per-topic structure), so the
     # teardown guard — which receives (user, thread) — looks it up directly,
@@ -303,6 +310,10 @@ class SessionManager:
                 str(uid): {str(tid): d for tid, d in dirs.items()}
                 for uid, dirs in self.thread_directory_memory.items()
             },
+            "thread_runtime_memory": {
+                str(uid): {str(tid): r for tid, r in rts.items()}
+                for uid, rts in self.thread_runtime_memory.items()
+            },
             "worktree_meta": {
                 str(uid): {str(tid): m.to_dict() for tid, m in metas.items()}
                 for uid, metas in self.worktree_meta.items()
@@ -397,6 +408,10 @@ class SessionManager:
                     int(uid): {int(tid): d for tid, d in dirs.items()}
                     for uid, dirs in state.get("thread_directory_memory", {}).items()
                 }
+                self.thread_runtime_memory = {
+                    int(uid): {int(tid): r for tid, r in rts.items()}
+                    for uid, rts in state.get("thread_runtime_memory", {}).items()
+                }
                 self.group_chat_ids = {
                     k: int(v) for k, v in state.get("group_chat_ids", {}).items()
                 }
@@ -473,6 +488,7 @@ class SessionManager:
                 self.thread_bindings = {}
                 self.window_display_names = {}
                 self.thread_directory_memory = {}
+                self.thread_runtime_memory = {}
                 self.group_chat_ids = {}
                 self.voice_mode_topics = set()
                 self.diff_mode_topics = set()
@@ -1137,15 +1153,17 @@ class SessionManager:
             return
 
         # Clean up window_states entries not in any session_map source.
-        # Only claude-runtime windows are covered by THIS (claude) session_map;
-        # a codex window is tracked via its own map (codex_session_map) and must
-        # not be reaped here just because it's absent from the claude map — that
-        # would drop its runtime tag mid-session. (Its own source handles its
-        # staleness once merged.)
+        # Only session_map runtimes (Claude) are covered by this map; a window
+        # of a hookless runtime (Codex — tracked by cwd→rollout matching, no
+        # session_map at all) must not be reaped for being absent from a map
+        # it never writes to — that would drop its runtime tag mid-session.
+        # Its staleness is the tmux window's lifecycle (dead-window check).
         stale_wids = [
             w
             for w in self.window_states
-            if w and w not in valid_wids and self.window_states[w].runtime == "claude"
+            if w
+            and w not in valid_wids
+            and get_runtime(self.window_states[w].runtime).uses_session_map
         ]
         for wid in stale_wids:
             logger.info("Removing stale window_state: %s", wid)
@@ -1172,6 +1190,56 @@ class SessionManager:
         """
         ws = self.window_states.get(binding_value)
         return getattr(ws, "runtime", None) or "claude"
+
+    def save_state(self) -> None:
+        """Public state-save entry point for collaborators outside this class
+        (e.g. a runtime mutating WindowState it was handed). Same scheduled
+        atomic write as the internal ``_save_state``."""
+        self._save_state()
+
+    def tag_window_runtime(self, window_id: str, runtime: str, cwd: str) -> None:
+        """Stamp a freshly created window with its runtime (and cwd if needed).
+
+        The shared bootstrap step of every window-creation path (picker "new
+        session"/resume, worktree provision, memory rebind). The runtime tag
+        keeps load_session_map's stale-window sweep from reaping a non-
+        session_map window; for runtimes WITHOUT a session_map hook the cwd is
+        persisted too — it's how the monitor resolves their transcript
+        (rollout ``session_meta.cwd`` matching).
+        """
+        rt = get_runtime(runtime)
+        ws = self.get_window_state(window_id)
+        changed = False
+        if ws.runtime != rt.name:
+            ws.runtime = rt.name
+            changed = True
+        if not rt.uses_session_map and cwd and ws.cwd != cwd:
+            ws.cwd = cwd
+            changed = True
+        if changed:
+            self._save_state()
+
+    async def has_live_agent_on_cwd(self, runtime: str, cwd: str) -> bool:
+        """True iff a LIVE tmux window of ``runtime`` already runs in ``cwd``.
+
+        Guard for runtimes without a session_map (Codex): their transcript is
+        resolved by cwd with "newest wins", so two live windows on one
+        directory would cross-talk — both topics would mirror the same newest
+        rollout. Creation paths refuse the second window instead. Dead
+        window_states rows (window gone from tmux) don't count.
+        """
+        from .tmux_manager import tmux_manager
+
+        for wid, ws in list(self.window_states.items()):
+            if (getattr(ws, "runtime", None) or "claude") != runtime:
+                continue
+            if not ws.cwd or ws.cwd != cwd:
+                continue
+            if self._is_docker_binding(wid):
+                continue
+            if await tmux_manager.find_window_by_id(wid) is not None:
+                return True
+        return False
 
     def is_agent_working(self, binding_value: str, pane_text: str | None) -> bool:
         """True iff the bound agent is mid-turn — the runtime-aware busy check.
@@ -1551,32 +1619,52 @@ class SessionManager:
         )
 
     def record_thread_directory(
-        self, user_id: int, thread_id: int, directory: str
+        self, user_id: int, thread_id: int, directory: str, runtime: str | None = None
     ) -> None:
         """Remember that ``thread_id`` resolved to ``directory`` (tmux dir).
 
         Keyed by the permanent thread_id, so a future message in the same
         topic can auto-rebind to the same folder regardless of the topic's
-        current name. See ``thread_directory_memory``.
+        current name. ``runtime`` (when given) is remembered alongside, so the
+        rebind relaunches the same agent CLI. See ``thread_directory_memory``
+        / ``thread_runtime_memory``.
         """
         if not directory:
             return
-        if user_id not in self.thread_directory_memory:
-            self.thread_directory_memory[user_id] = {}
-        if self.thread_directory_memory[user_id].get(thread_id) == directory:
+        changed = False
+        if (
+            self.thread_directory_memory.setdefault(user_id, {}).get(thread_id)
+            != directory
+        ):
+            self.thread_directory_memory[user_id][thread_id] = directory
+            changed = True
+        if (
+            runtime
+            and self.thread_runtime_memory.setdefault(user_id, {}).get(thread_id)
+            != runtime
+        ):
+            self.thread_runtime_memory[user_id][thread_id] = runtime
+            changed = True
+        if not changed:
             return  # no change — skip the state write
-        self.thread_directory_memory[user_id][thread_id] = directory
         self._save_state()
         logger.info(
-            "Remembered topic directory: thread %d -> %s (user %d)",
+            "Remembered topic directory: thread %d -> %s (runtime=%s, user %d)",
             thread_id,
             directory,
+            runtime or "unchanged",
             user_id,
         )
 
     def get_remembered_directory(self, user_id: int, thread_id: int) -> str | None:
         """Return the last directory this topic was bound to, or None."""
         return self.thread_directory_memory.get(user_id, {}).get(thread_id)
+
+    def get_remembered_runtime(self, user_id: int, thread_id: int) -> str | None:
+        """Runtime the topic last ran, or None if never recorded (pre-runtime
+        state rows and never-bound topics). Callers decide the fallback
+        (usually ``runtimes.default_runtime()``)."""
+        return self.thread_runtime_memory.get(user_id, {}).get(thread_id)
 
     # --- Worktree-agent metadata (keyed by thread_id) ---
 
@@ -1965,16 +2053,14 @@ class SessionManager:
     ) -> tuple[list[dict], int]:
         """Get user/assistant messages for a window's session.
 
-        Resolves window → session, then reads the JSONL.
-        Supports byte range filtering via start_byte/end_byte.
-        Returns (messages, total_count).
+        Resolves window → transcript through the window's runtime (Claude:
+        session_id+cwd JSONL under the projects tree; Codex: the cwd-matched
+        rollout), then parses with that runtime's parser. Supports byte range
+        filtering via start_byte/end_byte. Returns (messages, total_count).
         """
-        session = await self.resolve_session_for_window(window_id)
-        if not session or not session.file_path:
-            return [], 0
-
-        file_path = Path(session.file_path)
-        if not file_path.exists():
+        runtime = get_runtime(self.window_runtime(window_id))
+        file_path = await runtime.history_transcript(self, window_id)
+        if not file_path or not file_path.exists():
             return [], 0
 
         # Read JSONL entries (optionally filtered by byte range)
@@ -1995,14 +2081,14 @@ class SessionManager:
                     if not line:
                         break
 
-                    data = TranscriptParser.parse_line(line)
+                    data = TranscriptParser.parse_line(line)  # generic JSON line
                     if data:
                         entries.append(data)
         except OSError as e:
             logger.error("Error reading session file %s: %s", file_path, e)
             return [], 0
 
-        parsed_entries, _ = TranscriptParser.parse_entries(entries)
+        parsed_entries, _ = runtime.parse_entries(entries, {})
         all_messages = [
             {
                 "role": e.role,

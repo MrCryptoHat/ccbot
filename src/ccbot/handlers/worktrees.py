@@ -178,7 +178,6 @@ async def provision_worktree_agent(
     topic (and any half-made worktree/branch) back so no orphan is left.
     """
     rt = get_runtime(runtime)
-    is_codex = rt.name != "claude"
     base = await wtc.detect_base_branch(base_repo)
     if not base:
         return False, tr("wt.err_no_base_branch")
@@ -211,20 +210,17 @@ async def provision_worktree_agent(
         await _rollback_topic(bot, chat_id, new_thread)
         return False, tr("wt.err_window", error=message[:120])
 
-    # Tag the window's runtime up front (load_session_map only reaps claude
-    # windows missing from the claude map — this keeps a codex window alive) and,
-    # for codex, store the cwd so the monitor resolves its rollout by cwd. Codex
-    # has no session_map hook, so skip the (claude-only) wait.
-    ws0 = session_manager.get_window_state(wid)
-    ws0.runtime = rt.name
-    if is_codex:
-        ws0.cwd = str(wt_path)
-    session_manager._save_state()
-    if not is_codex:
+    # Stamp runtime (+cwd for hookless runtimes — the monitor resolves their
+    # transcript by cwd), then wait for the SessionStart hook only where the
+    # runtime actually has one.
+    session_manager.tag_window_runtime(wid, rt.name, str(wt_path))
+    if rt.uses_session_map:
         await session_manager.wait_for_session_map_entry(wid, timeout=5.0)
     session_manager.bind_thread(user_id, new_thread, wid, window_name=wname)
     session_manager.set_group_chat_id(user_id, new_thread, chat_id)
-    session_manager.record_thread_directory(user_id, new_thread, str(wt_path))
+    session_manager.record_thread_directory(
+        user_id, new_thread, str(wt_path), runtime=rt.name
+    )
     session_manager.set_worktree_meta(
         user_id,
         new_thread,

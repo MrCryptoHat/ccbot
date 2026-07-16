@@ -244,7 +244,9 @@ class Config:
         # Code, default) or "codex" (OpenAI Codex CLI). The runtime is an axis
         # orthogonal to transport (tmux/docker) — see runtimes.py. A binding's
         # runtime is a property of its window (WindowState.runtime), not of the
-        # binding string; this is only the default for freshly-created windows.
+        # binding string. Consumed via runtimes.default_runtime() (validated,
+        # availability-checked): the session picker's initial tab and the
+        # runtime for never-bound auto-bind topics.
         self.default_runtime = (
             os.getenv("CCBOT_DEFAULT_RUNTIME", "claude").strip().lower()
         )
@@ -264,9 +266,6 @@ class Config:
         self.codex_bypass_sandbox = (
             os.getenv("CODEX_BYPASS_SANDBOX", "false").lower() == "true"
         )
-        # Per-runtime host-side session_map written by that runtime's SessionStart
-        # hook (codex hook lands here, keyed like the main map, tagged runtime).
-        self.codex_session_map_file = self.config_dir / "codex_session_map.json"
         # Root of Codex's rollout transcripts (~/.codex/sessions/YYYY/MM/DD/
         # rollout-*.jsonl). The monitor resolves a codex window's transcript by
         # matching a rollout's session_meta.cwd to the window's cwd (newest).

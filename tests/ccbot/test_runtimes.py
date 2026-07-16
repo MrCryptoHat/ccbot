@@ -191,6 +191,122 @@ class TestPickerIcon:
         assert CODEX.picker_icon == "🔵"
 
 
+class TestBootstrapCapabilities:
+    """Window-bootstrap divergence is capabilities, never name comparisons —
+    a third runtime with its own hook must not inherit codex's treatment just
+    for not being named "claude"."""
+
+    def test_session_map(self):
+        assert CLAUDE.uses_session_map is True
+        assert CODEX.uses_session_map is False
+
+    def test_first_message_forward(self):
+        # Codex can open on its sign-in menu — blind typing + Enter would pick
+        # a menu option the user never chose.
+        assert CLAUDE.auto_forward_first_message is True
+        assert CODEX.auto_forward_first_message is False
+
+    def test_interrupt_keys(self):
+        # Codex must not get the trailing Ctrl-C: on its TUI an idle Ctrl-C
+        # arms the quit sequence instead of being a no-op.
+        assert CLAUDE.interrupt_keys == ("Escape", "C-c")
+        assert CODEX.interrupt_keys == ("Escape",)
+
+    def test_ready_message_keys(self):
+        assert CLAUDE.ready_message_key(resumed=False) == "bot.window_ready"
+        assert CLAUDE.ready_message_key(resumed=True) == "bot.window_resumed"
+        # Codex explains its sign-in flow for fresh AND resumed windows.
+        assert CODEX.ready_message_key(resumed=False) == "bot.window_codex_ready"
+        assert CODEX.ready_message_key(resumed=True) == "bot.window_codex_ready"
+
+
+class TestAvailabilityGating:
+    """pickable_runtimes offers only installed CLIs — a fresh install without
+    codex must never see a Codex tab whose "new session" types a missing
+    command into the pane (dead window, no explanation)."""
+
+    def _patch_which(self, monkeypatch, present: set[str]):
+        import shutil as _shutil
+
+        monkeypatch.setattr(
+            _shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd in present else None
+        )
+
+    def _patch_cfg(self, monkeypatch, default="claude"):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt,
+            "config",
+            MagicMock(
+                claude_command="claude",
+                codex_command="codex",
+                default_runtime=default,
+            ),
+        )
+
+    def test_both_installed_both_pickable(self, monkeypatch):
+        from ccbot.runtimes import pickable_runtimes
+
+        self._patch_cfg(monkeypatch)
+        self._patch_which(monkeypatch, {"claude", "codex"})
+        assert pickable_runtimes() == [CLAUDE, CODEX]
+
+    def test_missing_codex_hides_its_tab(self, monkeypatch):
+        from ccbot.runtimes import pickable_runtimes
+
+        self._patch_cfg(monkeypatch)
+        self._patch_which(monkeypatch, {"claude"})
+        assert pickable_runtimes() == [CLAUDE]
+
+    def test_nothing_installed_falls_back_to_claude(self, monkeypatch):
+        # The picker must never be empty; main.py already warns at boot.
+        from ccbot.runtimes import pickable_runtimes
+
+        self._patch_cfg(monkeypatch)
+        self._patch_which(monkeypatch, set())
+        assert pickable_runtimes() == [CLAUDE]
+
+    def test_availability_uses_first_token_of_command(self, monkeypatch):
+        # CLAUDE_COMMAND may carry flags — only the binary is probed.
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt,
+            "config",
+            MagicMock(claude_command="claude --dangerously-skip-permissions"),
+        )
+        self._patch_which(monkeypatch, {"claude"})
+        assert CLAUDE.is_available() is True
+
+    def test_default_runtime_honors_config(self, monkeypatch):
+        from ccbot.runtimes import default_runtime
+
+        self._patch_cfg(monkeypatch, default="codex")
+        self._patch_which(monkeypatch, {"claude", "codex"})
+        assert default_runtime() is CODEX
+
+    def test_default_runtime_degrades_when_uninstalled(self, monkeypatch):
+        # CCBOT_DEFAULT_RUNTIME=codex on a host without codex must not
+        # produce windows that can't launch.
+        from ccbot.runtimes import default_runtime
+
+        self._patch_cfg(monkeypatch, default="codex")
+        self._patch_which(monkeypatch, {"claude"})
+        assert default_runtime() is CLAUDE
+
+    def test_default_runtime_unknown_name_is_claude(self, monkeypatch):
+        from ccbot.runtimes import default_runtime
+
+        self._patch_cfg(monkeypatch, default="gemini-cli")
+        self._patch_which(monkeypatch, {"claude", "codex"})
+        assert default_runtime() is CLAUDE
+
+
 def _write_rollout(root, sid, cwd, *, ts="2026-07-15T10-00-00", turns=("hi",)):
     """Write a minimal codex rollout file under root and return its path."""
     day = root / "2026" / "07" / "15"
@@ -219,11 +335,13 @@ class TestCodexListSessions:
 
     @pytest.fixture(autouse=True)
     def _isolate_cache(self):
-        # CODEX is a module singleton; clear its per-path cwd cache so tmp paths
+        # CODEX is a module singleton; clear its per-path caches so tmp paths
         # from a prior test don't leak.
         CODEX._meta_cwd.clear()
+        CODEX._last_rollout.clear()
         yield
         CODEX._meta_cwd.clear()
+        CODEX._last_rollout.clear()
 
     def _patch_root(self, monkeypatch, root):
         from unittest.mock import MagicMock
@@ -287,3 +405,104 @@ class TestCodexListSessions:
         out = asyncio.run(CLAUDE.list_sessions(sm, "/some/dir"))
         assert out == ["sentinel"]
         sm.list_sessions_for_directory.assert_awaited_once_with("/some/dir")
+
+
+class TestStickyRolloutResolution:
+    """The per-tick rollout scan is capped; a quiet window whose rollout fell
+    out of the newest-N prefix must keep tracking via the last-resolved path
+    instead of silently going dark."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cache(self):
+        CODEX._meta_cwd.clear()
+        CODEX._last_rollout.clear()
+        yield
+        CODEX._meta_cwd.clear()
+        CODEX._last_rollout.clear()
+
+    def _patch_root(self, monkeypatch, root):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt, "config", MagicMock(codex_command="codex", codex_sessions_path=root)
+        )
+
+    def test_scan_miss_falls_back_to_last_resolved(self, tmp_path, monkeypatch):
+        import ccbot.runtimes as rt
+
+        root = tmp_path / "sessions"
+        path = _write_rollout(
+            root, "019f0000-0000-7000-8000-000000000001", "/home/user/project"
+        )
+        self._patch_root(monkeypatch, root)
+        assert CODEX._resolve_rollout("/home/user/project") == path  # populates cache
+
+        # Simulate the rollout dropping out of the scanned prefix.
+        monkeypatch.setattr(rt, "_CODEX_SCAN_CAP", 0)
+        assert CODEX._resolve_rollout("/home/user/project") == path  # sticky
+
+    def test_sticky_ignores_deleted_file(self, tmp_path, monkeypatch):
+        import ccbot.runtimes as rt
+
+        root = tmp_path / "sessions"
+        path = _write_rollout(
+            root, "019f0000-0000-7000-8000-000000000002", "/home/user/project"
+        )
+        self._patch_root(monkeypatch, root)
+        assert CODEX._resolve_rollout("/home/user/project") == path
+        path.unlink()
+        monkeypatch.setattr(rt, "_CODEX_SCAN_CAP", 0)
+        assert CODEX._resolve_rollout("/home/user/project") is None
+
+
+class TestHistoryTranscript:
+    """get_recent_messages resolves the transcript through the runtime — a
+    codex window's history comes from its rollout, not the (never-existing)
+    Claude projects JSONL."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cache(self):
+        CODEX._meta_cwd.clear()
+        CODEX._last_rollout.clear()
+        yield
+        CODEX._meta_cwd.clear()
+        CODEX._last_rollout.clear()
+
+    @pytest.mark.asyncio
+    async def test_codex_resolves_rollout_by_window_cwd(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        root = tmp_path / "sessions"
+        path = _write_rollout(
+            root, "019f0000-0000-7000-8000-000000000003", "/home/user/project"
+        )
+        monkeypatch.setattr(
+            rt, "config", MagicMock(codex_command="codex", codex_sessions_path=root)
+        )
+        sm = MagicMock()
+        sm.get_window_state.return_value = MagicMock(cwd="/home/user/project")
+        assert await CODEX.history_transcript(sm, "@5") == path
+
+    @pytest.mark.asyncio
+    async def test_codex_without_cwd_returns_none(self):
+        from unittest.mock import MagicMock
+
+        sm = MagicMock()
+        sm.get_window_state.return_value = MagicMock(cwd="")
+        assert await CODEX.history_transcript(sm, "@5") is None
+
+    @pytest.mark.asyncio
+    async def test_claude_delegates_to_session_resolution(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        sm = MagicMock()
+        sm.resolve_session_for_window = AsyncMock(
+            return_value=MagicMock(file_path="/tmp/x.jsonl")
+        )
+        from pathlib import Path as _P
+
+        assert await CLAUDE.history_transcript(sm, "@1") == _P("/tmp/x.jsonl")

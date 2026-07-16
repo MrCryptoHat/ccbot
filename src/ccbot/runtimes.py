@@ -32,9 +32,17 @@ Everything downstream of ``parse_entries`` (NewMessage → queue → voice / tab
 subclass implementing these; no monitor rewrite, and it becomes a picker tab
 automatically (``pickable_runtimes()`` walks the registry).
 
+Window-bootstrap divergence is expressed as *capabilities*, not name checks:
+``uses_session_map`` (hook wait / cwd persistence / stale-window sweep),
+``auto_forward_first_message``, ``ready_message_key``, ``interrupt_keys``
+(/esc), ``is_available`` (picker-tab gating on an installed CLI),
+``history_transcript`` (the /commands history source). Call sites must never
+compare ``runtime.name``.
+
 Key API: ``get_runtime(name)`` → AgentRuntime; module singletons ``CLAUDE`` /
-``CODEX``; ``RUNTIMES`` registry; ``monitored_runtimes()`` / ``pickable_runtimes()``;
-``is_valid_runtime``.
+``CODEX``; ``RUNTIMES`` registry; ``monitored_runtimes()`` /
+``pickable_runtimes()`` (installed CLIs only) / ``default_runtime()``
+(CCBOT_DEFAULT_RUNTIME, validated + availability-checked); ``is_valid_runtime``.
 """
 
 from __future__ import annotations
@@ -42,8 +50,10 @@ from __future__ import annotations
 import abc
 import json
 import logging
+import os
 import re
 import shlex
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +88,10 @@ _CODEX_ROLLOUT_SID_RE = re.compile(
 # count) runs for the ≤10 that match the cwd. Bounds a large ~/.codex tree.
 _CODEX_LIST_SCAN_CAP = 150
 _CODEX_LIST_MAX = 10
+# Newest rollouts scanned when resolving live windows' transcripts each monitor
+# tick. A window whose rollout falls outside this prefix is covered by the
+# sticky ``_last_rollout`` fallback (see CodexRuntime.__init__).
+_CODEX_SCAN_CAP = 60
 
 
 def _entry_context_tokens(entry: dict) -> int | None:
@@ -115,6 +129,27 @@ class AgentRuntime(abc.ABC):
     #: Short label for UI (the runtime picker, status). Bilingual-neutral —
     #: these are product names, not translated strings.
     display_name: str = ""
+    #: Whether this runtime's CLI registers sessions via a SessionStart hook
+    #: into a session_map (Claude Code). Gates the window-bootstrap behavior at
+    #: EVERY creation path (bot._create_and_bind_window, worktree provision,
+    #: auto-rebind): a session_map runtime waits for the hook entry and raises
+    #: the hook-missing alarm; a runtime WITHOUT one (Codex) skips the wait and
+    #: instead needs ``WindowState.cwd`` persisted so the monitor can resolve
+    #: its transcript by cwd. Also gates load_session_map's stale-window sweep
+    #: (only session_map windows may be reaped for being absent from the map).
+    #: Never branch on the runtime *name* for any of this — a third runtime
+    #: with its own hook must not silently inherit Codex's treatment.
+    uses_session_map: bool = True
+    #: Whether the first (pending) topic message may be auto-typed into a
+    #: freshly created window. False for CLIs that can open on an interactive
+    #: startup screen (Codex's sign-in menu) where blind typing + Enter would
+    #: take a step the user didn't choose.
+    auto_forward_first_message: bool = True
+    #: Keys sent by /esc to interrupt a running turn, in order (tmux key
+    #: names). Claude Code takes Escape (agent) + Ctrl-C (bash command);
+    #: Codex must NOT get the trailing Ctrl-C — on its TUI an idle Ctrl-C arms
+    #: the quit sequence instead of being a no-op.
+    interrupt_keys: tuple[str, ...] = ("Escape", "C-c")
     #: Emoji shown next to ``display_name`` on the picker's runtime tab (inactive
     #: tab: ``{icon} {display_name}``; active tab swaps it for a ``▸`` pointer,
     #: matching the agent-panel tab convention). A new runtime just sets its own.
@@ -150,6 +185,38 @@ class AgentRuntime(abc.ABC):
     def supports_panel_action(self, action: str) -> bool:
         """True iff this runtime offers the given gated panel button."""
         return action in self.panel_actions
+
+    def ready_message_key(self, resumed: bool) -> str:
+        """i18n key of the "window is ready" message posted after creation.
+
+        ``resumed`` distinguishes a fresh window from a ``--resume`` one. A
+        runtime with a startup screen the user must know about (Codex sign-in)
+        overrides this to its own key for both cases.
+        """
+        return "bot.window_resumed" if resumed else "bot.window_ready"
+
+    @abc.abstractmethod
+    def cli_command(self) -> str:
+        """The configured shell command that launches this runtime's CLI.
+
+        Only the first token is used for availability probing; the full string
+        is what ``launch_command`` builds on.
+        """
+        ...
+
+    def is_available(self) -> bool:
+        """True iff this runtime's CLI binary is installed (on PATH).
+
+        Gates the picker tabs (``pickable_runtimes``): a runtime whose binary
+        is absent must not be offered — typing a missing command into a fresh
+        pane leaves a dead window the health check reaps 30 s later, with no
+        explanation the user can act on. Probed per call (cheap PATH stat) so
+        installing the CLI needs no bot restart.
+        """
+        parts = self.cli_command().split()
+        if not parts:
+            return False
+        return shutil.which(os.path.expanduser(parts[0])) is not None
 
     def panel_slash(self, action: str) -> str | None:
         """Slash command this runtime types for a panel action (None if none)."""
@@ -204,6 +271,21 @@ class AgentRuntime(abc.ABC):
         ``session_manager`` is passed as ``Any`` to avoid an import cycle.
         """
         return []
+
+    async def history_transcript(
+        self, session_manager: Any, window_id: str
+    ) -> Path | None:
+        """Path of the window's current transcript for the history view.
+
+        Powers ``get_recent_messages`` (the /commands history pages and unread
+        catch-up) — runtime-dispatched because each CLI stores transcripts
+        differently. Default: the Claude session_id+cwd JSONL resolution (also
+        correct for docker bindings via their projects root).
+        """
+        session = await session_manager.resolve_session_for_window(window_id)
+        if session and session.file_path:
+            return Path(session.file_path)
+        return None
 
     @abc.abstractmethod
     def launch_command(
@@ -301,6 +383,9 @@ class ClaudeRuntime(AgentRuntime):
         }
     )
 
+    def cli_command(self) -> str:
+        return config.claude_command
+
     def launch_command(
         self, window_name: str, resume_session_id: str | None = None
     ) -> str:
@@ -366,6 +451,15 @@ class CodexRuntime(AgentRuntime):
     name = CODEX_RUNTIME
     display_name = "Codex"
     picker_icon = "🔵"
+    # No SessionStart hook in codex 0.144.x interactive launch — windows are
+    # tracked by cwd→rollout matching, so bootstrap must persist cwd and skip
+    # the claude session_map wait/alarm (see the base-class capability doc).
+    uses_session_map = False
+    # A fresh codex can open on its sign-in menu; blind-typing the pending
+    # topic message (with Enter) would pick a menu option the user never chose.
+    auto_forward_first_message = False
+    # Idle Ctrl-C arms codex's quit sequence — /esc sends Escape only.
+    interrupt_keys = ("Escape",)
     # Codex's TUI foreground process is `codex` (a native binary, not node) — the
     # dead-window health check must accept it or every codex window is reaped 30 s
     # after launch. codex owns the pane the whole time (subcommands run in its own
@@ -400,6 +494,21 @@ class CodexRuntime(AgentRuntime):
         # re-reading a rollout header every tick. Instance state on the CODEX
         # singleton.
         self._meta_cwd: dict[str, str | None] = {}
+        # cwd -> last successfully resolved rollout path. Sticky fallback: the
+        # mtime scan is capped (_CODEX_SCAN_CAP), so on a host with many codex
+        # sessions across other projects a quiet window's rollout can fall out
+        # of the scanned prefix — without this, its topic silently stops
+        # receiving replies. The cached path is re-checked (exists + cwd still
+        # matches) before use.
+        self._last_rollout: dict[str, Path] = {}
+
+    def cli_command(self) -> str:
+        return config.codex_command
+
+    def ready_message_key(self, resumed: bool) -> str:
+        # Fresh AND resumed codex windows may open on the sign-in menu — the
+        # ready message explains the nav-keys flow either way.
+        return "bot.window_codex_ready"
 
     def launch_command(
         self, window_name: str, resume_session_id: str | None = None
@@ -474,27 +583,46 @@ class CodexRuntime(AgentRuntime):
         self._meta_cwd[key] = cwd
         return cwd
 
-    def _resolve_rollout(self, cwd: str) -> Path | None:
-        """Newest codex rollout whose session_meta.cwd matches ``cwd``.
-
-        The live session is the most-recently-written file, so a restart or
-        /clear that begins a fresh rollout is picked up automatically next tick.
-        """
+    def _rollout_files_newest_first(self) -> list[Path]:
+        """All rollout files under the sessions root, newest first ([] on error)."""
         root = config.codex_sessions_path
         if not root.exists():
-            return None
+            return []
         try:
-            files = sorted(
+            return sorted(
                 root.rglob("rollout-*.jsonl"),
                 key=lambda p: p.stat().st_mtime,
                 reverse=True,
             )
         except OSError:
-            return None
-        for f in files[:60]:
-            if self._rollout_cwd(f) == cwd:
-                return f
+            return []
+
+    def _sticky_rollout(self, cwd: str) -> Path | None:
+        """Last rollout resolved for ``cwd``, if it still exists and matches."""
+        cached = self._last_rollout.get(cwd)
+        if cached and cached.exists() and self._rollout_cwd(cached) == cwd:
+            return cached
         return None
+
+    def _resolve_rollout(
+        self, cwd: str, files: list[Path] | None = None
+    ) -> Path | None:
+        """Newest codex rollout whose session_meta.cwd matches ``cwd``.
+
+        The live session is the most-recently-written file, so a restart or
+        /clear that begins a fresh rollout is picked up automatically next
+        tick. ``files`` lets iter_transcripts share ONE directory scan across
+        all codex windows. When the capped scan misses (busy hosts push a
+        quiet window's rollout past the prefix), the sticky last-resolved path
+        keeps the topic tracking instead of silently going dark.
+        """
+        if files is None:
+            files = self._rollout_files_newest_first()
+        for f in files[:_CODEX_SCAN_CAP]:
+            if self._rollout_cwd(f) == cwd:
+                self._last_rollout[cwd] = f
+                return f
+        return self._sticky_rollout(cwd)
 
     async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
         """Codex rollouts whose session_meta.cwd matches ``cwd`` (newest first).
@@ -503,18 +631,7 @@ class CodexRuntime(AgentRuntime):
         first-line cwd read), then fully reads only the ≤10 that match to build
         summary + count — the same AgentSession the Claude picker shows.
         """
-        root = config.codex_sessions_path
-        if not root.exists():
-            return []
-        try:
-            files = sorted(
-                root.rglob("rollout-*.jsonl"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-        except OSError:
-            return []
-
+        files = self._rollout_files_newest_first()
         sessions: list[AgentSession] = []
         for f in files[:_CODEX_LIST_SCAN_CAP]:
             if len(sessions) >= _CODEX_LIST_MAX:
@@ -545,10 +662,18 @@ class CodexRuntime(AgentRuntime):
     async def iter_transcripts(
         self, session_manager: Any, monitor: Any, active_session_ids: set[str]
     ) -> list[TranscriptRef]:
+        codex_windows = [
+            (binding, ws)
+            for binding, ws in list(session_manager.window_states.items())
+            if getattr(ws, "runtime", CLAUDE_RUNTIME) == self.name
+        ]
+        if not codex_windows:
+            return []
+        # ONE directory scan shared by every codex window this tick — the
+        # rglob+stat sort is the expensive part and is identical per window.
+        files = self._rollout_files_newest_first()
         refs: list[TranscriptRef] = []
-        for binding, ws in list(session_manager.window_states.items()):
-            if getattr(ws, "runtime", CLAUDE_RUNTIME) != self.name:
-                continue
+        for binding, ws in codex_windows:
             cwd = ws.cwd
             # cwd is normally set at bind time; recover it from the live tmux
             # window for codex windows created before that (or if it was lost).
@@ -559,10 +684,10 @@ class CodexRuntime(AgentRuntime):
                 if win and win.cwd:
                     cwd = win.cwd
                     ws.cwd = cwd
-                    session_manager._save_state()
+                    session_manager.save_state()
                 else:
                     continue
-            rollout = self._resolve_rollout(cwd)
+            rollout = self._resolve_rollout(cwd, files)
             if rollout is None:
                 continue
             match = _CODEX_ROLLOUT_SID_RE.search(rollout.name)
@@ -572,9 +697,19 @@ class CodexRuntime(AgentRuntime):
             # Mirror the rollout's session id onto the window so routing works.
             if ws.session_id != sid:
                 ws.session_id = sid
-                session_manager._save_state()
+                session_manager.save_state()
             refs.append((sid, rollout))
         return refs
+
+    async def history_transcript(
+        self, session_manager: Any, window_id: str
+    ) -> Path | None:
+        # History reads the same rollout the monitor tracks — resolved by cwd,
+        # not via the Claude projects tree (which never holds codex sessions).
+        ws = session_manager.get_window_state(window_id)
+        if not ws.cwd:
+            return None
+        return self._resolve_rollout(ws.cwd)
 
 
 CLAUDE = ClaudeRuntime()
@@ -586,11 +721,27 @@ RUNTIMES: dict[str, AgentRuntime] = {CLAUDE.name: CLAUDE, CODEX.name: CODEX}
 def pickable_runtimes() -> list[AgentRuntime]:
     """Runtimes offered as tabs in the session picker, in display order.
 
-    All registered runtimes (registry insertion order: Claude, Codex, …). A new
-    runtime added to ``RUNTIMES`` becomes a picker tab automatically — the
-    builder never hardcodes a runtime.
+    Registered runtimes whose CLI is actually installed (``is_available``) —
+    a fresh install without codex must never see a Codex tab whose "new
+    session" types a missing command into the pane (dead window, no
+    explanation). Registry insertion order (Claude, Codex, …); a new runtime
+    added to ``RUNTIMES`` becomes a picker tab automatically. Falls back to
+    Claude if nothing probes available (main.py already warns at boot), so the
+    picker is never empty.
     """
-    return list(RUNTIMES.values())
+    available = [rt for rt in RUNTIMES.values() if rt.is_available()]
+    return available or [CLAUDE]
+
+
+def default_runtime() -> AgentRuntime:
+    """The runtime new windows default to (``CCBOT_DEFAULT_RUNTIME``).
+
+    Resolves the configured name through the registry (unknown → Claude) and
+    falls back to Claude when the configured runtime's CLI isn't installed —
+    the knob must never produce windows that can't launch.
+    """
+    rt = get_runtime(config.default_runtime)
+    return rt if rt.is_available() else CLAUDE
 
 
 def monitored_runtimes() -> list[AgentRuntime]:

@@ -250,6 +250,20 @@ STRINGS.update(
                 "Device Code”; I'll post the sign-in link as a separate message."
             ),
         },
+        "bot.same_dir_conflict": {
+            "ru": (
+                "⚠️ В папке `{dir}` уже работает агент {agent} из другого топика. "
+                "{agent} не умеет разделять две сессии в одной папке — ответы "
+                "перепутаются между топиками. Продолжите в том топике или "
+                "выберите другую папку."
+            ),
+            "en": (
+                "⚠️ A {agent} agent from another topic is already running in "
+                "`{dir}`. {agent} can't keep two sessions in one folder apart — "
+                "replies would cross between topics. Continue in that topic or "
+                "pick a different folder."
+            ),
+        },
         "bot.bound_to_window": {
             "ru": "✅ Привязано к окну `{name}`.",
             "en": "✅ Bound to window `{name}`.",

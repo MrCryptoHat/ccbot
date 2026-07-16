@@ -403,7 +403,7 @@ async def _handle_dir_confirm(
     user: User,
 ) -> None:
     """Confirm directory selection — show the runtime-tabbed session picker."""
-    from ..runtimes import get_runtime
+    from ..runtimes import default_runtime
 
     selected_path = _get_user_data(context, BROWSE_PATH_KEY)
     if selected_path is None:
@@ -424,18 +424,20 @@ async def _handle_dir_confirm(
 
     clear_browse_state(context.user_data)
 
-    # Always the runtime-tabbed session picker, defaulting to the Claude tab.
-    # Its resume list (possibly empty) shows below the Claude/Codex tabs; the
+    # Always the runtime-tabbed session picker; the initially active tab is
+    # the deployment default (CCBOT_DEFAULT_RUNTIME, availability-checked).
+    # Its resume list (possibly empty) shows below the runtime tabs; the
     # user switches tabs to see a runtime's sessions, or taps "➕ New session"
     # to start fresh on the active runtime. This replaces the old two-screen
     # flow (session picker → separate runtime picker for the no-sessions case).
-    sessions = await get_runtime("claude").list_sessions(session_manager, selected_path)
+    rt = default_runtime()
+    sessions = await rt.list_sessions(session_manager, selected_path)
     if context.user_data is not None:
         context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
         context.user_data[SESSIONS_KEY] = sessions
-        context.user_data[PICKER_RUNTIME_KEY] = "claude"
+        context.user_data[PICKER_RUNTIME_KEY] = rt.name
         context.user_data["_selected_path"] = selected_path
-    text, keyboard = build_session_picker(sessions, selected_path, "claude")
+    text, keyboard = build_session_picker(sessions, selected_path, rt.name)
     await safe_edit(query, text, reply_markup=keyboard)
     await query.answer()
 
