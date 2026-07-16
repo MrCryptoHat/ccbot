@@ -128,6 +128,63 @@ async def send_with_fallback(
         return await _plain_fallback(primary_exc)
 
 
+# sendRichMessage input cap is 32768 UTF-8 chars (Bot API 10.2); headroom for
+# the auto-detected entities Telegram may add.
+RICH_MESSAGE_MAX_CHARS = 32000
+
+
+async def send_rich_message(
+    bot: Bot,
+    chat_id: int,
+    markdown: str,
+    *,
+    thread_id: int | None = None,
+    silent: bool = False,
+    reply_markup: Any = None,
+) -> int | None:
+    """Send a Bot API 10.2 rich message (native tables / headings / code).
+
+    PTB has no native method for it yet, so this goes through ``bot._post`` —
+    which still rides ExtBot's rate limiter (``_do_post`` is the documented
+    rate-limiting seam), so the stream/interactive/background contexts apply
+    exactly like every other send. Telegram parses the ``markdown`` itself —
+    no MarkdownV2 escaping on our side.
+
+    Returns the sent message_id, or None on any non-flood failure — the caller
+    falls back to the legacy MarkdownV2 path, so a rejected rich message never
+    loses content. RetryAfter and topic-gone propagate unchanged: the worker's
+    requeue / purge logic must stay uniform across send styles.
+    """
+    if not markdown or len(markdown) > RICH_MESSAGE_MAX_CHARS:
+        return None
+    data: dict[str, Any] = {
+        "chat_id": chat_id,
+        "rich_message": {"markdown": markdown},
+    }
+    if thread_id is not None:
+        data["message_thread_id"] = thread_id
+    if silent:
+        data["disable_notification"] = True
+    if reply_markup is not None:
+        data["reply_markup"] = reply_markup
+    try:
+        result = await bot._post("sendRichMessage", data)  # noqa: SLF001
+    except RetryAfter:
+        raise
+    except BadRequest as e:
+        if is_topic_gone_error(e):
+            raise
+        logger.warning("sendRichMessage rejected (%s) — legacy fallback", e)
+        return None
+    except Exception as e:  # noqa: BLE001 — any transport trouble → fallback
+        logger.warning("sendRichMessage failed (%s) — legacy fallback", e)
+        return None
+    if isinstance(result, dict):
+        mid = result.get("message_id")
+        return int(mid) if mid else None
+    return None
+
+
 async def send_photo(
     bot: Bot,
     chat_id: int,

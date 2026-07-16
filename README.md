@@ -1,13 +1,15 @@
-# ccbot: control Claude Code from Telegram
+# ccbot: control Claude Code (and other terminal agents) from Telegram
 
 [![Tests](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml/badge.svg)](https://github.com/MrCryptoHat/ccbot/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
 
-A Telegram remote for **Claude Code**. Sessions run in **tmux** on your
-machine or server; the bot streams replies into forum **topics** (one topic =
-one session) and types your answers back into the pane. Press keys, approve
-permission prompts, switch models, run several projects side by side.
+A Telegram remote for terminal AI agents — **Claude Code** first-class,
+**OpenAI Codex** built-in, [others pluggable](docs/adding-a-runtime.md).
+Sessions run in **tmux** on your machine or server; the bot streams replies
+into forum **topics** (one topic = one session) and types your answers back
+into the pane. Press keys, approve permission prompts, switch models, run
+several projects — and several agents — side by side.
 
 Start a refactor at your desk, approve it from your phone, `tmux attach` back
 into the same terminal whenever you want.
@@ -17,23 +19,24 @@ into the same terminal whenever you want.
 
 ## Why ccbot?
 
-Claude Code runs in your terminal. When you step away — commuting, on the
-couch, away from the desk — the session keeps working, but you lose visibility
-and control.
+Your coding agent runs in your terminal. When you step away — commuting, on
+the couch, away from the desk — the session keeps working, but you lose
+visibility and control.
 
 ccbot lets you **continue the same session from Telegram**. The key design
-choice is that it drives **tmux**, not the Claude Code SDK. Your Claude Code
-process stays exactly where it is; ccbot reads its transcript and sends
-keystrokes to the pane. So:
+choice is that it drives **tmux**, not an agent SDK. Your agent process stays
+exactly where it is; ccbot reads its transcript and sends keystrokes to the
+pane. So:
 
-- **Switch desktop → phone mid-conversation** — Claude is on a long refactor?
-  Walk away and keep monitoring/answering from Telegram.
+- **Switch desktop → phone mid-conversation** — the agent is on a long
+  refactor? Walk away and keep monitoring/answering from Telegram.
 - **Switch back anytime** — the tmux session was never interrupted; just
   `tmux attach` and you're back in the terminal with full scrollback.
 - **Run sessions in parallel** — each topic maps to its own tmux window, so you
-  juggle several projects from one chat group.
+  juggle several projects (and mix Claude Code / Codex topics) from one chat
+  group.
 - **Nothing to migrate** — no SDK wrapper, no cloud middleman. Your existing
-  Claude Code setup, plan and MCP servers work as-is.
+  agent setup, plan and MCP servers work as-is.
 
 Because it's a thin control layer over tmux, the terminal stays the source of
 truth and you never lose the ability to switch back.

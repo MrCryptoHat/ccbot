@@ -66,3 +66,74 @@ class TestNetworkErrorNoDuplicate:
         result = await send_with_fallback(bot, 123, "hello *broken")
         assert result is not None
         assert bot.send_message.await_count == 2
+
+
+class TestSendRichMessage:
+    """Bot API 10.2 rich-first sends: raw _post, message_id on success, None
+    (→ legacy fallback) on rejection, RetryAfter / topic-gone re-raised so the
+    worker's requeue and purge logic stay uniform."""
+
+    def _bot(self, post):
+        from unittest.mock import MagicMock
+
+        bot = MagicMock()
+        bot._post = post
+        return bot
+
+    @pytest.mark.asyncio
+    async def test_success_returns_message_id(self):
+        from unittest.mock import AsyncMock
+
+        from ccbot.handlers.message_sender import send_rich_message
+
+        post = AsyncMock(return_value={"message_id": 77})
+        mid = await send_rich_message(self._bot(post), -100, "## hi", thread_id=5)
+        assert mid == 77
+        endpoint, data = post.await_args.args
+        assert endpoint == "sendRichMessage"
+        assert data["rich_message"] == {"markdown": "## hi"}
+        assert data["message_thread_id"] == 5
+        assert "disable_notification" not in data  # text replies ring
+
+    @pytest.mark.asyncio
+    async def test_bad_request_falls_back_with_none(self):
+        from unittest.mock import AsyncMock
+
+        from ccbot.handlers.message_sender import send_rich_message
+
+        post = AsyncMock(side_effect=BadRequest("can't parse blocks"))
+        assert await send_rich_message(self._bot(post), -100, "x") is None
+
+    @pytest.mark.asyncio
+    async def test_retry_after_propagates(self):
+        from unittest.mock import AsyncMock
+
+        from ccbot.handlers.message_sender import send_rich_message
+
+        post = AsyncMock(side_effect=RetryAfter(3))
+        with pytest.raises(RetryAfter):
+            await send_rich_message(self._bot(post), -100, "x")
+
+    @pytest.mark.asyncio
+    async def test_topic_gone_propagates(self):
+        from unittest.mock import AsyncMock
+
+        from ccbot.handlers.message_sender import send_rich_message
+
+        post = AsyncMock(side_effect=BadRequest("Topic_id_invalid"))
+        with pytest.raises(BadRequest):
+            await send_rich_message(self._bot(post), -100, "x")
+
+    @pytest.mark.asyncio
+    async def test_oversize_skipped_without_api_call(self):
+        from unittest.mock import AsyncMock
+
+        from ccbot.handlers.message_sender import (
+            RICH_MESSAGE_MAX_CHARS,
+            send_rich_message,
+        )
+
+        post = AsyncMock()
+        big = "x" * (RICH_MESSAGE_MAX_CHARS + 1)
+        assert await send_rich_message(self._bot(post), -100, big) is None
+        post.assert_not_awaited()

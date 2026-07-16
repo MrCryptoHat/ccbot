@@ -98,6 +98,7 @@ from .handlers.media import (
     photo_handler,
     voice_handler,
 )
+from .rich_message import flatten_rich_message
 from .handlers.message_queue import (
     enqueue_content_message,
     get_message_queue,
@@ -105,6 +106,7 @@ from .handlers.message_queue import (
 )
 from .handlers.message_sender import (
     NO_LINK_PREVIEW,
+    RICH_MESSAGE_MAX_CHARS,
     safe_edit,
     safe_reply,
     safe_send,
@@ -192,7 +194,15 @@ async def _forward_pending_after_autobind(
         logger.warning("Auto-bind: failed to forward pending text: %s", msg)
 
 
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def text_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text_override: str | None = None,
+) -> None:
+    """Route an inbound text message. ``text_override`` substitutes the message
+    text for updates whose content isn't in ``message.text`` (rich messages
+    flattened by rich_message_handler) — everything else (binding, states,
+    coalescing, delivery) runs identically."""
     user = update.effective_user
     if not user or not is_user_allowed(user.id):
         if update.message:
@@ -202,7 +212,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         return
 
-    if not update.message or not update.message.text:
+    if not update.message or not (text_override or update.message.text):
         return
 
     thread_id = get_thread_id(update)
@@ -221,7 +231,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if await consume_worktree_name(update, context):
         return
 
-    text = update.message.text
+    text = text_override or update.message.text
+    assert text is not None  # narrowed by the guard above
 
     # Ignore text in picker/browser modes (only for the same thread)
     _STATE_CHECKS: list[tuple[str, str, object]] = [
@@ -633,6 +644,40 @@ async def _capture_bash_output(
 # --- Window creation helper ---
 
 
+async def rich_message_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Bot API 10.1 rich messages (tables / headings / lists composed in the
+    Telegram client). PTB ≤ Bot API 10.0 doesn't parse ``Message.rich_message``
+    — the payload surfaces raw in ``api_kwargs`` and ``message.text`` is None,
+    so without this handler such messages fell through to
+    unsupported_content_handler («stickers can't be forwarded»). Flatten the
+    block tree to markdown and run the normal text path.
+    """
+    if not update.message:
+        return
+    rich = update.message.api_kwargs.get("rich_message")
+    text = flatten_rich_message(rich)
+    if not text:
+        # Nothing textual salvaged (e.g. a pure media collage) — the honest
+        # answer is the regular unsupported-content reply.
+        await unsupported_content_handler(update, context)
+        return
+    logger.info("Rich message flattened to %d chars of markdown", len(text))
+    await text_handler(update, context, text_override=text)
+
+
+class _RichMessageFilter(filters.MessageFilter):
+    """Matches messages carrying an unparsed Bot API 10.1 rich_message."""
+
+    def filter(self, message: object) -> bool:
+        api_kwargs = getattr(message, "api_kwargs", None) or {}
+        return bool(api_kwargs.get("rich_message"))
+
+
+rich_message_filter = _RichMessageFilter(name="ccbot.rich_message")
+
+
 async def _create_and_bind_window(
     query: object,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1038,6 +1083,23 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             msg.role,
         )
 
+        # Rich-first (Bot API 10.2): exactly where the legacy pipeline
+        # degrades — a table/box-art became a PNG (table_texts), long code
+        # became a file attachment (code_files), or the reply split into
+        # [i/N] pages — carry the ORIGINAL markdown alongside; the queue
+        # worker tries one native sendRichMessage and falls back to the
+        # legacy parts on any failure. Plain short replies keep the proven
+        # MarkdownV2 path untouched.
+        rich_markdown = ""
+        if (
+            config.rich_messages_enabled
+            and msg.content_type == "text"
+            and msg.role == "assistant"
+            and len(msg.text) <= RICH_MESSAGE_MAX_CHARS
+            and (table_texts or code_files or len(parts) > 1)
+        ):
+            rich_markdown = msg.text
+
         if msg.is_complete:
             # Send typing indicator for text content
             if msg.content_type == "text":
@@ -1066,6 +1128,7 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 entry_ts_iso=msg.entry_ts_iso,
                 table_texts=table_texts,
                 code_files=code_files,
+                rich_markdown=rich_markdown,
             )
 
             # Final assistant text → turn done. Typing heartbeat stops; the
@@ -1328,6 +1391,12 @@ def create_bot() -> Application:
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, document_handler))
     application.add_handler(MessageHandler(filters.VOICE, voice_handler))
+    # Bot API 10.1 rich messages (client-composed tables/headings): PTB doesn't
+    # parse them, message.text is None — MUST precede the unsupported catch-all
+    # or they bounce with «stickers can't be forwarded».
+    application.add_handler(
+        MessageHandler(rich_message_filter & ~filters.COMMAND, rich_message_handler)
+    )
     application.add_handler(
         MessageHandler(
             ~filters.COMMAND & ~filters.TEXT & ~filters.StatusUpdate.ALL,

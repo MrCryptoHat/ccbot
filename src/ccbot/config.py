@@ -266,6 +266,15 @@ class Config:
         self.codex_bypass_sandbox = (
             os.getenv("CODEX_BYPASS_SANDBOX", "false").lower() == "true"
         )
+        # Rich-message delivery (Bot API 10.2 sendRichMessage): where the
+        # legacy path degrades (table → PNG image, long code → file attachment,
+        # >4096 → [i/N] splitting), try ONE native rich message first — real
+        # tables/headings/highlighted code, 32k char limit — falling back to
+        # the proven MarkdownV2 pipeline on any failure. Kill-switch, default
+        # on.
+        self.rich_messages_enabled = (
+            os.getenv("CCBOT_RICH_MESSAGES", "true").lower() == "true"
+        )
         # Root of Codex's rollout transcripts (~/.codex/sessions/YYYY/MM/DD/
         # rollout-*.jsonl). The monitor resolves a codex window's transcript by
         # matching a rollout's session_meta.cwd to the window's cwd (newest).

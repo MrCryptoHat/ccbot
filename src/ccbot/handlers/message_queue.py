@@ -54,6 +54,7 @@ from .message_sender import (
     is_topic_gone_error,
     send_document,
     send_photo,
+    send_rich_message,
     send_voice,
     send_with_fallback,
     strip_sentinels,
@@ -96,6 +97,12 @@ class MessageTask:
     # to avoid TOCTOU: if /voice flips between enqueue and dequeue, the
     # message still delivers in the mode it was composed for.
     voice_mode: bool = False
+    # Original (pre-extraction, pre-split) markdown of a reply whose legacy
+    # delivery would degrade — a table/box-art became a PNG, long code became
+    # a file, or the text split into [i/N] pages. When set, the worker tries
+    # ONE native sendRichMessage first (Bot API 10.2: real tables/headings,
+    # 32k limit) and falls back to ``parts`` on any failure. Never merged.
+    rich_markdown: str = ""
     # How many times this task was requeued after a RetryAfter (flood
     # control) — bounds the retry loop, see _requeue_content_task.
     flood_requeues: int = 0
@@ -187,6 +194,10 @@ def _can_merge_tasks(base: MessageTask, candidate: MessageTask) -> bool:
     # deliver the actual reply silently (and vice versa would ring for
     # thinking).
     if base.content_type != candidate.content_type:
+        return False
+    # Rich-first tasks aren't merged — the merged task would drop
+    # rich_markdown (or deliver one task's rich text and lose the other's).
+    if base.rich_markdown or candidate.rich_markdown:
         return False
     # Tasks carrying out-of-band blocks (table/box-art images, code files)
     # aren't merged: the merged task would drop those lists (not copied in
@@ -1039,6 +1050,33 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
         from .commands import menu_keyboard
 
         menu_markup = menu_keyboard()
+
+    # Rich-first delivery: one native sendRichMessage with the original
+    # markdown (real table/heading/code rendering, no [i/N] pages). Any
+    # failure inside send_rich_message returns None and the legacy parts
+    # below deliver as before — content is never lost. RetryAfter propagates
+    # with parts AND rich_markdown intact, so the flood requeue retries the
+    # same way.
+    if task.rich_markdown and task.content_type == "text":
+        rich_id = await send_rich_message(
+            bot,
+            chat_id,
+            strip_output_tags(task.rich_markdown),
+            thread_id=task.thread_id,
+            silent=silent,
+            reply_markup=menu_markup,
+        )
+        if rich_id is not None:
+            note_topic_message(chat_id, rich_id, user_id, tid)
+            if menu_markup is not None and task.thread_id:
+                session_manager.mark_menu_shown(user_id, task.thread_id)
+            task.parts = []
+            task.rich_markdown = ""
+            await _send_task_images(bot, chat_id, task)
+            await _emit_links(bot, chat_id, task, link_source, user_id, tid)
+            return
+        task.rich_markdown = ""  # don't retry rich on a requeue
+
     last_msg_id: int | None = None
     part_idx = 0
     try:
@@ -1101,6 +1139,7 @@ async def enqueue_content_message(
     entry_ts_iso: str | None = None,
     table_texts: list[str] | None = None,
     code_files: list[tuple[str, str]] | None = None,
+    rich_markdown: str = "",
 ) -> None:
     """Enqueue a content message task.
 
@@ -1150,6 +1189,7 @@ async def enqueue_content_message(
         voice_mode=voice_mode,
         table_texts=table_texts or [],
         code_files=code_files or [],
+        rich_markdown=rich_markdown,
     )
     queue.put_nowait(task)
 

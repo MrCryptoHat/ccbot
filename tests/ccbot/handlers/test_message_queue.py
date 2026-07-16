@@ -170,6 +170,14 @@ class TestCanMergeTasks:
         b = self._task(content_type="thinking")
         assert _can_merge_tasks(a, b) is True
 
+    def test_refuses_to_merge_rich_tasks(self):
+        """A merged task would drop rich_markdown (or deliver one task's rich
+        text and silently lose the other's) — rich-first tasks stay solo."""
+        a = self._task(rich_markdown="# original")
+        b = self._task()
+        assert _can_merge_tasks(a, b) is False
+        assert _can_merge_tasks(b, a) is False
+
 
 class TestSilentNotificationPolicy:
     """Plumbing content types (tool events, thinking, slash-command echoes,
