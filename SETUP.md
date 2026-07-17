@@ -1,8 +1,9 @@
 # Setup
 
 A first-run walkthrough for a fresh install. The bot bridges Telegram Forum
-**topics** to Claude Code sessions running in **tmux** — so all you need is a
-Linux/macOS host with tmux, the `claude` CLI, and `uv`.
+**topics** to terminal AI-agent sessions running in **tmux** — Claude Code
+first-class, OpenAI Codex built-in (step 1 below), other CLIs pluggable — so
+all you need is a Linux/macOS host with tmux, the `claude` CLI, and `uv`.
 
 ## 1. Prerequisites
 

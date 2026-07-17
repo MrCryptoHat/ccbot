@@ -1,7 +1,7 @@
 [project]
 name = "ccbot"
 version = "0.1.0"
-description = "Control Claude Code from Telegram — forum topics bridged to tmux sessions"
+description = "Control Claude Code, Codex and other terminal AI agents from Telegram — forum topics bridged to tmux sessions"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

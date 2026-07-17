@@ -177,13 +177,13 @@ STRINGS.update(
             "en": "❌ Please write in a named topic: one topic is one session. Create a new topic to start.",
         },
         "bot.private_start": {
-            "ru": "👋 Я мост между Telegram и Claude Code, работаю в группе с топиками.\n\n1. Создайте группу и включите в её настройках *Темы* (Topics).\n2. Добавьте меня в группу и сделайте админом.\n3. Создайте топик с названием папки проекта — и просто пишите.\n\nПодробная инструкция — SETUP.md в репозитории.",
-            "en": "👋 I bridge Telegram and Claude Code, and I work in a group with topics.\n\n1. Create a group and enable *Topics* in its settings.\n2. Add me to the group and make me an admin.\n3. Create a topic named after a project folder — and just write.\n\nFull walkthrough — SETUP.md in the repository.",
+            "ru": "👋 Я мост между Telegram и терминальными AI-агентами (Claude Code, Codex, …), работаю в группе с топиками.\n\n1. Создайте группу и включите в её настройках *Темы* (Topics).\n2. Добавьте меня в группу и сделайте админом.\n3. Создайте топик с названием папки проекта — и просто пишите.\n\nПодробная инструкция — SETUP.md в репозитории.",
+            "en": "👋 I bridge Telegram and terminal AI agents (Claude Code, Codex, …), and I work in a group with topics.\n\n1. Create a group and enable *Topics* in its settings.\n2. Add me to the group and make me an admin.\n3. Create a topic named after a project folder — and just write.\n\nFull walkthrough — SETUP.md in the repository.",
         },
         "bot.help": {
             "ru": (
                 "🤖 *Как я работаю*\n"
-                "Один топик = один агент Claude Code. Создайте топик (назовите его именем папки проекта — привяжется сам), напишите сообщение — оно уйдёт агенту, а его ответы будут приходить сюда.\n\n"
+                "Один топик = один терминальный агент: Claude Code, Codex — при выборе сессии есть вкладка на каждый установленный CLI, дальше будут и другие. Создайте топик (назовите его именем папки проекта — привяжется сам), напишите сообщение — оно уйдёт агенту, а его ответы будут приходить сюда.\n\n"
                 "*Кнопки внизу:* 🖥️ Сервер — сводка сервера · 👾 Агент — панель управления (живой скриншот терминала, клавиши, режим, модель, перезапуск…).\n\n"
                 "*Переключатели:*\n"
                 "/voice — отвечать голосом (нужен TTS-ключ)\n"
@@ -195,14 +195,14 @@ STRINGS.update(
                 "*Полезно знать:*\n"
                 "• 👍 на сообщении агента = подтвердить (Enter или «да»)\n"
                 "• Фото, файлы и голосовые тоже уходят агенту\n"
-                "• Незнакомые /команды (/clear, /compact, /review…) уходят прямо в Claude Code\n"
+                "• Незнакомые /команды (/clear, /compact, /review…) уходят прямо агенту\n"
                 "• 🌳 в панели — параллельный агент в git worktree\n"
                 "• Закрытие топика завершает его сессию\n\n"
                 "*Если агент молчит:* проверьте hook (`uv run ccbot hook --install` на сервере), затем /status и панель 👾 Агент → 📸."
             ),
             "en": (
                 "🤖 *How I work*\n"
-                "One topic = one Claude Code agent. Create a topic (name it after a project folder — it binds itself), send a message — it goes to the agent, and its replies come back here.\n\n"
+                "One topic = one terminal agent: Claude Code, Codex — the session picker has a tab per installed CLI, with more runtimes to come. Create a topic (name it after a project folder — it binds itself), send a message — it goes to the agent, and its replies come back here.\n\n"
                 "*Bottom buttons:* 🖥️ Server — server summary · 👾 Agent — control panel (live terminal screenshot, keys, mode, model, restart…).\n\n"
                 "*Toggles:*\n"
                 "/voice — spoken replies (needs a TTS key)\n"
@@ -214,7 +214,7 @@ STRINGS.update(
                 "*Good to know:*\n"
                 "• 👍 on an agent message = confirm (Enter or “yes”)\n"
                 "• Photos, files and voice messages reach the agent too\n"
-                "• Unknown /commands (/clear, /compact, /review…) go straight to Claude Code\n"
+                "• Unknown /commands (/clear, /compact, /review…) go straight to the agent\n"
                 "• 🌳 in the panel — a parallel agent in a git worktree\n"
                 "• Closing a topic ends its session\n\n"
                 "*If the agent is silent:* check the hook (`uv run ccbot hook --install` on the server), then /status and the 👾 Agent panel → 📸."
@@ -299,8 +299,8 @@ STRINGS.update(
             "en": "⚠️ The session-tracking hook is not installed — the agent's replies will NOT reach this chat.\nOn the server run: `uv run ccbot hook --install`, then restart the agent.",
         },
         "bot.start_welcome": {
-            "ru": "🤖 *Claude Code в Telegram*\n\nКаждый топик — отдельная сессия. Создайте новый топик, чтобы начать.",
-            "en": "🤖 *Claude Code Monitor*\n\nEach topic is a session. Create a new topic to start.",
+            "ru": "🤖 *Терминальные агенты в Telegram*\n\nКаждый топик — отдельный агент (Claude Code, Codex, …). Создайте новый топик, чтобы начать.",
+            "en": "🤖 *Your terminal agents in Telegram*\n\nEach topic is one agent (Claude Code, Codex, …). Create a new topic to start.",
         },
         "bot.agent_waiting_in_dialog": {
             "ru": "⚠️ Агент ждёт ответа в диалоге \\(фото выше\\)\\. Сначала выбери вариант кнопками ↑↓⏎, потом отправь сообщение ещё раз\\.",
@@ -697,7 +697,7 @@ STRINGS.update(
         # -- media --
         "media.unsupported": {
             "ru": "⚠ Стикеры, видео и прочие медиа я переслать агенту не могу. Подойдут текст, фото, голосовые и файлы.",
-            "en": "⚠ Stickers, video and other media can't be forwarded to Claude Code. Text, photos, voice messages and files work.",
+            "en": "⚠ Stickers, video and other media can't be forwarded to the agent. Text, photos, voice messages and files work.",
         },
         "media.use_topic": {
             "ru": "❌ Пишите в отдельном топике — создайте новый топик, чтобы начать сессию.",
@@ -725,7 +725,7 @@ STRINGS.update(
         },
         "media.file_sent": {
             "ru": "📎 Файл «{name}» передал агенту.",
-            "en": "📎 File '{name}' sent to Claude Code.",
+            "en": "📎 File '{name}' sent to the agent.",
         },
         "media.blocked_widget": {
             "ru": "⚠ Агент сейчас ждёт ответа в диалоге (фото с кнопками выше). Файл я сохранил — ответьте на вопрос и пришлите его ещё раз.",
