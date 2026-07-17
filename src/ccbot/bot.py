@@ -56,6 +56,7 @@ from .handlers.commands import (
     bind_command,
     menu_command,
     react_command,
+    tables_command,
     restart_command,
     screenshot_command,
     start_command,
@@ -1121,6 +1122,10 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             and len(msg.text) <= RICH_MESSAGE_MAX_CHARS
             and (table_texts or code_files or len(parts) > 1)
             and is_rich_safe(msg.text)
+            # /tables=image: extracted tables/box-art must arrive as PNGs, so
+            # a message carrying any skips whole-message rich (which would
+            # render them natively) and takes the legacy parts.
+            and not (table_texts and session_manager.table_style == "image")
         ):
             rich_markdown = msg.text
 
@@ -1361,6 +1366,7 @@ def create_bot() -> Application:
     application.add_handler(CommandHandler("restart", restart_command))
     application.add_handler(CommandHandler("voice", voice_command))
     application.add_handler(CommandHandler("react", react_command))
+    application.add_handler(CommandHandler("tables", tables_command))
     application.add_handler(CommandHandler("diff", diff_command))
     application.add_handler(CommandHandler("pin", pin_command))
     application.add_handler(CommandHandler("lang", lang_command))

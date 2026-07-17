@@ -77,6 +77,20 @@ class TestConfigClaudeProjectsPath:
         cfg = Config()
         assert cfg.claude_projects_path == Path(custom_path)
 
+    def test_table_style_default_is_rich(self):
+        cfg = Config()
+        assert cfg.table_style_default == "rich"
+
+    def test_table_style_env(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_TABLE_STYLE", "image")
+        cfg = Config()
+        assert cfg.table_style_default == "image"
+
+    def test_table_style_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_TABLE_STYLE", "fancy")
+        cfg = Config()
+        assert cfg.table_style_default == "rich"
+
     def test_browse_root_unset_is_none(self):
         """Unset → legacy behavior (browser starts at $HOME, up to /)."""
         cfg = Config()

@@ -276,6 +276,39 @@ def _code_filename(fence: str) -> str:
     return f"snippet.{_CODE_LANG_EXT.get(lang, 'txt')}"
 
 
+class ImageBlock(str):
+    """The render text of an out-of-band image block (a plain ``str``), plus
+    the table's original pipe markdown riding along as ``rich_markdown``.
+
+    A str subclass so every existing consumer (PNG render, code-block
+    fallback, tests) keeps treating it as the aligned text; the send layer
+    reads ``rich_markdown`` to deliver the table as a native Telegram table
+    instead of a PNG when the global /tables style says so. ``""`` = not a
+    table (box-art) — those are drawn art and never go rich. NOTE: any str
+    operation (slice, strip) returns a plain str and drops the attribute —
+    these entries are only ever passed around whole.
+    """
+
+    rich_markdown: str
+
+    def __new__(cls, render_text: str, rich_markdown: str = "") -> "ImageBlock":
+        obj = super().__new__(cls, render_text)
+        obj.rich_markdown = rich_markdown
+        return obj
+
+
+def _table_markdown(headers: list[str], rows: list[list[str]]) -> str:
+    """Re-emit a parsed table as a clean pipe-markdown table (for the rich
+    delivery path — cells were split on ``|`` so they contain none)."""
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "|" + "---|" * max(1, len(headers)),
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
 def render_tables_for_chat(
     text: str,
 ) -> tuple[str, list[str], list[tuple[str, str]]]:
@@ -290,9 +323,10 @@ def render_tables_for_chat(
     - Short plain code blocks are left inline (copy already works there).
 
     Returns ``(text_with_placeholders, images, files)`` where ``images`` are
-    aligned texts to render as PNGs and ``files`` are ``(filename, content)``
-    pairs to send as documents — both referenced by placeholders in source
-    order.
+    aligned texts to render as PNGs (``ImageBlock`` instances — table entries
+    carry the original pipe markdown for the /tables=rich native delivery)
+    and ``files`` are ``(filename, content)`` pairs to send as documents —
+    both referenced by placeholders in source order.
     """
     # Fast path: nothing to extract. Box-art uses │ (U+2502), not ASCII |.
     if (
@@ -311,9 +345,10 @@ def render_tables_for_chat(
             width = max((len(line) for line in block.inner), default=0)
             content = "\n".join(block.inner)
             if _is_box_art(block.inner) and width > TABLE_IMAGE_MIN_WIDTH:
-                # Wide tree/diagram → image (already aligned, render as-is).
+                # Wide tree/diagram → image (already aligned, render as-is;
+                # drawn art — never a rich table).
                 out.append(_IMG_PLACEHOLDER.format(len(images)))
-                images.append(content)
+                images.append(ImageBlock(content))
             elif (
                 len(content) > CODE_FILE_MAX_CHARS
                 or len(block.inner) > CODE_FILE_MAX_LINES
@@ -330,9 +365,16 @@ def render_tables_for_chat(
                 # Narrow: copyable inline code block (plain space-aligned).
                 out.append("```\n" + "\n".join(aligned) + "\n```")
             else:
-                # Wide: rendered to a bordered-grid image by the send layer.
+                # Wide: the send layer renders a bordered-grid image — or,
+                # when /tables=rich, sends the original markdown as a native
+                # Telegram table (rich_markdown rides along for that).
                 out.append(_IMG_PLACEHOLDER.format(len(images)))
-                images.append(_format_table_grid(block.headers, block.rows))
+                images.append(
+                    ImageBlock(
+                        _format_table_grid(block.headers, block.rows),
+                        rich_markdown=_table_markdown(block.headers, block.rows),
+                    )
+                )
     return "\n".join(out), images, files
 
 

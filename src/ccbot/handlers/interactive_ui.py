@@ -210,7 +210,7 @@ async def _deliver_upgraded_prose(
     # Reuse the queue's out-of-band senders (table→PNG, long code→document) with
     # their render/write fallbacks; no circular import (message_queue doesn't
     # import this module). Local import keeps it off the module-load path.
-    from .message_queue import _send_code_file, _send_table_image
+    from .message_queue import _send_code_file, _send_image_block
 
     text_wph, images, files = render_tables_for_chat(full_text)
 
@@ -245,7 +245,7 @@ async def _deliver_upgraded_prose(
         if i + 2 < len(segments):
             kind, ref = segments[i + 1], int(segments[i + 2])
             if kind == "IMG" and 0 <= ref < len(images):
-                await _send_table_image(
+                await _send_image_block(
                     bot, chat_id, images[ref], thread_id=thread_id, silent=False
                 )
             elif kind == "FILE" and 0 <= ref < len(files):

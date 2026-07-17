@@ -156,6 +156,11 @@ class SessionManager:
     reaction_ack_enabled: bool = field(
         default_factory=lambda: config.reaction_ack_default
     )
+    # Global toggle (/tables): how tables in agent replies are delivered —
+    # "rich" = native Telegram tables (copyable), "image" = bordered-grid
+    # screenshots. Default from CCBOT_TABLE_STYLE; /tables flips at runtime
+    # (persisted in state.json).
+    table_style: str = field(default_factory=lambda: config.table_style_default)
     # Global UI language (/lang): "ru" or "en". Single-user bot → one global
     # setting, not per-topic. Synced into i18n._current_lang on load and on
     # set_ui_language so call sites just call i18n.tr(). Defaults from
@@ -307,6 +312,7 @@ class SessionManager:
             "pin_topic_overrides": dict(sorted(self.pin_topic_overrides.items())),
             "menu_shown_topics": sorted(self.menu_shown_topics),
             "reaction_ack_enabled": self.reaction_ack_enabled,
+            "table_style": self.table_style,
             "ui_language": self.ui_language,
             "voice_announced_sessions": sorted(self.voice_announced_sessions),
             "voice_budget": self.voice_budget.to_dict(),
@@ -437,6 +443,10 @@ class SessionManager:
                 self.reaction_ack_enabled = bool(
                     state.get("reaction_ack_enabled", config.reaction_ack_default)
                 )
+                _ts = state.get("table_style")
+                self.table_style = (
+                    _ts if _ts in ("rich", "image") else config.table_style_default
+                )
                 self.ui_language = state.get("ui_language") or config.default_lang
                 i18n.set_language(self.ui_language)
                 self.voice_announced_sessions = set(
@@ -505,6 +515,7 @@ class SessionManager:
                 self.pin_topic_overrides = {}
                 self.menu_shown_topics = set()
                 self.reaction_ack_enabled = config.reaction_ack_default
+                self.table_style = config.table_style_default
                 self.ui_language = config.default_lang
                 i18n.set_language(self.ui_language)
                 self.voice_announced_sessions = set()
@@ -891,6 +902,15 @@ class SessionManager:
         self.reaction_ack_enabled = not self.reaction_ack_enabled
         self._save_state()
         return self.reaction_ack_enabled
+
+    def toggle_table_style(self) -> str:
+        """Flip table delivery between "rich" and "image" (/tables); persist.
+
+        Returns the new style so the caller can confirm it to the user.
+        """
+        self.table_style = "image" if self.table_style == "rich" else "rich"
+        self._save_state()
+        return self.table_style
 
     def set_ui_language(self, lang: str) -> str:
         """Set the global UI language ("ru"/"en"); persist and sync i18n.

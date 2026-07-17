@@ -326,6 +326,15 @@ class Config:
             os.getenv("CCBOT_SHOW_HIDDEN_DIRS", "").lower() == "true"
         )
 
+        # Boot default for table delivery (/tables): "rich" = Telegram draws
+        # native tables (copyable, theme-aware), "image" = bordered-grid
+        # screenshots (the legacy look). The runtime /tables toggle persists
+        # in state.json and overrides this.
+        _table_style = os.getenv("CCBOT_TABLE_STYLE", "rich").strip().lower()
+        self.table_style_default = (
+            _table_style if _table_style in ("rich", "image") else "rich"
+        )
+
         # Root of the directory browser (new-session flow). Unset (default) →
         # legacy behavior: browsing starts at $HOME and "up" goes all the way
         # to /. Set it on shared or privacy-sensitive hosts to sandbox what

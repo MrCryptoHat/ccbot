@@ -120,6 +120,11 @@ class TestRenderTablesForChat:
         before, after = out.split("\x00CCBOT_IMG:0\x00")
         assert "before" in before
         assert "after" in after
+        # The original pipe markdown rides along for the /tables=rich path
+        # (an ImageBlock — still a str carrying the grid text for the PNG).
+        md = getattr(tables[0], "rich_markdown", "")
+        assert md.startswith("| Col | Other |")
+        assert f"| {wide} | x |" in md
         # Extracted text is aligned monospace (no pipe syntax, header kept)
         assert "Col" in tables[0]
         assert "|" not in tables[0]
@@ -147,6 +152,8 @@ class TestRenderTablesForChat:
         # The image text is the tree verbatim — no grid border added
         assert "├── src/" in tables[0]
         assert "┌" not in tables[0]
+        # Box-art is drawn art — never delivered as a rich table.
+        assert getattr(tables[0], "rich_markdown", "") == ""
         # Surrounding prose preserved in order
         before, after = out.split("\x00CCBOT_IMG:0\x00")
         assert "Структура" in before

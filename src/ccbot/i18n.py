@@ -143,6 +143,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "ru": "отметка 👀 о приёме сообщения: вкл/выкл",
         "en": "👀 message-received mark: on/off",
     },
+    "cmd.tables": {
+        "ru": "таблицы: встроенные или скриншотами",
+        "en": "tables: native or screenshots",
+    },
     "cmd.diff": {
         "ru": "показывать правки картинкой: вкл/выкл",
         "en": "show edits as images: on/off",
@@ -530,6 +534,14 @@ STRINGS.update(
             "en": "👀 Receipt mark on\\.\nThe bot will put 👀 on your message once the agent picks it up\\.\nTo silence the push — turn off reaction notifications in Telegram settings\\.",
         },
         "commands.refresh": {"ru": "📸 Обновить", "en": "📸 Refresh"},
+        "commands.tables_rich": {
+            "ru": "📊 Таблицы теперь встроенные — их рисует сам Telegram, текст можно выделять и копировать\\.\nВернуть скриншоты — ещё раз /tables\\.",
+            "en": "📊 Tables are now native — Telegram draws them, text is selectable and copyable\\.\nSend /tables again to switch back to screenshots\\.",
+        },
+        "commands.tables_image": {
+            "ru": "🖼 Таблицы теперь приходят скриншотами с сеткой\\.\nВернуть встроенные — ещё раз /tables\\.",
+            "en": "🖼 Tables now arrive as grid screenshots\\.\nSend /tables again to switch back to native tables\\.",
+        },
         "commands.restart_busy": {
             "ru": "⚠️ {name} сейчас работает — перезапуск отправил бы команды ему в строку ввода. Останови его (⎋ в панели 👾 Агент), потом перезапускай.",
             "en": "⚠️ {name} is working right now — a restart would type the commands into its input line. Stop it (⎋ in the 👾 Agent panel), then restart.",

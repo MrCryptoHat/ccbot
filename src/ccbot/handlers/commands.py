@@ -483,6 +483,19 @@ async def react_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await safe_reply(update.message, tr("commands.react_off"))
 
 
+async def tables_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toggle table delivery: native Telegram tables vs screenshots (global)."""
+    user = update.effective_user
+    if not user or not is_user_allowed(user.id):
+        return
+    if not update.message:
+        return
+
+    style = session_manager.toggle_table_style()
+    key = "commands.tables_rich" if style == "rich" else "commands.tables_image"
+    await safe_reply(update.message, tr(key))
+
+
 def build_bot_commands() -> list[BotCommand]:
     """The /command menu, described in the active UI language.
 
@@ -502,6 +515,7 @@ def build_bot_commands() -> list[BotCommand]:
         BotCommand("kill", tr("cmd.kill")),
         BotCommand("voice", tr("cmd.voice")),
         BotCommand("react", tr("cmd.react")),
+        BotCommand("tables", tr("cmd.tables")),
         BotCommand("diff", tr("cmd.diff")),
         BotCommand("pin", tr("cmd.pin")),
         BotCommand("lang", tr("cmd.lang")),

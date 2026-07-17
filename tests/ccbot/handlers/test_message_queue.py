@@ -280,3 +280,68 @@ class TestFloodRequeue:
         t = self._task(parts=[])
         await _requeue_content_task(q, asyncio.Lock(), t)
         assert q.empty()
+
+
+class TestSendImageBlock:
+    """/tables routing for one extracted IMG-placeholder block: a table goes
+    as a native rich-table message when the style is "rich" (PNG fallback on
+    rejection); box-art and the "image" style always take the PNG path."""
+
+    def _block(self, rich: bool = True):
+        from ccbot.markdown_v2 import ImageBlock
+
+        return ImageBlock(
+            "grid text", rich_markdown="| a | b |\n|---|---|\n| 1 | 2 |" if rich else ""
+        )
+
+    async def _run(self, block, style: str, rich_result):
+        from unittest.mock import AsyncMock
+
+        from ccbot.handlers import message_queue as mq
+
+        bot = AsyncMock()
+        with (
+            patch.object(mq, "session_manager") as mock_sm,
+            patch.object(
+                mq, "send_rich_message", AsyncMock(return_value=rich_result)
+            ) as mock_rich,
+            patch.object(mq, "_send_table_image", AsyncMock()) as mock_png,
+        ):
+            mock_sm.table_style = style
+            await mq._send_image_block(bot, 100, block, thread_id=1, silent=False)
+        return mock_rich, mock_png
+
+    @pytest.mark.asyncio
+    async def test_rich_style_sends_native_table(self):
+        mock_rich, mock_png = await self._run(self._block(), "rich", rich_result=555)
+        mock_rich.assert_called_once()
+        assert "| a | b |" in mock_rich.call_args.args[2]
+        mock_png.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rich_rejection_falls_back_to_png(self):
+        mock_rich, mock_png = await self._run(self._block(), "rich", rich_result=None)
+        mock_rich.assert_called_once()
+        mock_png.assert_called_once()
+        assert mock_png.call_args.args[2] == "grid text"
+
+    @pytest.mark.asyncio
+    async def test_image_style_goes_straight_to_png(self):
+        mock_rich, mock_png = await self._run(self._block(), "image", rich_result=555)
+        mock_rich.assert_not_called()
+        mock_png.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_box_art_never_rich(self):
+        mock_rich, mock_png = await self._run(
+            self._block(rich=False), "rich", rich_result=555
+        )
+        mock_rich.assert_not_called()
+        mock_png.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_plain_str_block_is_png(self):
+        # Defensive: a plain str (no rich_markdown attribute) takes the PNG path.
+        mock_rich, mock_png = await self._run("plain grid", "rich", rich_result=555)
+        mock_rich.assert_not_called()
+        mock_png.assert_called_once()

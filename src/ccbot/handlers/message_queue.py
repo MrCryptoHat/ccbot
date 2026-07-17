@@ -38,6 +38,7 @@ from telegram.error import BadRequest, NetworkError, RetryAfter
 from ..i18n import tr
 from ..links import extract_urls, format_links_block
 from ..markdown_v2 import PLACEHOLDER_RE, convert_markdown
+from ..rich_message import is_rich_safe
 from ..rate_limiter import stream_context
 from ..screenshot import text_to_image
 from ..session import session_manager
@@ -777,6 +778,38 @@ async def _send_code_file(
             pass
 
 
+async def _send_image_block(
+    bot: Bot, chat_id: int, block: str, *, thread_id: int | None, silent: bool
+) -> None:
+    """Deliver one extracted IMG-placeholder block by the global /tables style.
+
+    A table block (its ``ImageBlock.rich_markdown`` rides along) goes as a
+    native Telegram table when the style is "rich" — its own small rich
+    message at this position in the stream; a rejection falls back to the
+    bordered-grid PNG, so content is never lost. Box-art (no markdown) and
+    the "image" style keep the PNG path. RetryAfter / topic-gone propagate
+    from both senders for the worker's uniform requeue/purge handling.
+    """
+    from ..config import config
+
+    rich_md = getattr(block, "rich_markdown", "")
+    if (
+        rich_md
+        and config.rich_messages_enabled
+        and session_manager.table_style == "rich"
+        and is_rich_safe(rich_md)
+    ):
+        rich_id = await send_rich_message(
+            bot, chat_id, rich_md, thread_id=thread_id, silent=silent
+        )
+        if rich_id is not None:
+            return
+        logger.info("rich table rejected — falling back to PNG")
+    await _send_table_image(
+        bot, chat_id, str(block), thread_id=thread_id, silent=silent
+    )
+
+
 async def _send_part_with_tables(
     bot: Bot,
     chat_id: int,
@@ -822,7 +855,7 @@ async def _send_part_with_tables(
         if i + 2 < len(segments):
             kind, ref = segments[i + 1], int(segments[i + 2])
             if kind == "IMG" and 0 <= ref < len(task.table_texts):
-                await _send_table_image(
+                await _send_image_block(
                     bot,
                     chat_id,
                     task.table_texts[ref],
