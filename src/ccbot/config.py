@@ -326,6 +326,28 @@ class Config:
             os.getenv("CCBOT_SHOW_HIDDEN_DIRS", "").lower() == "true"
         )
 
+        # Root of the directory browser (new-session flow). Unset (default) →
+        # legacy behavior: browsing starts at $HOME and "up" goes all the way
+        # to /. Set it on shared or privacy-sensitive hosts to sandbox what
+        # the bot ever offers (e.g. ~/projects): browsing starts there and
+        # "up" stops there. Invalid value → warning + unset (fail open, the
+        # browser must not go dark over a typo).
+        self.browse_root: Path | None = None
+        _browse_root = os.getenv("CCBOT_BROWSE_ROOT", "").strip()
+        if _browse_root:
+            candidate = Path(_browse_root).expanduser()
+            try:
+                candidate = candidate.resolve()
+            except OSError:
+                candidate = None  # type: ignore[assignment]
+            if candidate is not None and candidate.is_dir():
+                self.browse_root = candidate
+            else:
+                logger.warning(
+                    "CCBOT_BROWSE_ROOT=%r is not an existing directory — ignored",
+                    _browse_root,
+                )
+
         # Default UI language (ru/en) for ccbot's own chrome. A global
         # setting persisted in state.json overrides this; this is just the
         # boot default before state loads / on a fresh install.

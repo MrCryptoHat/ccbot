@@ -1723,9 +1723,7 @@ async def _try_auto_bind_topic(
     if not matching_dir:
         return False
 
-    return await _auto_bind_to_directory(
-        user_id, thread_id, matching_dir, msg, context, topic_name=name
-    )
+    return await _auto_bind_to_directory(user_id, thread_id, matching_dir, msg, context)
 
 
 def _display_home_path(path: Path) -> str:
@@ -1742,16 +1740,13 @@ async def _auto_bind_to_directory(
     matching_dir: Path,
     msg: Message,
     context: ContextTypes.DEFAULT_TYPE,
-    *,
-    topic_name: str | None = None,
 ) -> bool:
     """Bind ``thread_id`` to ``matching_dir`` (session picker, or fresh window).
 
     The directory-resolution half shared by the name-based auto-bind and the
-    learned ``thread_directory_memory`` rebind. ``topic_name`` is the topic's
-    display name when known (name path) — used only to decide whether a
-    dedup-renamed window should rename the topic; the memory path passes
-    ``None`` (no rename). Records the directory in memory up front so the topic
+    learned ``thread_directory_memory`` rebind. The topic's name is never
+    touched — it is the user's label (a window-name dedup like ``demo-api-2``
+    stays internal). Records the directory in memory up front so the topic
     re-resolves here next time regardless of its current name.
     """
     # Rebind on the runtime this topic last ran (a codex topic must come back
@@ -1887,20 +1882,11 @@ async def _auto_bind_to_directory(
         user_id,
     )
 
-    # If create_window had to deduplicate (existing `ccbot` window → `ccbot-2`),
-    # rename the topic to match — keeps Telegram in sync with tmux. A pure
-    # case difference ("VPN" topic → "vpn" folder) is not a dedup: leave the
-    # user's capitalization alone. Only the name path (topic_name set) renames.
-    if topic_name is not None and created_wname.lower() != topic_name.lower():
-        try:
-            resolved_chat = session_manager.resolve_chat_id(user_id, thread_id)
-            await context.bot.edit_forum_topic(
-                chat_id=resolved_chat,
-                message_thread_id=thread_id,
-                name=created_wname,
-            )
-        except Exception as e:
-            logger.debug("auto-bind topic rename failed: %s", e)
+    # A create_window dedup (existing `demo-api` window → `demo-api-2`) stays
+    # INTERNAL: the topic keeps the user's name. The old behavior renamed the
+    # topic to the dedup'd window name, clobbering the user's label — routing
+    # never depends on the topic name (rebinds go through
+    # thread_directory_memory), so there is nothing to keep in sync.
 
     try:
         await safe_reply(

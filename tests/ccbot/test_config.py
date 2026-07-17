@@ -77,6 +77,24 @@ class TestConfigClaudeProjectsPath:
         cfg = Config()
         assert cfg.claude_projects_path == Path(custom_path)
 
+    def test_browse_root_unset_is_none(self):
+        """Unset → legacy behavior (browser starts at $HOME, up to /)."""
+        cfg = Config()
+        assert cfg.browse_root is None
+
+    def test_browse_root_valid_dir(self, monkeypatch, tmp_path):
+        root = tmp_path / "projects"
+        root.mkdir()
+        monkeypatch.setenv("CCBOT_BROWSE_ROOT", str(root))
+        cfg = Config()
+        assert cfg.browse_root == root.resolve()
+
+    def test_browse_root_invalid_is_ignored(self, monkeypatch, tmp_path):
+        """A typo must not dark the browser — warn and fall back to unset."""
+        monkeypatch.setenv("CCBOT_BROWSE_ROOT", str(tmp_path / "nope"))
+        cfg = Config()
+        assert cfg.browse_root is None
+
     def test_claude_config_dir_projects_path(self, monkeypatch):
         """CLAUDE_CONFIG_DIR sets path to $CLAUDE_CONFIG_DIR/projects."""
         custom_config_dir = "/custom/claude/config"

@@ -76,6 +76,7 @@ from .handlers.directory_browser import (
     STATE_SELECTING_SESSION,
     STATE_SELECTING_WINDOW,
     UNBOUND_WINDOWS_KEY,
+    browse_start_path,
     build_directory_browser,
     build_window_picker,
     clear_browse_state,
@@ -378,7 +379,7 @@ async def text_handler(
             user.id,
             thread_id,
         )
-        start_path = str(Path.home())
+        start_path = browse_start_path()
         msg_text, keyboard, subdirs = build_directory_browser(start_path)
         if context.user_data is not None:
             context.user_data[STATE_KEY] = STATE_BROWSING_DIRECTORY
@@ -781,15 +782,11 @@ async def _create_and_bind_window(
                 user.id, pending_thread_id, str(selected_path), runtime=rt.name
             )
 
+            # The topic name is the USER's label — never renamed to the window
+            # name (dedup like `demo-api-2` stays internal; a custom topic name
+            # like `codex-play` must survive binding). Routing never depends on
+            # the topic name: rebinds go through thread_directory_memory.
             resolved_chat = session_manager.resolve_chat_id(user.id, pending_thread_id)
-            try:
-                await context.bot.edit_forum_topic(
-                    chat_id=resolved_chat,
-                    message_thread_id=pending_thread_id,
-                    name=created_wname,
-                )
-            except Exception as e:
-                logger.debug(f"Failed to rename topic: {e}")
 
             shown_dir = str(selected_path)
             home_prefix = str(Path.home())

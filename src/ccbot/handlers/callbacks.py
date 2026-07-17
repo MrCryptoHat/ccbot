@@ -101,8 +101,10 @@ from .directory_browser import (
     STATE_KEY,
     STATE_SELECTING_SESSION,
     UNBOUND_WINDOWS_KEY,
+    browse_start_path,
     build_directory_browser,
     build_session_picker,
+    clamp_parent_path,
     clear_browse_state,
     clear_session_picker_state,
     clear_window_picker_state,
@@ -350,7 +352,10 @@ async def _handle_dir_up(
     if current_path is None:
         await _answer_stale(query, "browser")
         return
-    parent_path = str(Path(current_path).resolve().parent)
+    # Clamped: with CCBOT_BROWSE_ROOT set, «..» never leaves the sandbox —
+    # the button is hidden at the root, but a stale callback must not
+    # escape either.
+    parent_path = clamp_parent_path(current_path)
 
     if context.user_data is not None:
         context.user_data[BROWSE_PATH_KEY] = parent_path
@@ -616,7 +621,7 @@ async def _handle_session_browse(
         await _answer_stale(query)
         return
 
-    selected_path = _get_user_data(context, "_selected_path", str(Path.home()))
+    selected_path = _get_user_data(context, "_selected_path", browse_start_path())
     clear_session_picker_state(context.user_data)
     if context.user_data is not None:
         context.user_data.pop("_selected_path", None)
@@ -739,7 +744,7 @@ async def _handle_win_new(
         return
 
     clear_window_picker_state(context.user_data)
-    start_path = str(Path.home())
+    start_path = browse_start_path()
     msg_text, keyboard, subdirs = build_directory_browser(start_path)
     if context.user_data is not None:
         context.user_data[STATE_KEY] = STATE_BROWSING_DIRECTORY

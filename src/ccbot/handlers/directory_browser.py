@@ -56,6 +56,43 @@ SESSIONS_KEY = "cached_sessions"  # Cache of AgentSession list (of the active ta
 PICKER_RUNTIME_KEY = "picker_runtime"  # active runtime tab in the session picker
 
 
+def browse_start_path() -> str:
+    """Where a fresh directory-browser session opens.
+
+    ``CCBOT_BROWSE_ROOT`` when configured (the operator's sandbox), else the
+    legacy default — the home directory.
+    """
+    return str(config.browse_root or Path.home())
+
+
+def _can_go_up(path: Path) -> bool:
+    """May «📁 ..» leave ``path``?
+
+    No browse root configured → legacy behavior (anywhere above, until /).
+    With a root: only while strictly INSIDE it — and a path outside the root
+    (a remembered dir from an older config, a session-picker escape hatch)
+    gets no "up" either, so it can't become an escape out of the sandbox.
+    """
+    if path == path.parent:
+        return False  # filesystem root
+    root = config.browse_root
+    if root is None:
+        return True
+    return path != root and root in path.parents
+
+
+def clamp_parent_path(current: str) -> str:
+    """Parent of ``current`` for the «..» handler, clamped to the browse root.
+
+    The up button is hidden at/outside the root, but a stale or crafted
+    callback must not escape either.
+    """
+    cur = Path(current).expanduser().resolve()
+    if _can_go_up(cur):
+        return str(cur.parent)
+    return str(config.browse_root) if config.browse_root is not None else str(cur)
+
+
 def clear_browse_state(user_data: dict | None) -> None:
     """Clear directory browsing state keys from user_data."""
     if user_data is not None:
@@ -130,7 +167,7 @@ def build_directory_browser(
     """
     path = Path(current_path).expanduser().resolve()
     if not path.exists() or not path.is_dir():
-        path = Path.cwd()
+        path = Path(browse_start_path())
 
     try:
         subdirs = sorted(
@@ -179,8 +216,8 @@ def build_directory_browser(
         buttons.append(nav)
 
     action_row: list[InlineKeyboardButton] = []
-    # Allow going up unless at filesystem root
-    if path != path.parent:
+    # Allow going up unless at filesystem root / the configured browse root
+    if _can_go_up(path):
         action_row.append(InlineKeyboardButton(tr("dirb.up"), callback_data=CB_DIR_UP))
     action_row.append(
         InlineKeyboardButton(tr("dirb.select_here"), callback_data=CB_DIR_CONFIRM)
