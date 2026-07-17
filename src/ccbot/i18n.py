@@ -619,8 +619,8 @@ STRINGS.update(
         },
         "dirb.new_session": {"ru": "➕ Новая сессия", "en": "➕ New Session"},
         "dirb.header": {
-            "ru": "*Выберите папку проекта*\n\nСейчас: `{path}`\n\nНажмите на папку, чтобы войти, или возьмите текущую («✅ Эта папка»)",
-            "en": "*Select Working Directory*\n\nCurrent: `{path}`\n\nTap a folder to enter, or take the current one (“✅ This folder”)",
+            "ru": "*Выберите папку проекта*\n\nСейчас: `{path}`\n\nНажмите на папку, чтобы войти, или возьмите текущую («✅ Выбрать эту папку»)",
+            "en": "*Select Working Directory*\n\nCurrent: `{path}`\n\nTap a folder to enter, or take the current one (“✅ Use this folder”)",
         },
         "dirb.header_empty": {
             "ru": "*Выберите папку проекта*\n\nСейчас: `{path}`\n\n_(Подпапок нет)_",
