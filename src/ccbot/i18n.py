@@ -627,7 +627,7 @@ STRINGS.update(
             "en": "*Select Working Directory*\n\nCurrent: `{path}`\n\n_(No subdirectories)_",
         },
         "dirb.up": {"ru": "⬆️ Вверх", "en": "⬆️ Up"},
-        "dirb.select_here": {"ru": "✅ Эта папка", "en": "✅ This folder"},
+        "dirb.select_here": {"ru": "✅ Выбрать эту папку", "en": "✅ Use this folder"},
         "dirb.resume_header": {
             "ru": "*Какого агента запустить?*\n",
             "en": "*Which agent to run?*\n",

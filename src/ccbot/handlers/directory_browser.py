@@ -215,17 +215,21 @@ def build_directory_browser(
             )
         buttons.append(nav)
 
-    action_row: list[InlineKeyboardButton] = []
+    # Navigation row (up/cancel), then the commit action on its OWN full-width
+    # row — three buttons in one row clip the "select" label on a phone
+    # («✅ This fol…»), and the primary action is the one that must stay
+    # readable.
+    nav_row: list[InlineKeyboardButton] = []
     # Allow going up unless at filesystem root / the configured browse root
     if _can_go_up(path):
-        action_row.append(InlineKeyboardButton(tr("dirb.up"), callback_data=CB_DIR_UP))
-    action_row.append(
-        InlineKeyboardButton(tr("dirb.select_here"), callback_data=CB_DIR_CONFIRM)
-    )
-    action_row.append(
+        nav_row.append(InlineKeyboardButton(tr("dirb.up"), callback_data=CB_DIR_UP))
+    nav_row.append(
         InlineKeyboardButton(tr("commands.cancel"), callback_data=CB_DIR_CANCEL)
     )
-    buttons.append(action_row)
+    buttons.append(nav_row)
+    buttons.append(
+        [InlineKeyboardButton(tr("dirb.select_here"), callback_data=CB_DIR_CONFIRM)]
+    )
 
     display_path = str(path).replace(str(Path.home()), "~")
     key = "dirb.header_empty" if not subdirs else "dirb.header"
