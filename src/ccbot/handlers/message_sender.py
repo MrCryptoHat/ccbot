@@ -191,10 +191,12 @@ async def send_photo(
     image_data: list[tuple[str, bytes]],
     caption: str | None = None,
     **kwargs: Any,
-) -> None:
+) -> Message | None:
     """Send photo(s) to chat. Sends as media group if multiple images.
 
     Rate limiting is handled globally by AIORateLimiter on the Application.
+    Returns the sent Message (the first one for a media group) on success,
+    None on failure or empty input.
 
     Args:
         bot: Telegram Bot instance
@@ -206,35 +208,36 @@ async def send_photo(
         **kwargs: Extra kwargs passed to send_photo/send_media_group
     """
     if not image_data:
-        return
+        return None
     try:
         if len(image_data) == 1:
             _media_type, raw_bytes = image_data[0]
-            await bot.send_photo(
+            return await bot.send_photo(
                 chat_id=chat_id,
                 photo=io.BytesIO(raw_bytes),
                 caption=caption,
                 **kwargs,
             )
-        else:
-            media = [
-                InputMediaPhoto(
-                    media=io.BytesIO(raw_bytes),
-                    caption=caption if i == 0 else None,
-                )
-                for i, (_media_type, raw_bytes) in enumerate(image_data)
-            ]
-            await bot.send_media_group(
-                chat_id=chat_id,
-                media=media,
-                **kwargs,
+        media = [
+            InputMediaPhoto(
+                media=io.BytesIO(raw_bytes),
+                caption=caption if i == 0 else None,
             )
+            for i, (_media_type, raw_bytes) in enumerate(image_data)
+        ]
+        sent = await bot.send_media_group(
+            chat_id=chat_id,
+            media=media,
+            **kwargs,
+        )
+        return sent[0] if sent else None
     except RetryAfter:
         raise
     except Exception as e:
         if is_topic_gone_error(e):
             raise
         logger.error("Failed to send photo to %d: %s", chat_id, e)
+        return None
 
 
 async def send_document(
@@ -243,8 +246,10 @@ async def send_document(
     file_path: str,
     filename: str | None = None,
     **kwargs: Any,
-) -> None:
+) -> Message | None:
     """Send a document file to chat.
+
+    Returns the sent Message on success, None on failure.
 
     Args:
         bot: Telegram Bot instance
@@ -257,12 +262,12 @@ async def send_document(
 
     if not os.path.isfile(file_path):
         logger.error("File not found: %s", file_path)
-        return
+        return None
     if filename is None:
         filename = os.path.basename(file_path)
     try:
         with open(file_path, "rb") as f:
-            await bot.send_document(
+            return await bot.send_document(
                 chat_id=chat_id,
                 document=f,
                 filename=filename,
@@ -272,6 +277,7 @@ async def send_document(
         raise
     except Exception as e:
         logger.error("Failed to send document to %d: %s", chat_id, e)
+        return None
 
 
 async def send_voice(

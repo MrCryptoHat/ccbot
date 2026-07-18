@@ -39,7 +39,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMedia
 from telegram.error import BadRequest
 
 from ..i18n import tr
-from ..markdown_v2 import PLACEHOLDER_RE, render_tables_for_chat
+from ..markdown_v2 import PLACEHOLDER_RE, fence_bare_box_art, render_tables_for_chat
 from ..screenshot import text_to_image
 from ..session import session_manager
 from ..telegram_sender import split_message
@@ -98,9 +98,10 @@ _interactive_locks: dict[tuple[int, int], asyncio.Lock] = {}
 _auq_text_sent: dict[tuple[int, int], int] = {}
 
 # session_id -> (surfaced_msg_ids, question_text). Set by
-# _surface_ask_question_text; msg_ids is a tuple because a long surfaced text
-# splits across several messages (the first is the upgrade-in-place target,
-# the rest are deleted before the clean re-delivery). After the user answers,
+# _surface_ask_question_text; msg_ids is a tuple because the surfaced text can
+# span several messages — split text chunks plus out-of-band block photos /
+# documents (the first entry is the anchor TEXT message = the upgrade-in-place
+# target, the rest are deleted before the clean re-delivery). After the user answers,
 # the held turn lands in JSONL and this drives two de-duplications in
 # handle_new_message:
 #   • the assistant prose text block (precedes_interactive_prompt) → edit the
@@ -186,26 +187,31 @@ def _join_prose_question(prose: str, question: str) -> str:
     return "\n\n".join(p for p in (prose, question) if p)
 
 
-async def _deliver_upgraded_prose(
+async def _deliver_rendered_text(
     bot: Bot,
     chat_id: int,
-    msg_id: int,
     full_text: str,
     thread_id: int | None,
     user_id: int,
-) -> None:
-    """Deliver the upgraded AskUserQuestion prose + question, rendering embedded
-    blocks out-of-band exactly like a normal assistant reply does.
+    *,
+    edit_msg_id: int | None = None,
+) -> tuple[int, list[int]]:
+    """Deliver text with embedded blocks rendered out-of-band, exactly like a
+    normal assistant reply: ``render_tables_for_chat`` extracts a markdown
+    table / wide box-art / long code block and sends it as its own photo /
+    document, text chunks and blocks in source order — inlined, a phone wraps
+    a monospace table to soup (the whole reason the normal send path images
+    them). Long text splits instead of bailing.
 
-    A markdown table, wide box-art, or long code block sitting in the prose above
-    the question is extracted by ``render_tables_for_chat`` and sent as its own
-    photo / document — a plain in-place edit could only ever *inline* it, and a
-    phone wraps a monospace table to soup (the whole reason the normal send path
-    images them). The FIRST text chunk edits the already-surfaced message in place
-    so the prose isn't duplicated; embedded blocks and any following text/question
-    chunks are sent as new messages in source order. Splitting also covers the
-    >4096-char prose the old single-edit path bailed on entirely (it left the
-    box-art pane capture sitting there, the bug this fixes).
+    Two callers: the post-answer upgrade passes ``edit_msg_id`` — the FIRST
+    text chunk edits that message in place so the prose isn't duplicated,
+    everything else is sent fresh. The pre-answer surface omits it — every
+    chunk is a new send.
+
+    Returns ``(anchor, extras)``: the first text message's id (the edited one
+    when editing; 0 when nothing textual went out) and every other message id
+    sent here (text overflow + block photos / documents) — what the
+    post-answer upgrade deletes before its clean re-delivery.
     """
     # Reuse the queue's out-of-band senders (table→PNG, long code→document) with
     # their render/write fallbacks; no circular import (message_queue doesn't
@@ -218,22 +224,30 @@ async def _deliver_upgraded_prose(
     if thread_id is not None:
         thread_kwargs["message_thread_id"] = thread_id
 
+    anchor = 0
+    extras: list[int] = []
     edited = False
 
     async def _emit_text(chunk: str) -> None:
-        nonlocal edited
+        nonlocal anchor, edited
         if not chunk.strip():
             return
-        if not edited:
+        if edit_msg_id is not None and not edited:
             edited = True
+            anchor = edit_msg_id
             try:
-                await safe_edit(bot, chunk, chat_id=chat_id, message_id=msg_id)
+                await safe_edit(bot, chunk, chat_id=chat_id, message_id=edit_msg_id)
             except Exception:
                 pass  # gone / too old / RetryAfter — still no duplicate of the prose
+            return
+        sent = await send_with_fallback(bot, chat_id, chunk, **thread_kwargs)
+        if sent is None:
+            return
+        note_topic_message(chat_id, sent.message_id, user_id, thread_id or 0)
+        if anchor:
+            extras.append(sent.message_id)
         else:
-            sent = await send_with_fallback(bot, chat_id, chunk, **thread_kwargs)
-            if sent:
-                note_topic_message(chat_id, sent.message_id, user_id, thread_id or 0)
+            anchor = sent.message_id
 
     # PLACEHOLDER_RE has two capture groups → split yields
     # [text, kind, ref, text, kind, ref, …, text].
@@ -244,25 +258,29 @@ async def _deliver_upgraded_prose(
             await _emit_text(chunk)
         if i + 2 < len(segments):
             kind, ref = segments[i + 1], int(segments[i + 2])
+            sent_id: int | None = None
             if kind == "IMG" and 0 <= ref < len(images):
-                await _send_image_block(
+                sent_id = await _send_image_block(
                     bot, chat_id, images[ref], thread_id=thread_id, silent=False
                 )
             elif kind == "FILE" and 0 <= ref < len(files):
                 fname, content = files[ref]
-                await _send_code_file(
+                sent_id = await _send_code_file(
                     bot, chat_id, fname, content, thread_id=thread_id, silent=False
                 )
+            if sent_id:
+                extras.append(sent_id)
         i += 3
 
     # The question is always appended as text, so at least one text chunk edits
     # the tracked message — but be defensive: if the prose was somehow all blocks,
     # don't leave the stale box-art message hanging above the freshly-sent ones.
-    if not edited:
+    if edit_msg_id is not None and not edited:
         try:
-            await safe_edit(bot, "⬇️", chat_id=chat_id, message_id=msg_id)
+            await safe_edit(bot, "⬇️", chat_id=chat_id, message_id=edit_msg_id)
         except Exception:
             pass
+    return anchor, extras
 
 
 async def consume_pending_prose_upgrade(
@@ -295,13 +313,14 @@ async def consume_pending_prose_upgrade(
     full_text = _join_prose_question(jsonl_text, question)
     if full_text and msg_ids:
         chat_id = session_manager.resolve_chat_id(user_id, thread_id)
-        # A long surfaced text was split across several messages; the clean
+        # A long surfaced text was split across several messages (and its
+        # embedded blocks went out as their own photos / documents); the clean
         # re-delivery below sends its own follow-ups, so drop the extras first
-        # (best-effort) and upgrade the first message in place.
+        # (best-effort) and upgrade the first text message in place.
         for extra_id in msg_ids[1:]:
             await _safe_delete_message(bot, chat_id, extra_id)
-        await _deliver_upgraded_prose(
-            bot, chat_id, msg_ids[0], full_text, thread_id, user_id
+        await _deliver_rendered_text(
+            bot, chat_id, full_text, thread_id, user_id, edit_msg_id=msg_ids[0]
         )
     logger.info(
         "AskUserQuestion surface upgraded in place (msg %s, session %s)",
@@ -495,21 +514,25 @@ async def _surface_ask_question_text(
     ikey: tuple[int, int],
     thread_kwargs: dict[str, int],
 ) -> None:
-    """Post the agent's preceding prose + the AskUserQuestion question as one text
-    message, so the full question (the screenshot crops long ones) can be read
-    before the photo's nav keyboard. The answer options stay on the screenshot —
+    """Post the agent's preceding prose + the AskUserQuestion question as text,
+    so the full question (the screenshot crops long ones) can be read before
+    the photo's nav keyboard. The answer options stay on the screenshot —
     not repeated as text.
 
     Captures with scrollback (the prose can run past the visible viewport) and
-    parses the pane; a long surfaced text splits across several messages instead
-    of being dropped (the old >4096 bail surfaced nothing at all — exactly the
-    long-preamble case where reading it matters most). Absolute home paths are
-    rewritten to ``~`` (pane-lifted text only). Records ``_auq_text_sent[ikey]``
-    either way so the 1 s status poll doesn't retry every tick; the photo that
-    follows is the fallback (parse miss / nothing parseable → photo only). When
-    text is posted, ``(msg_ids, question)`` goes into ``_pending_auq`` so the
-    JSONL copies that arrive after the answer don't duplicate it (see
-    ``consume_pending_prose_upgrade`` / ``consume_pending_ask_tool_use``).
+    parses the pane; delivery runs the same block pipeline as a normal reply
+    (``_deliver_rendered_text``): the TUI strips code fences, so bare box-art
+    runs (a drawn table/tree in the prose) are re-fenced first
+    (``fence_bare_box_art``) and the wide ones arrive as their own photo
+    instead of wrap-to-soup plain text; long text splits across messages
+    instead of being dropped. Absolute home paths are rewritten to ``~``
+    (pane-lifted text only). Records ``_auq_text_sent[ikey]`` either way so
+    the 1 s status poll doesn't retry every tick; the photo that follows is
+    the fallback (parse miss / nothing parseable → photo only). When text is
+    posted, ``(msg_ids, question)`` goes into ``_pending_auq`` — anchor text
+    message first, then every other id — so the JSONL copies that arrive
+    after the answer don't duplicate it (see ``consume_pending_prose_upgrade``
+    / ``consume_pending_ask_tool_use``).
     """
     pane = await session_manager.capture_pane(window_id, scrollback_lines=400)
     parsed = parse_ask_question(pane) if pane else None
@@ -525,26 +548,25 @@ async def _surface_ask_question_text(
         )
         return
 
-    surfaced = _relativize_home(surfaced)
-    sent_ids: list[int] = []
-    for chunk in split_message(surfaced):
-        sent = await send_with_fallback(bot, chat_id, chunk, **thread_kwargs)
-        if sent is None:
-            break
-        sent_ids.append(sent.message_id)
-        note_topic_message(chat_id, sent.message_id, ikey[0], ikey[1])
-    msg_id = sent_ids[0] if sent_ids else 0
-    if msg_id:
+    surfaced = fence_bare_box_art(_relativize_home(surfaced))
+    anchor, extras = await _deliver_rendered_text(
+        bot,
+        chat_id,
+        surfaced,
+        thread_kwargs.get("message_thread_id"),
+        ikey[0],
+    )
+    if anchor:
         session_id = await _session_id_for(window_id)
         if session_id:
-            _record_pending_auq(session_id, tuple(sent_ids), parsed.question)
-    _auq_text_sent[ikey] = msg_id
+            _record_pending_auq(session_id, (anchor, *extras), parsed.question)
+    _auq_text_sent[ikey] = anchor
     logger.info(
         "AskUserQuestion text surfaced for %s: %dch in %d msg(s) (%s), question=%r",
         window_id,
         len(surfaced),
-        len(sent_ids),
-        "sent" if msg_id else "send failed",
+        (1 if anchor else 0) + len(extras),
+        "sent" if anchor else "send failed",
         parsed.question[:60],
     )
 

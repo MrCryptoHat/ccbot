@@ -703,31 +703,33 @@ async def _ensure_voice_disabled_for_exhausted_budget(bot: Bot) -> None:
 
 async def _send_table_image(
     bot: Bot, chat_id: int, aligned_text: str, *, thread_id: int | None, silent: bool
-) -> None:
+) -> int | None:
     """Render an aligned monospace table to a PNG and send it as a photo.
 
     Falls back to a code block on render failure so a wide table is never
-    lost — at worst it wraps, which is still the data.
+    lost — at worst it wraps, which is still the data. Returns the sent
+    message's id (photo or fallback), None when nothing went out.
     """
     try:
         png = await text_to_image(aligned_text, with_ansi=False, square=False)
     except Exception as e:
         logger.warning("table image render failed, falling back to code block: %s", e)
-        await send_with_fallback(
+        sent = await send_with_fallback(
             bot,
             chat_id,
             "```\n" + aligned_text + "\n```",
             **_send_kwargs(thread_id, silent=silent),  # type: ignore[arg-type]
         )
-        return
+        return sent.message_id if sent else None
     n_lines = aligned_text.count("\n") + 1
     logger.info("table image: %d lines → %d bytes, sending photo", n_lines, len(png))
-    await send_photo(
+    sent = await send_photo(
         bot,
         chat_id,
         [("image/png", png)],
         **_send_kwargs(thread_id, silent=silent),  # type: ignore[arg-type]
     )
+    return sent.message_id if sent else None
 
 
 async def _send_code_file(
@@ -738,12 +740,13 @@ async def _send_code_file(
     *,
     thread_id: int | None,
     silent: bool,
-) -> None:
+) -> int | None:
     """Send a long code block as a document so it copies/saves whole.
 
     Writes a host-side temp file (the bot owns it — not the agent (send file:)
     path, so no /workspace perimeter applies) and removes it after upload.
     Falls back to an inline code block if writing the temp file fails.
+    Returns the sent message's id (document or fallback), None on failure.
     """
     n_lines = content.count("\n") + 1
     caption = tr("mq.code_file_caption", filename=filename, n_lines=n_lines)
@@ -754,16 +757,16 @@ async def _send_code_file(
             f.write(content)
     except Exception as e:
         logger.warning("code file write failed, falling back to code block: %s", e)
-        await send_with_fallback(
+        sent = await send_with_fallback(
             bot,
             chat_id,
             "```\n" + content + "\n```",
             **_send_kwargs(thread_id, silent=silent),  # type: ignore[arg-type]
         )
-        return
+        return sent.message_id if sent else None
     try:
         logger.info("code file: %s, %d lines, sending document", filename, n_lines)
-        await send_document(
+        sent_doc = await send_document(
             bot,
             chat_id,
             tmp_path,
@@ -771,6 +774,7 @@ async def _send_code_file(
             caption=caption,
             **_send_kwargs(thread_id, silent=silent),  # type: ignore[arg-type]
         )
+        return sent_doc.message_id if sent_doc else None
     finally:
         try:
             os.remove(tmp_path)
@@ -780,7 +784,7 @@ async def _send_code_file(
 
 async def _send_image_block(
     bot: Bot, chat_id: int, block: str, *, thread_id: int | None, silent: bool
-) -> None:
+) -> int | None:
     """Deliver one extracted IMG-placeholder block by the global /tables style.
 
     A table block (its ``ImageBlock.rich_markdown`` rides along) goes as a
@@ -789,6 +793,7 @@ async def _send_image_block(
     bordered-grid PNG, so content is never lost. Box-art (no markdown) and
     the "image" style keep the PNG path. RetryAfter / topic-gone propagate
     from both senders for the worker's uniform requeue/purge handling.
+    Returns the sent message's id, None when nothing went out.
     """
     from ..config import config
 
@@ -803,9 +808,9 @@ async def _send_image_block(
             bot, chat_id, rich_md, thread_id=thread_id, silent=silent
         )
         if rich_id is not None:
-            return
+            return rich_id
         logger.info("rich table rejected — falling back to PNG")
-    await _send_table_image(
+    return await _send_table_image(
         bot, chat_id, str(block), thread_id=thread_id, silent=silent
     )
 

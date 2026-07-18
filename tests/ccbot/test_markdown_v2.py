@@ -7,6 +7,7 @@ from ccbot.markdown_v2 import (
     _escape_mdv2,
     convert_markdown,
     convert_markdown_tables,
+    fence_bare_box_art,
     render_tables_for_chat,
 )
 from ccbot.transcript_parser import TranscriptParser
@@ -252,3 +253,55 @@ class TestRenderTablesForChat:
             body = "\n".join(f"x{i}" for i in range(60))
             _, _, files = render_tables_for_chat(f"```{lang}\n{body}\n```")
             assert files[0][0] == f"snippet.{ext}"
+
+
+class TestFenceBareBoxArt:
+    """Pane-lifted text (AskUserQuestion prose surfacing): the TUI renders
+    markdown, so a drawn table arrives as bare box-art lines with the fences
+    stripped — fence_bare_box_art re-creates the block boundary so
+    render_tables_for_chat images the wide ones instead of letting a phone
+    wrap them to soup."""
+
+    # The 2026-07-18 live case: a ┌─┬─┐ table drawn in the prose above the
+    # question, delivered as plain text → every border line wrapped to soup.
+    _BOX_TABLE = (
+        "┌─────────────────────────────┬──────────┬──────────────┐\n"
+        "│             Что             │ Осталось │ Готово через │\n"
+        "├─────────────────────────────┼──────────┼──────────────┤\n"
+        "│ Ниши (Thai/ME/Indian/лапша) │ 2 118    │ ~30 мин      │\n"
+        "│ Полный хвост (все 48k)      │ 45 387   │ ~11 ч        │\n"
+        "└─────────────────────────────┴──────────┴──────────────┘"
+    )
+
+    def test_bare_box_table_gets_fenced_and_imaged(self) -> None:
+        text = f"Смотри по приоритетам:\n\n{self._BOX_TABLE}\n\nЧто делаем?"
+        fenced = fence_bare_box_art(text)
+        assert fenced.count("```") == 2
+        # Content is preserved verbatim — only fence lines are added.
+        assert fenced.replace("```\n", "").replace("\n```", "") == text
+        # End-to-end: the wide drawn table leaves the text as one image.
+        out, images, files = render_tables_for_chat(fenced)
+        assert len(images) == 1
+        assert files == []
+        assert "Ниши (Thai/ME/Indian/лапша)" in str(images[0])
+        assert "┌" not in out  # no box-art left inline
+        assert "Смотри по приоритетам:" in out
+        assert "Что делаем?" in out
+
+    def test_single_stray_box_char_line_stays_prose(self) -> None:
+        text = "Первая строка ─ с тире-псевдографикой.\nОбычная вторая строка."
+        assert fence_bare_box_art(text) == text
+
+    def test_no_box_art_is_untouched(self) -> None:
+        text = "Просто текст.\n\nИ ещё абзац — с обычным тире."
+        assert fence_bare_box_art(text) is text
+
+    def test_existing_fences_not_double_fenced(self) -> None:
+        text = "```\n├── a.py\n└── b.py\n```"
+        assert fence_bare_box_art(text) == text
+
+    def test_two_line_tree_is_fenced(self) -> None:
+        text = "Структура:\n├── app.py\n└── tests/"
+        fenced = fence_bare_box_art(text)
+        assert fenced.split("\n")[1] == "```"
+        assert fenced.count("```") == 2

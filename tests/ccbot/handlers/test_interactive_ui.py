@@ -343,6 +343,81 @@ class TestSurfaceAskQuestionText:
         assert question == "Какой вариант берём?"
 
     @pytest.mark.asyncio
+    async def test_bare_box_art_table_in_prose_becomes_photo(self):
+        """A drawn table in the prose above the widget must arrive as its own
+        photo, not as wrap-to-soup plain text (the 2026-07-18 live case): the
+        TUI strips code fences, so the pane-lifted box-art is re-fenced
+        (fence_bare_box_art) and rides the normal block pipeline. Its message
+        id is recorded after the anchor so the post-answer upgrade deletes the
+        photo too."""
+        from ccbot.handlers import interactive_ui as iui
+        from ccbot.handlers import message_queue as mq
+
+        pane = (
+            "❯ Посчитай варианты и спроси меня.\n"
+            "\n"
+            "● Смотри по приоритетам, которые я выставил:\n"
+            "\n"
+            "  ┌─────────────────────────────┬──────────┬──────────────┐\n"
+            "  │             Что             │ Осталось │ Готово через │\n"
+            "  ├─────────────────────────────┼──────────┼──────────────┤\n"
+            "  │ Ниши (Thai/ME/Indian/лапша) │ 2 118    │ ~30 мин      │\n"
+            "  └─────────────────────────────┴──────────┴──────────────┘\n"
+            "\n"
+            "  Остальное докрутится фоном ночью.\n"
+            "────────────────────────────────────────────────────────────────────────────────\n"
+            " ☐ План сбора\n"
+            "\n"
+            "Как ускоряем?\n"
+            "\n"
+            "❯ 1. Ждём\n"
+            "  2. Второй аккаунт\n"
+            "  3. Type something.\n"
+            "\n"
+            "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+        )
+        bot = AsyncMock()
+        ids = iter(range(700, 720))
+        sends: list[str] = []
+
+        async def fake_send(bot_, chat_id_, text, **kw):
+            sends.append(text)
+            m = MagicMock()
+            m.message_id = next(ids)
+            return m
+
+        with (
+            patch.object(iui, "session_manager") as mock_sm,
+            patch.object(iui, "send_with_fallback", AsyncMock(side_effect=fake_send)),
+            patch.object(iui, "note_topic_message"),
+            patch.object(
+                mq, "_send_table_image", AsyncMock(return_value=901)
+            ) as mock_img,
+        ):
+            mock_sm.capture_pane = AsyncMock(return_value=pane)
+            sess = MagicMock()
+            sess.session_id = "sess-box"
+            mock_sm.resolve_session_for_window = AsyncMock(return_value=sess)
+            await _surface_ask_question_text(
+                bot, chat_id=100, window_id="@5", ikey=(1, 42), thread_kwargs={}
+            )
+        # The table went out exactly once, as an image — with its data.
+        mock_img.assert_called_once()
+        assert "Ниши (Thai/ME/Indian/лапша)" in mock_img.call_args.args[2]
+        # No box-art left in any text message; prose + question still there.
+        all_text = "\n".join(sends)
+        assert "┌" not in all_text and "│" not in all_text
+        assert "Смотри по приоритетам" in all_text
+        assert "Остальное докрутится" in all_text
+        assert "Как ускоряем?" in all_text
+        # Bookkeeping: anchor text message first, then the photo + trailing text.
+        msg_ids, question = iui._pending_auq["sess-box"]
+        assert msg_ids[0] == 700
+        assert 901 in msg_ids[1:]
+        assert question == "Как ускоряем?"
+        assert iui._auq_text_sent[(1, 42)] == 700
+
+    @pytest.mark.asyncio
     async def test_home_paths_relativized(self):
         """Absolute home paths lifted off the pane read as clutter (and leak the
         operator's username in screenshots) — rewritten to ``~``."""

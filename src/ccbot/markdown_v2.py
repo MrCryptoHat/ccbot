@@ -351,6 +351,54 @@ def _table_markdown(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+# Minimum consecutive bare box-art lines to fence as one drawn block — a single
+# line with a stray box char (a ─ used as punctuation) must stay prose.
+_BARE_BOX_MIN_LINES = 2
+
+
+def fence_bare_box_art(text: str) -> str:
+    """Wrap runs of bare box-drawing lines in ``` fences — for PANE-LIFTED text.
+
+    Claude Code's TUI renders markdown, so a table/tree lifted off the pane
+    (AskUserQuestion prose surfacing) arrives as bare box-art lines with the
+    original fences stripped — ``render_tables_for_chat`` extracts drawn
+    blocks only from fenced spans, so without this the box-art rides the text
+    message and a phone wraps it to soup. Fencing runs of ≥``_BARE_BOX_MIN_LINES``
+    consecutive box-art lines re-creates the block boundary; the normal
+    pipeline then images the wide ones. Content is preserved verbatim — only
+    fence lines are added. Agent-authored JSONL text must NOT go through here;
+    lines inside pre-existing fences are left untouched (defensive — pane
+    text has no fences).
+    """
+    if not any(ch in _BOX_ART_CHARS for ch in text):
+        return text
+    out: list[str] = []
+    run: list[str] = []
+    in_fence = False
+
+    def _flush() -> None:
+        if len(run) >= _BARE_BOX_MIN_LINES:
+            out.append("```")
+            out.extend(run)
+            out.append("```")
+        else:
+            out.extend(run)
+        run.clear()
+
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            _flush()
+            in_fence = not in_fence
+            out.append(line)
+        elif not in_fence and any(ch in _BOX_ART_CHARS for ch in line):
+            run.append(line)
+        else:
+            _flush()
+            out.append(line)
+    _flush()
+    return "\n".join(out)
+
+
 def render_tables_for_chat(
     text: str,
 ) -> tuple[str, list[str], list[tuple[str, str]]]:
