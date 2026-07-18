@@ -1335,13 +1335,19 @@ def create_bot() -> Application:
         # because per-(user, thread) state is guarded by its own locks,
         # and the single-user model rules out cross-user interference.
         .concurrent_updates(True)
-        # group_max_rate=15/60s = Telegram's documented ~20 msg/min-per-group
-        # with headroom. Stream traffic (agent output + status edits) all keys
-        # on the supergroup's chat_id (CcbotRateLimiter doesn't split per topic
-        # — topics share Telegram's per-chat budget), so the bot self-throttles
-        # below the real limit instead of getting 429'd and freezing.
+        # group_max_rate=12/60s: Telegram's documented per-group ceiling is
+        # ~20 msg/min, and the chat's budget is SHARED with interactive taps,
+        # reaction-acks/pins and the background lane's ≤3/min — at 15/60s a
+        # photo-heavy stream (diff screenshots) plus an active user still
+        # earned real 429s (2026-07-18 12:25, ~25 s interactive freeze via
+        # PTB's global RetryAfter pause). 12 + 3 background ≈ 15/min sustained
+        # leaves ~25 % headroom for the user-driven classes. Stream traffic
+        # (agent output + status edits) all keys on the supergroup's chat_id
+        # (CcbotRateLimiter doesn't split per topic — topics share Telegram's
+        # per-chat budget), so the bot self-throttles below the real limit
+        # instead of getting 429'd and freezing.
         .rate_limiter(
-            CcbotRateLimiter(max_retries=5, group_max_rate=15, group_time_period=60)
+            CcbotRateLimiter(max_retries=5, group_max_rate=12, group_time_period=60)
         )
         # PTB's defaults (read=write=5s) are fragile on a high-latency link:
         # an interactive-UI photo send-photo over a freshly-restarted process

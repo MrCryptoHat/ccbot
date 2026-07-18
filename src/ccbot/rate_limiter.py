@@ -7,9 +7,9 @@ The bot's outbound traffic has three shapes with different needs:
   Telegram's documented ~20 msg/min-per-group limit. It goes through PTB's
   parent limiter **unmodified** — keyed on the real ``chat_id`` (the
   supergroup), at the ``group_max_rate``/``group_time_period`` the Application
-  configured (~15/60 s, leaving headroom). We deliberately do **not** split the
+  configured (~12/60 s, leaving headroom for the user-driven classes). We deliberately do **not** split the
   bucket per forum topic: there's no evidence Telegram budgets topics
-  independently (its limiter is ``chat_id``-keyed), so N topics × 15/min would
+  independently (its limiter is ``chat_id``-keyed), so N topics × 12/min would
   blow past the real per-chat ceiling — that's what tripped 429s when several
   agents were busy at once. The cost is that a flooding topic can delay a
   sibling topic's sends by a few seconds; that's the real Telegram limit
@@ -36,8 +36,8 @@ The bot's outbound traffic has three shapes with different needs:
   cadence):
 
   - **Spacing** — background content sends into one chat sleep until they are
-    ``_BG_CHAT_MIN_INTERVAL`` apart. Stream's 15/min + background's ≤4/min
-    stays under the ~20/min ceiling, so a tick-rate dashboard can no longer
+    ``_BG_CHAT_MIN_INTERVAL`` apart. Stream's 12/min + background's ≤3/min
+    stays well under the ~20/min ceiling, so a tick-rate dashboard can no longer
     earn the whole chat a flood ban (which froze interactive sends too — the
     2026-07-18 browser_live incident).
   - **429 cooldown** — a ``RetryAfter`` from a background call arms a per-chat
@@ -90,10 +90,12 @@ _BG_MIN_INTERVAL = 0.34  # seconds
 
 # Minimum spacing between background *content* sends (messages / edits / media)
 # into ONE chat. The per-chat flood budget (~20 msg/min) is shared with stream
-# traffic (15/min bucket), so background content must stay a small fraction:
-# 15 s ⇒ ≤4/min. Callers sleep until their slot — a one-shot notice is merely
-# delayed, a tick-rate dashboard is naturally paced down.
-_BG_CHAT_MIN_INTERVAL = 15.0  # seconds
+# traffic (12/min bucket) AND the user-driven classes (interactive taps,
+# reaction-acks, pins), so background content must stay a small fraction:
+# 20 s ⇒ ≤3/min, keeping sustained bot traffic ≈15/min with headroom.
+# Callers sleep until their slot — a one-shot notice is merely delayed, a
+# tick-rate dashboard is naturally paced down.
+_BG_CHAT_MIN_INTERVAL = 20.0  # seconds
 
 # Extra seconds added on top of Telegram's retry_after when arming a per-chat
 # cooldown — retrying at the exact expiry re-earns the ban half the time.
