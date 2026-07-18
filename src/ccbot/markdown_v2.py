@@ -119,6 +119,44 @@ def _is_box_art(lines: list[str]) -> bool:
     return any(ch in _BOX_ART_CHARS for ch in "".join(lines))
 
 
+# Fence languages a plain-indent directory tree may hide behind. Real code
+# arrives with its language tag (```python, ```bash, …) and is never
+# tree-checked — copyable code must stay inline no matter how tree-ish.
+_TREE_FENCE_LANGS = frozenset({"", "text", "txt", "tree"})
+
+# One display token of a tree line: path segments (word chars / . … * -),
+# optionally nested (a/b/c), optionally a trailing "/" marking a directory.
+_TREE_TOKEN = r"[\w.…*-]+(?:/[\w.…*-]+)*/?"
+_TREE_LINE_RE = re.compile(
+    rf"^[ \t]*{_TREE_TOKEN}(?:[ \t]+{_TREE_TOKEN})*[ \t]*(?:#.*)?$"
+)
+_TREE_COMMENT_RE = re.compile(r"^[ \t]*#")
+
+
+def _is_dir_tree(fence: str, lines: list[str]) -> bool:
+    """True if a bare/text code fence draws a plain-indent directory tree.
+
+    A tree is drawn content like box-art — the phone's code-block wrapping
+    destroys the alignment — but it uses only indentation, so ``_is_box_art``
+    can't see it. All signals are required, so real code in an untagged fence
+    never matches: every entry line is ``indent + path tokens + optional
+    # comment`` (operators / quotes / colons fail the match), at least one
+    first token ends with "/" (a directory), and at least two indent depths
+    exist (hierarchy — a flat command or word list has one).
+    """
+    if _fence_lang(fence) not in _TREE_FENCE_LANGS:
+        return False
+    entries = [ln for ln in lines if ln.strip() and not _TREE_COMMENT_RE.match(ln)]
+    if len(entries) < 3:
+        return False
+    if not all(_TREE_LINE_RE.match(ln) for ln in entries):
+        return False
+    if not any(ln.split()[0].endswith("/") for ln in entries):
+        return False
+    indents = {len(ln) - len(ln.lstrip(" \t")) for ln in entries}
+    return len(indents) >= 2
+
+
 def _reconstruct_code(block: _CodeSpan) -> str:
     """Re-emit a fenced code block verbatim (idempotent round-trip)."""
     parts = [block.fence, *block.inner]
@@ -270,10 +308,14 @@ _FILE_PLACEHOLDER = "\x00CCBOT_FILE:{}\x00"
 PLACEHOLDER_RE = re.compile("\x00CCBOT_(IMG|FILE):(\\d+)\x00")
 
 
+def _fence_lang(fence: str) -> str:
+    """Extract the language tag from a code fence's opening line."""
+    return fence.strip().lstrip("`").strip().lower()
+
+
 def _code_filename(fence: str) -> str:
     """Derive an attachment filename from a code fence's language tag."""
-    lang = fence.strip().lstrip("`").strip().lower()
-    return f"snippet.{_CODE_LANG_EXT.get(lang, 'txt')}"
+    return f"snippet.{_CODE_LANG_EXT.get(_fence_lang(fence), 'txt')}"
 
 
 class ImageBlock(str):
@@ -318,6 +360,9 @@ def render_tables_for_chat(
     - Wide tables → bordered-grid image (placeholder + collected text).
     - Wide box-art code blocks (trees, diagrams with ├└│─) → image, verbatim
       (it's already drawn — no grid wrapping). Narrow ones stay code blocks.
+    - Wide plain-indent directory trees in bare/text fences (``_is_dir_tree``)
+      → same drawn treatment: alignment-by-spaces dies in the phone's
+      code-block wrap exactly like box-art does.
     - Long code blocks (would paginate) → file attachment, so they copy/save
       whole instead of arriving as [k/N]-split fragments.
     - Short plain code blocks are left inline (copy already works there).
@@ -344,7 +389,9 @@ def render_tables_for_chat(
         elif isinstance(block, _CodeSpan):
             width = max((len(line) for line in block.inner), default=0)
             content = "\n".join(block.inner)
-            if _is_box_art(block.inner) and width > TABLE_IMAGE_MIN_WIDTH:
+            if (
+                _is_box_art(block.inner) or _is_dir_tree(block.fence, block.inner)
+            ) and width > TABLE_IMAGE_MIN_WIDTH:
                 # Wide tree/diagram → image (already aligned, render as-is;
                 # drawn art — never a rich table).
                 out.append(_IMG_PLACEHOLDER.format(len(images)))

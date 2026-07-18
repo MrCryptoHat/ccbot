@@ -166,6 +166,52 @@ class TestRenderTablesForChat:
         assert "```" in out
         assert "├── a" in out
 
+    def test_wide_plain_indent_dir_tree_becomes_image(self) -> None:
+        tree = (
+            "myapp/\n"
+            "  core/                 # reusable engine\n"
+            "    session.py          # auth, rate-limit, backoff\n"
+            "    store.py            # SQLite access\n"
+            "  sources/  a.py  b.py  # one package per provider\n"
+            "  bootstrap.sh          # clone + restore the database\n"
+        )
+        text = f"Структура:\n\n```\n{tree}```\n\nдальше."
+        out, images, files = render_tables_for_chat(text)
+        assert files == []
+        assert len(images) == 1
+        assert "\x00CCBOT_IMG:0\x00" in out
+        assert "session.py" in images[0]
+        # Drawn art — never delivered as a rich table.
+        assert getattr(images[0], "rich_markdown", "") == ""
+        before, after = out.split("\x00CCBOT_IMG:0\x00")
+        assert "Структура" in before
+        assert "дальше" in after
+
+    def test_narrow_dir_tree_stays_inline(self) -> None:
+        text = "```\napp/\n  a.py\n  b.py\n```"
+        out, images, _ = render_tables_for_chat(text)
+        assert images == []
+        assert "```" in out
+
+    def test_lang_tagged_fence_never_tree_checked(self) -> None:
+        # Same shape as a tree, but tagged python → copyable code, inline.
+        pad = "x" * TABLE_IMAGE_MIN_WIDTH
+        text = f"```python\npkg/\n  mod.py  # {pad}\n  sub/\n```"
+        _, images, _ = render_tables_for_chat(text)
+        assert images == []
+
+    def test_flat_path_list_stays_inline(self) -> None:
+        pad = "y" * TABLE_IMAGE_MIN_WIDTH
+        text = f"```\nsrc/a.py  # {pad}\nsrc/b.py\nsrc/c.py\ntests/d.py\n```"
+        _, images, _ = render_tables_for_chat(text)
+        assert images == []  # one indent depth — a copyable list, not a tree
+
+    def test_code_in_bare_fence_stays_inline(self) -> None:
+        pad = "z" * TABLE_IMAGE_MIN_WIDTH
+        code = f'def main():  # {pad}\n    print("hi")\n    return 1'
+        _, images, _ = render_tables_for_chat(f"```\n{code}\n```")
+        assert images == []  # operators/quotes fail the tree-line match
+
     def test_plain_wide_code_block_untouched(self) -> None:
         wide_line = "result = compute(" + "a" * 60 + ")"
         text = f"```python\n{wide_line}\n```"

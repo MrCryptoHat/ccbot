@@ -1126,6 +1126,10 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             # a message carrying any skips whole-message rich (which would
             # render them natively) and takes the legacy parts.
             and not (table_texts and session_manager.table_style == "image")
+            # Drawn blocks (box-art / dir trees, rich_markdown="") must arrive
+            # as PNGs regardless of /tables style: a rich code block wraps on
+            # the phone — the very soup the PNG path exists to avoid.
+            and not any(not getattr(t, "rich_markdown", "") for t in table_texts)
         ):
             rich_markdown = msg.text
 
