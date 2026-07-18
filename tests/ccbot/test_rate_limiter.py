@@ -3,8 +3,10 @@
 * stream  → through the parent's group bucket keyed on the *real* chat_id (the
   supergroup) — the per-chat governor; all stream traffic, incl. status edits.
 * interactive (default) → skips every bucket (user is waiting).
-* background → one shared slow lane, then a direct API call (no buckets, no
-  PTB retry loop, so a 429 here doesn't arm the global RetryAfter pause).
+* background → per-chat content governor (spacing between message sends/edits
+  into one chat + flood-ban cooldown; probes and sendChatAction exempt), then
+  one shared slow lane, then a direct API call (no buckets, no PTB retry loop,
+  so a 429 here doesn't arm the global RetryAfter pause).
 """
 
 from __future__ import annotations
@@ -236,6 +238,7 @@ async def test_background_sends_are_spaced(monkeypatch: pytest.MonkeyPatch):
     """Two consecutive background sends are ≥ _BG_MIN_INTERVAL apart — a burst
     can't push the bot over a Telegram limit."""
     monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.08)
+    monkeypatch.setattr("ccbot.rate_limiter._BG_CHAT_MIN_INTERVAL", 0.0)
     limiter = _limiter()
     callback = AsyncMock(return_value={"ok": True})
 
@@ -255,6 +258,117 @@ async def test_background_sends_are_spaced(monkeypatch: pytest.MonkeyPatch):
     await _bg_call()
     assert time.monotonic() - t0 >= 0.06
     assert callback.await_count == 2
+
+
+async def _bg_request(
+    limiter: CcbotRateLimiter,
+    callback: AsyncMock,
+    *,
+    endpoint: str,
+    chat_id: int,
+) -> None:
+    with background_context():
+        await limiter.process_request(
+            callback=callback,
+            args=(),
+            kwargs={},
+            endpoint=endpoint,
+            data={"chat_id": chat_id},
+            rate_limit_args=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_background_content_to_one_chat_is_spaced(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Background *content* sends into one chat sleep until _BG_CHAT_MIN_INTERVAL
+    apart — a tick-rate dashboard can't earn the chat a flood ban."""
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr("ccbot.rate_limiter._BG_CHAT_MIN_INTERVAL", 0.08)
+    limiter = _limiter()
+    callback = AsyncMock(return_value={"ok": True})
+
+    await _bg_request(limiter, callback, endpoint="editMessageMedia", chat_id=-1)
+    t0 = time.monotonic()
+    await _bg_request(limiter, callback, endpoint="editMessageMedia", chat_id=-1)
+    assert time.monotonic() - t0 >= 0.06
+    assert callback.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_background_chat_spacing_is_per_chat(monkeypatch: pytest.MonkeyPatch):
+    """The content governor keys on chat_id — sends to two different chats
+    don't delay each other."""
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr("ccbot.rate_limiter._BG_CHAT_MIN_INTERVAL", 10.0)
+    limiter = _limiter()
+    callback = AsyncMock(return_value={"ok": True})
+
+    await _bg_request(limiter, callback, endpoint="sendPhoto", chat_id=-1)
+    await asyncio.wait_for(
+        _bg_request(limiter, callback, endpoint="sendPhoto", chat_id=-2), timeout=0.5
+    )
+    assert callback.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_background_probes_skip_the_chat_governor(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Chat-management probes (reopenForumTopic) and typing (sendChatAction)
+    are not content — back-to-back calls into one chat go straight through."""
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr("ccbot.rate_limiter._BG_CHAT_MIN_INTERVAL", 10.0)
+    limiter = _limiter()
+    callback = AsyncMock(return_value={"ok": True})
+
+    for endpoint in ("reopenForumTopic", "reopenForumTopic", "sendChatAction"):
+        await asyncio.wait_for(
+            _bg_request(limiter, callback, endpoint=endpoint, chat_id=-1), timeout=0.5
+        )
+    assert callback.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_background_429_arms_a_chat_cooldown(monkeypatch: pytest.MonkeyPatch):
+    """A RetryAfter from a background content send arms a per-chat cooldown:
+    the next send to that chat raises locally, WITHOUT touching the API."""
+    from telegram.error import RetryAfter
+
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr("ccbot.rate_limiter._BG_CHAT_MIN_INTERVAL", 0.0)
+    limiter = _limiter()
+    callback = AsyncMock(side_effect=RetryAfter(30))
+
+    with pytest.raises(RetryAfter):
+        await _bg_request(limiter, callback, endpoint="editMessageMedia", chat_id=-1)
+    assert callback.await_count == 1
+
+    with pytest.raises(RetryAfter):
+        await _bg_request(limiter, callback, endpoint="editMessageMedia", chat_id=-1)
+    assert callback.await_count == 1  # cooldown short-circuited the second call
+
+
+@pytest.mark.asyncio
+async def test_background_cooldown_is_scoped_to_the_banned_chat(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A cooldown on chat A doesn't block content to chat B, nor probes to A."""
+    from telegram.error import RetryAfter
+
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr("ccbot.rate_limiter._BG_CHAT_MIN_INTERVAL", 0.0)
+    limiter = _limiter()
+    banned = AsyncMock(side_effect=RetryAfter(30))
+    ok = AsyncMock(return_value={"ok": True})
+
+    with pytest.raises(RetryAfter):
+        await _bg_request(limiter, banned, endpoint="sendPhoto", chat_id=-1)
+
+    await _bg_request(limiter, ok, endpoint="sendPhoto", chat_id=-2)
+    await _bg_request(limiter, ok, endpoint="reopenForumTopic", chat_id=-1)
+    assert ok.await_count == 2
 
 
 @pytest.mark.asyncio

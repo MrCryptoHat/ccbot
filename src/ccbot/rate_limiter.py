@@ -29,6 +29,22 @@ The bot's outbound traffic has three shapes with different needs:
   own ``except`` logs it and moves on — we never enter the retry path, so a
   stray background 429 can no longer freeze the whole bot.
 
+  Two per-chat governors sit on top of the shared lane, both scoped to
+  *content* endpoints (message sends/edits — the calls Telegram counts against
+  its ~20 msg/min-per-chat flood budget; chat-management probes and
+  ``sendChatAction`` are exempt so e.g. the worktree deletion probe keeps its
+  cadence):
+
+  - **Spacing** — background content sends into one chat sleep until they are
+    ``_BG_CHAT_MIN_INTERVAL`` apart. Stream's 15/min + background's ≤4/min
+    stays under the ~20/min ceiling, so a tick-rate dashboard can no longer
+    earn the whole chat a flood ban (which froze interactive sends too — the
+    2026-07-18 browser_live incident).
+  - **429 cooldown** — a ``RetryAfter`` from a background call arms a per-chat
+    cooldown for its duration (+slack); until it expires, further background
+    content sends to that chat raise ``RetryAfter`` locally without touching
+    the API, instead of hammering a banned chat every tick.
+
 ``stream_context()`` and ``background_context()`` (set by the queue worker and
 by background tasks respectively) flag the class via ``ContextVar``s, which
 asyncio propagates into every awaited send. No call-site annotations needed
@@ -43,7 +59,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dtm
 import logging
+import math
 import time
 from collections.abc import Callable, Coroutine, Iterator
 from contextvars import ContextVar
@@ -69,6 +87,35 @@ _IS_BACKGROUND: ContextVar[bool] = ContextVar("ccbot_is_background", default=Fal
 # traffic. ≈3 calls/s — far under every Telegram limit, yet enough for a probe
 # per few minutes plus a handful of mail notices and dashboard edits.
 _BG_MIN_INTERVAL = 0.34  # seconds
+
+# Minimum spacing between background *content* sends (messages / edits / media)
+# into ONE chat. The per-chat flood budget (~20 msg/min) is shared with stream
+# traffic (15/min bucket), so background content must stay a small fraction:
+# 15 s ⇒ ≤4/min. Callers sleep until their slot — a one-shot notice is merely
+# delayed, a tick-rate dashboard is naturally paced down.
+_BG_CHAT_MIN_INTERVAL = 15.0  # seconds
+
+# Extra seconds added on top of Telegram's retry_after when arming a per-chat
+# cooldown — retrying at the exact expiry re-earns the ban half the time.
+_BG_BAN_SLACK = 2.0  # seconds
+
+
+def _is_content_endpoint(endpoint: str) -> bool:
+    """True for endpoints that create or edit a chat message — the calls
+    Telegram counts against its per-chat flood budget. Chat-management calls
+    (``reopenForumTopic`` probes, pins) and ``sendChatAction`` (typing) have
+    their own, much laxer buckets and must not be paced down with content."""
+    if endpoint == "sendChatAction":
+        return False
+    return endpoint.startswith(("send", "edit", "copy", "forward"))
+
+
+def _retry_after_seconds(exc: RetryAfter) -> float:
+    """Normalize PTB's ``RetryAfter.retry_after`` (int pre-22.2, timedelta after)."""
+    value = exc.retry_after
+    if isinstance(value, dtm.timedelta):
+        return value.total_seconds()
+    return float(value)
 
 
 @contextlib.contextmanager
@@ -100,8 +147,9 @@ def background_context() -> Iterator[None]:
 class CcbotRateLimiter(AIORateLimiter):
     """AIORateLimiter that routes by traffic class (see module docstring).
 
-    * **Background** → wait for a slot in the shared slow lane, then call the
-      API directly (no limiter buckets, no retry loop).
+    * **Background** → per-chat content governor (spacing + flood-ban
+      cooldown), then a slot in the shared slow lane, then call the API
+      directly (no limiter buckets, no retry loop).
     * **Stream** → delegate to the parent unchanged: keyed on the real
       ``chat_id`` (the supergroup), so the parent's 20/60 s-style group bucket
       *is* the per-chat governor.
@@ -118,6 +166,10 @@ class CcbotRateLimiter(AIORateLimiter):
         # construction (3.10+), so building this before the loop exists is fine.
         self._bg_lock = asyncio.Lock()
         self._bg_next_slot = 0.0
+        # Per-chat governors for background *content* sends (see module
+        # docstring): next allowed slot, and flood-ban cooldown expiry.
+        self._bg_chat_next_slot: dict[Any, float] = {}
+        self._bg_chat_banned_until: dict[Any, float] = {}
 
     async def _await_background_slot(self) -> None:
         """Block until this background call may go out (≥ _BG_MIN_INTERVAL since
@@ -129,6 +181,38 @@ class CcbotRateLimiter(AIORateLimiter):
                 now = time.monotonic()
             self._bg_next_slot = now + _BG_MIN_INTERVAL
 
+    def _check_background_cooldown(self, chat_id: Any) -> None:
+        """Raise ``RetryAfter`` locally while ``chat_id`` is under a flood-ban
+        cooldown — never hit the API with a send Telegram is known to refuse."""
+        remaining = self._bg_chat_banned_until.get(chat_id, 0.0) - time.monotonic()
+        if remaining > 0:
+            raise RetryAfter(math.ceil(remaining))
+
+    async def _await_background_chat_slot(self, chat_id: Any) -> None:
+        """Sleep until this chat's next background-content slot (spacing
+        ``_BG_CHAT_MIN_INTERVAL``), reserving it first so concurrent callers
+        queue FIFO instead of stampeding when the slot frees."""
+        self._check_background_cooldown(chat_id)
+        now = time.monotonic()
+        slot = max(now, self._bg_chat_next_slot.get(chat_id, 0.0))
+        self._bg_chat_next_slot[chat_id] = slot + _BG_CHAT_MIN_INTERVAL
+        if slot > now:
+            await asyncio.sleep(slot - now)
+            # A ban may have been armed while we slept — bail before the call.
+            self._check_background_cooldown(chat_id)
+
+    def _arm_background_cooldown(self, chat_id: Any, exc: RetryAfter) -> None:
+        retry_in = _retry_after_seconds(exc) + _BG_BAN_SLACK
+        until = time.monotonic() + retry_in
+        if until > self._bg_chat_banned_until.get(chat_id, 0.0):
+            self._bg_chat_banned_until[chat_id] = until
+            logger.warning(
+                "Background send hit a flood ban (chat=%s) — cooling that chat's "
+                "background content down for %.0fs",
+                chat_id,
+                retry_in,
+            )
+
     async def process_request(
         self,
         callback: Callable[..., Coroutine[Any, Any, bool | JSONDict | list[JSONDict]]],
@@ -139,11 +223,21 @@ class CcbotRateLimiter(AIORateLimiter):
         rate_limit_args: int | None,
     ) -> bool | JSONDict | list[JSONDict]:
         if _IS_BACKGROUND.get():
-            # Slow shared lane, then issue directly: no buckets, no retry loop —
+            # Per-chat content governor first (spacing + ban cooldown), then the
+            # slow shared lane, then issue directly: no buckets, no retry loop —
             # a 429 here surfaces to the caller's except instead of arming
             # _retry_after_event and freezing every other send.
+            chat_id = data.get("chat_id")
+            content = chat_id is not None and _is_content_endpoint(endpoint)
+            if content:
+                await self._await_background_chat_slot(chat_id)
             await self._await_background_slot()
-            return await callback(*args, **kwargs)
+            try:
+                return await callback(*args, **kwargs)
+            except RetryAfter as e:
+                if content:
+                    self._arm_background_cooldown(chat_id, e)
+                raise
 
         if _IS_STREAM.get():
             # Stream traffic (text + status sends + status edits) all counts
