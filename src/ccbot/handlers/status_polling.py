@@ -41,12 +41,14 @@ from ..runtimes import get_runtime
 from ..session import session_manager
 from ..terminal_parser import (
     detect_model_switch,
+    extract_interactive_content,
     is_interactive_ui,
 )
 from ..tmux_manager import tmux_manager
 from .reaction_emit import maybe_fire as fire_reaction_ack
 from .interactive_ui import (
     clear_interactive_msg,
+    get_interactive_widget_name,
     get_interactive_window,
     handle_interactive_ui,
 )
@@ -207,10 +209,19 @@ async def update_status_message(
 
     if interactive_window == window_id:
         # User is in interactive mode for THIS window
-        if is_interactive_ui(pane_text):
+        shown = extract_interactive_content(pane_text)
+        if shown is not None:
             # Interactive UI still showing — Claude is waiting for user, not
             # working. Clear the generation flag so typing drops immediately.
             session_manager.mark_idle(window_id)
+            # A widget that changed IDENTITY under us (sign-in URL screen →
+            # "Login successful. Press Enter to continue…", which no keypress
+            # of ours triggered) gets one repaint, otherwise the ⏎ button sits
+            # under a picture of a screen that is gone. Same-widget redraws
+            # (cursor moves, spinners) are deliberately left alone — repainting
+            # those every tick would be a photo upload per second.
+            if shown.name != get_interactive_widget_name(user_id, thread_id):
+                await handle_interactive_ui(bot, user_id, window_id, thread_id)
             return
         # Interactive UI gone — clear interactive mode, fall through to status check.
         # Don't re-check for new UI this cycle (the old one just disappeared).

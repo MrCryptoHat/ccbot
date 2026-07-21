@@ -672,6 +672,72 @@ class TestLoginPromptDetection:
         assert parse_login_url(pane) == _LOGIN_URL
 
 
+class TestLoginConfirmDetection:
+    """The screen AFTER the code is accepted ("Login successful. Press Enter
+    to continue…") is a real keypress step. Until it was patterned, nothing
+    matched it: the poll saw "no interactive UI", deleted the photo + ⏎
+    keyboard, and the user had to reopen the agent panel by hand to finish
+    signing in.
+    """
+
+    def test_success_with_email_row(self):
+        pane = (
+            "  Login\n"
+            "\n"
+            "  Logged in as user@example.com\n"
+            "  Login successful. Press Enter to continue…\n"
+        )
+        content = extract_interactive_content(pane)
+        assert content is not None
+        assert content.name == "LoginConfirm"
+
+    def test_success_without_email_row(self):
+        """One-line form (no e-mail on the account) — min_gap=0 lets the
+        marker line close its own region."""
+        pane = "  Login\n\n  Login successful. Press Enter to continue…\n"
+        content = extract_interactive_content(pane)
+        assert content is not None
+        assert content.name == "LoginConfirm"
+
+    def test_oauth_error_retry(self):
+        pane = "  OAuth error: Token exchange failed\n\n  Press Enter to retry.\n"
+        content = extract_interactive_content(pane)
+        assert content is not None
+        assert content.name == "LoginConfirm"
+
+    def test_agent_prose_quoting_the_screen_is_not_a_widget(self):
+        """The bug this pattern's ``tail_only`` exists for (hit live): an
+        answer *about* the login screen quoted its wording, the pane showed
+        that quote, and the topic pinned itself in interactive mode — every
+        message the user sent came back as "agent is waiting in a dialog".
+        A quote always has the input box / status chrome drawn below it.
+        """
+        pane = _pane(
+            "  Экран после ввода кода —",
+            "",
+            "  Logged in as user@example.com",
+            "  Login successful. Press Enter to continue…",
+            "",
+            "  — не совпадал ни с одним паттерном.",
+        )
+        assert is_interactive_ui(pane) is False
+
+    def test_answered_transcript_line_is_not_a_widget(self):
+        """Regression guard: once answered, the widget unmounts and the
+        transcript keeps only the short system line. Matching that would pin
+        the topic in interactive mode and block typed messages."""
+        pane = "> /login\n  ⎿  Login successful\n─────\n❯ \n"
+        assert is_interactive_ui(pane) is False
+
+    def test_url_screen_still_wins(self):
+        """The sign-in URL screen keeps its own name (URL surfacing keys on
+        it) — the new pattern must not shadow it."""
+        pane = _login_pane(_wrap(_LOGIN_URL))
+        content = extract_interactive_content(pane)
+        assert content is not None
+        assert content.name == "LoginPrompt"
+
+
 # ── detect_model_switch ──────────────────────────────────────────────────
 
 

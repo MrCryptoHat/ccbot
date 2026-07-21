@@ -81,6 +81,14 @@ _interactive_msgs: dict[tuple[int, int], int] = {}
 # Track interactive mode: (user_id, thread_id_or_0) -> window_id
 _interactive_mode: dict[tuple[int, int], str] = {}
 
+# Which widget the photo currently on screen shows: ikey -> UIPattern name.
+# The status poll leaves a live widget alone (a per-tick re-upload of a
+# redrawing pane would be pure churn), but a widget that changes IDENTITY under
+# us — the sign-in URL screen becoming "Login successful. Press Enter to
+# continue…" with no keypress from us — must repaint, or the ⏎ button sits under
+# a picture of a screen that is no longer there.
+_interactive_widget_name: dict[tuple[int, int], str] = {}
+
 # Dedup: (user_id, thread_id_or_0) -> monotonic time of last send
 _interactive_last_sent: dict[tuple[int, int], float] = {}
 
@@ -356,6 +364,19 @@ def get_interactive_window(user_id: int, thread_id: int | None = None) -> str | 
     return _interactive_mode.get((user_id, thread_id or 0))
 
 
+def get_interactive_widget_name(
+    user_id: int, thread_id: int | None = None
+) -> str | None:
+    """Name of the widget the on-screen interactive photo currently shows."""
+    return _interactive_widget_name.get((user_id, thread_id or 0))
+
+
+def _mark_shown(ikey: tuple[int, int], window_id: str, name: str) -> None:
+    """Record what the interactive photo now on screen shows."""
+    _interactive_mode[ikey] = window_id
+    _interactive_widget_name[ikey] = name
+
+
 def set_interactive_mode(
     user_id: int,
     window_id: str,
@@ -375,6 +396,7 @@ def clear_interactive_mode(user_id: int, thread_id: int | None = None) -> None:
     """Clear interactive mode for a user (without deleting message)."""
     logger.debug("Clear interactive mode: user=%d, thread=%s", user_id, thread_id)
     _interactive_mode.pop((user_id, thread_id or 0), None)
+    _interactive_widget_name.pop((user_id, thread_id or 0), None)
 
 
 def get_interactive_msg_id(user_id: int, thread_id: int | None = None) -> int | None:
@@ -780,7 +802,7 @@ async def _handle_interactive_ui_locked(
             (t_cap - t0) * 1000,
             (t_cap - t0) * 1000,
         )
-        _interactive_mode[ikey] = window_id
+        _mark_shown(ikey, window_id, iui.name)
         return True
 
     caption = tr("iui.caption_waiting")
@@ -829,7 +851,7 @@ async def _handle_interactive_ui_locked(
                 (t_edit - t0) * 1000,
                 f"{len(png_bytes)}B" if png_bytes else "skipped",
             )
-            _interactive_mode[ikey] = window_id
+            _mark_shown(ikey, window_id, iui.name)
             return True
         # Edit failed (not "not modified"). Drop the cached file_id —
         # Telegram may have garbage-collected it — and try a fresh send.
@@ -871,7 +893,7 @@ async def _handle_interactive_ui_locked(
         return False
     if sent:
         _interactive_msgs[ikey] = sent.message_id
-        _interactive_mode[ikey] = window_id
+        _mark_shown(ikey, window_id, iui.name)
         _interactive_last_sent[ikey] = time.monotonic()
         note_topic_message(chat_id, sent.message_id, ikey[0], ikey[1])
         pane_cache.set_hash(sent.message_id, new_hash)
@@ -890,6 +912,7 @@ async def clear_interactive_msg(
     ikey = (user_id, thread_id or 0)
     msg_id = _interactive_msgs.pop(ikey, None)
     _interactive_mode.pop(ikey, None)
+    _interactive_widget_name.pop(ikey, None)
     # The widget is gone — next AskUserQuestion / plan / login re-surfaces.
     _auq_text_sent.pop(ikey, None)
     _plan_text_sent.pop(ikey, None)

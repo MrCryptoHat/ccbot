@@ -49,6 +49,11 @@ class UIPattern:
     is sufficient.  This accommodates wording changes across Claude Code
     versions (e.g. a reworded confirmation prompt).
 
+    ``tail_only`` flips extraction to bottom-up: the region must END on the
+    pane's last non-empty line (see :func:`_try_extract_tail`). Required for any
+    pattern whose markers are short enough to occur in ordinary prose — a live
+    modal owns the bottom of the screen, a quote of it never does.
+
     ``is_login`` marks a sign-in screen that carries an auth URL to surface as
     a clickable link. It is provider-agnostic: any CLI's login screen (Claude
     Code's ``/login``, Codex's device/browser flow, …) sets this and reuses the
@@ -60,6 +65,7 @@ class UIPattern:
     bottom: tuple[re.Pattern[str], ...]
     min_gap: int = 2  # minimum lines between top and bottom (inclusive)
     is_login: bool = False  # sign-in screen with an auth URL (see above)
+    tail_only: bool = False  # region must end the pane (see above)
 
 
 # ── UI pattern definitions (order matters — first match wins) ────────────
@@ -168,6 +174,34 @@ UI_PATTERNS: list[UIPattern] = [
         bottom=(),
         min_gap=1,
         is_login=True,
+    ),
+    UIPattern(
+        # Post-sign-in confirmation — the LAST keypress of Claude Code's OAuth
+        # flow: "Logged in as <email>" (dim, omitted when the account carries no
+        # e-mail) + "Login successful. Press Enter to continue…", and the same
+        # component's failure twin "OAuth error: …" + "Press Enter to retry.".
+        # No pattern matched it, so the moment the sign-in URL screen was
+        # replaced by this one the photo + ⏎ keyboard were torn down one
+        # keypress short of finishing the login, and the user had to reopen the
+        # agent panel by hand to press Enter.
+        #
+        # tail_only is LOAD-BEARING, not a nicety: these markers are plain
+        # prose, and an agent answer *about* this screen (this repo's own
+        # release note quoted it verbatim) put them straight into the pane —
+        # the topic then pinned itself in interactive mode and refused the
+        # user's messages as "agent waiting in a dialog". A live modal replaces
+        # the input box and so ends the pane; a quote always has the chrome
+        # rows below it. min_gap=0 so the one-line form (an account with no
+        # e-mail row) still matches, its own line closing the region.
+        name="LoginConfirm",
+        top=(
+            re.compile(r"^\s*Logged in as\b"),
+            re.compile(r"^\s*Login successful"),
+            re.compile(r"^\s*OAuth error:"),
+        ),
+        bottom=(re.compile(r"Press Enter to (continue|retry)"),),
+        min_gap=0,
+        tail_only=True,
     ),
     UIPattern(
         # Codex sign-in URL screen (device-code or browser flow). Carries the
@@ -316,6 +350,43 @@ def _shorten_separators(text: str) -> str:
 # ── Core extraction ──────────────────────────────────────────────────────
 
 
+# How far above the pane's last line a ``tail_only`` widget's top marker may
+# sit. Such widgets are 2-4 rows; a generous-but-bounded window.
+_TAIL_WINDOW = 8
+
+
+def _try_extract_tail(
+    lines: list[str], pattern: UIPattern
+) -> InteractiveUIContent | None:
+    """Match a widget that OWNS the bottom of the screen.
+
+    Anchored on the pane's LAST non-empty line: the bottom marker must be it,
+    with a top marker within ``_TAIL_WINDOW`` rows above (``min_gap=0`` lets one
+    line be both, i.e. a single-row widget).
+
+    This is what makes short, prose-like wording usable as a marker. A live
+    modal replaces the input box, so it really is the pane's tail; transcript
+    text that merely *quotes* the wording always has the chrome / status rows
+    drawn below it and can never match. (Not hypothetical: an answer in this
+    very repo quoting "Login successful. Press Enter to continue…" pinned the
+    topic in interactive mode and started refusing the user's messages —
+    exactly the ``esc to interrupt`` trap CLAUDE.md warns about.)
+    """
+    end = next((i for i in reversed(range(len(lines))) if lines[i].strip()), None)
+    if end is None or not any(p.search(lines[end]) for p in pattern.bottom):
+        return None
+
+    for i in range(end - pattern.min_gap, max(0, end - _TAIL_WINDOW) - 1, -1):
+        if any(p.search(lines[i]) for p in pattern.top):
+            content = "\n".join(lines[i : end + 1]).rstrip()
+            return InteractiveUIContent(
+                content=_shorten_separators(content),
+                name=pattern.name,
+                is_login=pattern.is_login,
+            )
+    return None
+
+
 def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent | None:
     """Try to extract content matching a single UI pattern.
 
@@ -323,6 +394,9 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
     to the last non-empty line (used for multi-tab AskUserQuestion where the
     bottom delimiter varies by tab).
     """
+    if pattern.tail_only:
+        return _try_extract_tail(lines, pattern)
+
     top_idx: int | None = None
     bottom_idx: int | None = None
 

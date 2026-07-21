@@ -33,15 +33,24 @@ def _clear_interactive_state():
         _interactive_last_sent,
         _interactive_mode,
         _interactive_msgs,
+        _interactive_widget_name,
     )
 
-    _interactive_mode.clear()
-    _interactive_msgs.clear()
-    _interactive_last_sent.clear()
+    for d in (
+        _interactive_mode,
+        _interactive_msgs,
+        _interactive_last_sent,
+        _interactive_widget_name,
+    ):
+        d.clear()
     yield
-    _interactive_mode.clear()
-    _interactive_msgs.clear()
-    _interactive_last_sent.clear()
+    for d in (
+        _interactive_mode,
+        _interactive_msgs,
+        _interactive_last_sent,
+        _interactive_widget_name,
+    ):
+        d.clear()
 
 
 @pytest.mark.usefixtures("_clear_interactive_state")
@@ -94,6 +103,81 @@ class TestStatusPollerSettingsDetection:
             patch(
                 "ccbot.handlers.status_polling.session_manager.capture_pane",
                 new=AsyncMock(return_value=normal_pane),
+            ),
+            patch(
+                "ccbot.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle_ui,
+        ):
+            await update_status_message(
+                mock_bot, user_id=1, window_id=window_id, thread_id=42
+            )
+
+            mock_handle_ui.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_login_success_screen_keeps_keyboard_and_repaints(
+        self, mock_bot: AsyncMock
+    ):
+        """After the sign-in code is accepted, Claude Code swaps the URL screen
+        for "Login successful. Press Enter to continue…" with no keypress from
+        us. The poll must keep the interactive photo (that Enter is the last
+        step of the login) and repaint it, not tear it down."""
+        from ccbot.handlers.interactive_ui import (
+            _interactive_mode,
+            _interactive_widget_name,
+        )
+
+        window_id = "@5"
+        _interactive_mode[(1, 42)] = window_id
+        _interactive_widget_name[(1, 42)] = "LoginPrompt"
+        pane = (
+            "  Login\n"
+            "\n"
+            "  Logged in as user@example.com\n"
+            "  Login successful. Press Enter to continue…\n"
+        )
+
+        with (
+            patch(
+                "ccbot.handlers.status_polling.session_manager.capture_pane",
+                new=AsyncMock(return_value=pane),
+            ),
+            patch(
+                "ccbot.handlers.status_polling.clear_interactive_msg",
+                new_callable=AsyncMock,
+            ) as mock_clear,
+            patch(
+                "ccbot.handlers.status_polling.handle_interactive_ui",
+                new_callable=AsyncMock,
+            ) as mock_handle_ui,
+        ):
+            await update_status_message(
+                mock_bot, user_id=1, window_id=window_id, thread_id=42
+            )
+
+            mock_clear.assert_not_called()
+            mock_handle_ui.assert_called_once_with(mock_bot, 1, window_id, 42)
+
+    @pytest.mark.asyncio
+    async def test_same_widget_is_not_repainted_every_tick(
+        self, mock_bot: AsyncMock, sample_pane_settings: str
+    ):
+        """A widget that merely redraws (cursor moves, spinner) must be left
+        alone — repainting per tick would be a photo upload per second."""
+        from ccbot.handlers.interactive_ui import (
+            _interactive_mode,
+            _interactive_widget_name,
+        )
+
+        window_id = "@5"
+        _interactive_mode[(1, 42)] = window_id
+        _interactive_widget_name[(1, 42)] = "Settings"
+
+        with (
+            patch(
+                "ccbot.handlers.status_polling.session_manager.capture_pane",
+                new=AsyncMock(return_value=sample_pane_settings),
             ),
             patch(
                 "ccbot.handlers.status_polling.handle_interactive_ui",
