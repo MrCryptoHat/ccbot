@@ -216,6 +216,49 @@ def is_rich_safe(markdown: str) -> bool:
     return _RISKY_INLINE_CODE_RE.search(prose) is None
 
 
+# A GFM table delimiter row: `|---|---|`, `| :--- | ---: |`, `--- | ---`.
+# Its presence is what turns the line ABOVE it into a table header.
+_TABLE_DELIM_RE = re.compile(
+    r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$"
+)
+
+
+def normalize_tables(markdown: str) -> str:
+    """Blank-line-separate every table from the paragraph above it.
+
+    Telegram's rich parser follows GFM here: **a table cannot interrupt a
+    paragraph**. Verified against the live API — ``**Totals:**\\n| Item | kcal |
+    …`` comes back parsed as ``paragraph + bold`` with no table node, i.e. the
+    rows collapse into one line of pipe soup in the chat; inserting one blank
+    line makes the same text come back as a real ``table`` block.
+
+    Agents write the label-then-table shape constantly (a bold caption on the
+    line right above the header), so normalize instead of refusing the rich
+    path: the legacy fallback would render a PNG where the user asked for
+    native tables. Only the LEADING blank line matters — a table already ends
+    correctly at the following prose line (also verified live).
+
+    Fenced code is left alone: a markdown table inside a ``` block is sample
+    text, not a table to render.
+    """
+    lines = markdown.split("\n")
+    out: list[str] = []
+    in_fence = False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+        elif (
+            not in_fence
+            and _TABLE_DELIM_RE.match(line)
+            and len(out) >= 2
+            and out[-1].strip()  # the header row
+            and out[-2].strip()  # a paragraph line directly above it
+        ):
+            out.insert(len(out) - 1, "")
+        out.append(line)
+    return "\n".join(out)
+
+
 def flatten_rich_message(rich: Any) -> str:
     """RichMessage dict (from ``message.api_kwargs``) → markdown text."""
     if not isinstance(rich, dict):

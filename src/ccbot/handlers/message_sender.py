@@ -26,6 +26,7 @@ from telegram import Bot, InputMediaPhoto, LinkPreviewOptions, Message
 from telegram.error import BadRequest, NetworkError, RetryAfter
 
 from ..markdown_v2 import convert_markdown
+from ..rich_message import normalize_tables
 from ..transcript_parser import TranscriptParser
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,10 @@ async def send_rich_message(
     """
     if not markdown or len(markdown) > RICH_MESSAGE_MAX_CHARS:
         return None
+    # Normalized at the transport seam, not at the call sites: every rich send
+    # must go through it (a table that interrupts a paragraph renders as pipe
+    # soup — see rich_message.normalize_tables).
+    markdown = normalize_tables(markdown)
     data: dict[str, Any] = {
         "chat_id": chat_id,
         "rich_message": {"markdown": markdown},

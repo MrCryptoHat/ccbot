@@ -6,7 +6,7 @@ rich_message_filter can catch what filters.TEXT never will (text is None).
 Plus the outbound is_rich_safe gate (what may go through sendRichMessage).
 """
 
-from ccbot.rich_message import flatten_rich_message, is_rich_safe
+from ccbot.rich_message import flatten_rich_message, is_rich_safe, normalize_tables
 
 
 def _msg(*blocks) -> dict:
@@ -214,3 +214,36 @@ class TestPtbApiKwargsSeam:
         from ccbot.bot import rich_message_filter
 
         assert rich_message_filter.filter(self._ptb_message()) is True
+
+
+class TestNormalizeTables:
+    """Telegram's rich parser follows GFM: a table cannot interrupt a
+    paragraph. Agents write the label-then-table shape all the time, and
+    without a blank line the rows arrive as one line of pipe soup (hit live).
+    """
+
+    _TABLE = "| Item | kcal |\n|---|---|\n| Soup | 280 |"
+
+    def test_blank_line_inserted_after_paragraph(self):
+        out = normalize_tables("**Totals:**\n" + self._TABLE)
+        assert out == "**Totals:**\n\n" + self._TABLE
+
+    def test_already_separated_is_untouched(self):
+        md = "**Totals:**\n\n" + self._TABLE
+        assert normalize_tables(md) == md
+
+    def test_table_at_start_is_untouched(self):
+        assert normalize_tables(self._TABLE) == self._TABLE
+
+    def test_every_table_in_the_message(self):
+        md = "**Totals:**\n" + self._TABLE + "\n\nprose\n**Snacks:**\n" + self._TABLE
+        assert normalize_tables(md).count("\n\n| Item") == 2
+
+    def test_table_inside_code_fence_is_untouched(self):
+        md = "Example:\n```\n| a | b |\n|---|---|\n```"
+        assert normalize_tables(md) == md
+
+    def test_alignment_row_variants(self):
+        for delim in ("| :--- | ---: |", "|:-:|:-:|", "--- | ---"):
+            md = "caption\n| a | b |\n" + delim
+            assert normalize_tables(md) == "caption\n\n| a | b |\n" + delim
