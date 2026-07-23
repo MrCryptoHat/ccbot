@@ -35,6 +35,7 @@ class InteractiveUIContent:
     content: str  # The extracted display content
     name: str = ""  # Pattern name that matched (e.g. "AskUserQuestion")
     is_login: bool = False  # matched a sign-in screen carrying an auth URL
+    confirm_keys: tuple[str, ...] = ("Enter",)  # blind-confirm keys (see UIPattern)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,14 @@ class UIPattern:
     min_gap: int = 2  # minimum lines between top and bottom (inclusive)
     is_login: bool = False  # sign-in screen with an auth URL (see above)
     tail_only: bool = False  # region must end the pane (see above)
+    #: Keys a BLIND confirm (👍-to-confirm) presses on this widget, in order.
+    #: Default = plain Enter (accept the highlighted option). A widget whose
+    #: preselected option is NOT the plain "yes" declares the safe route as
+    #: data — GrokApproval preselects «Yes, and don't ask again» (permanent
+    #: always-approve), so its blind confirm is Down (→ «Yes, proceed») then
+    #: Enter. Modeled here, not in reaction_confirm, so a new hazardous menu
+    #: is one field, not a new call-site branch.
+    confirm_keys: tuple[str, ...] = ("Enter",)
 
 
 # ── UI pattern definitions (order matters — first match wins) ────────────
@@ -267,6 +276,10 @@ UI_PATTERNS: list[UIPattern] = [
         top=(re.compile(r"^\s*┃?\s*\d+\s+\([●○]\)\s"),),
         bottom=(re.compile(r"\d+/\d+:select"),),
         min_gap=0,
+        # Preselect is «Yes, and don't ask again» = permanent always-approve;
+        # a blind ⏎ would flip YOLO on. 👍 means "yes, once" → Down to «Yes,
+        # proceed», then Enter (radio order pinned on 0.2.111).
+        confirm_keys=("Down", "Enter"),
     ),
     UIPattern(
         # Grok sign-in screen (browser/device flow): "Approve in your browser
@@ -408,6 +421,7 @@ def _try_extract_tail(
                 content=_shorten_separators(content),
                 name=pattern.name,
                 is_login=pattern.is_login,
+                confirm_keys=pattern.confirm_keys,
             )
     return None
 
@@ -451,6 +465,7 @@ def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent |
         content=_shorten_separators(content),
         name=pattern.name,
         is_login=pattern.is_login,
+        confirm_keys=pattern.confirm_keys,
     )
 
 
@@ -777,8 +792,11 @@ def has_codex_queued_messages(pane_text: str) -> bool:
 # is the constant RIGHT side: the session token counter (⇣<n>k) followed by
 # bracket badges ending in [stop] at end of line. Neither half alone is safe in
 # prose; the combination on one line is. Captured live on grok 0.2.111.
+# Trailing `█?`: on narrow panes the TUI's right-edge scrollbar block can land
+# after the badge — a hard $ right at [stop] would then read a busy pane as
+# idle (restart-guard barging a live turn is the failure that buys).
 _GROK_WORKING_RE = re.compile(
-    r"⇣[\d.,]+[kKmM]?\s*(?:\[[^\]\n]*\]\s*)*\[stop\]\s*$", re.MULTILINE
+    r"⇣[\d.,]+[kKmM]?\s*(?:\[[^\]\n]*\]\s*)*\[stop\]\s*█?\s*$", re.MULTILINE
 )
 
 

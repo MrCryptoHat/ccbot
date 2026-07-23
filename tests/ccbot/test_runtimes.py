@@ -684,18 +684,44 @@ class TestGrokSessionResolution:
             root, self._CWD, "019f0000-0000-7000-8000-000000000002", mtime=2000
         )
         self._patch_root(monkeypatch, root)
+        import os as _os
+
         self._write_active(
             root,
             [
                 {
                     "session_id": "019f0000-0000-7000-8000-000000000001",
-                    "pid": 1234,
+                    "pid": _os.getpid(),  # must be a LIVE pid — dead rows are filtered
                     "cwd": self._CWD,
                     "opened_at": "2026-07-15T10:00:00Z",
                 }
             ],
         )
         assert GROK._resolve_session_dir(self._CWD) == live
+
+    def test_dead_pid_registry_row_ignored(self, tmp_path, monkeypatch):
+        # An uncleanly-killed grok leaves its registry row; a dead row must not
+        # outrank the on-disk newest session (it points at a dead transcript).
+        root = tmp_path / "grok" / "sessions"
+        _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000001", mtime=1000
+        )
+        newest = _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000002", mtime=2000
+        )
+        self._patch_root(monkeypatch, root)
+        self._write_active(
+            root,
+            [
+                {
+                    "session_id": "019f0000-0000-7000-8000-000000000001",
+                    "pid": 2**22 + 1,  # beyond default pid_max — never alive
+                    "cwd": self._CWD,
+                    "opened_at": "2026-07-15T10:00:00Z",
+                }
+            ],
+        )
+        assert GROK._resolve_session_dir(self._CWD) == newest
 
     def test_cwd_file_group_variant(self, tmp_path, monkeypatch):
         # Over-long cwds get a slug+hash group dir with the path in .cwd.
@@ -726,9 +752,9 @@ class TestGrokSessionResolution:
         assert GROK._resolve_session_dir("/nowhere") is None
 
     def test_symlinked_cwd_matches_canonical_group(self, tmp_path, monkeypatch):
-        # The window's cwd is a SYMLINK (~/agents/<name> → rclone mount) while
-        # grok records the realpath — a literal compare left the topic dark
-        # (agentdir/grok, 2026-07-23). Resolution must match via realpath.
+        # The window's cwd is a SYMLINK (an agent dir pointing into a mount)
+        # while grok records the realpath — a literal compare left the topic
+        # dark. Resolution must match via realpath.
         real = tmp_path / "mnt" / "agentdir"
         real.mkdir(parents=True)
         link = tmp_path / "agentdir-link"

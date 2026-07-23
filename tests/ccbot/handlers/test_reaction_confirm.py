@@ -21,20 +21,20 @@ def _clean_state():
 
 @pytest.mark.parametrize("pane", [None, "", "   \n  "])
 def test_decide_skip_on_empty(pane):
-    assert rc.decide_confirm_action(pane) == "skip"
+    assert rc.decide_confirm_action(pane) == ("skip", ())
 
 
 def test_decide_enter_on_exit_plan(sample_pane_exit_plan):
-    assert rc.decide_confirm_action(sample_pane_exit_plan) == "enter"
+    assert rc.decide_confirm_action(sample_pane_exit_plan) == ("confirm", ("Enter",))
 
 
 def test_decide_enter_on_permission(sample_pane_permission):
-    assert rc.decide_confirm_action(sample_pane_permission) == "enter"
+    assert rc.decide_confirm_action(sample_pane_permission) == ("confirm", ("Enter",))
 
 
 def test_decide_type_yes_when_idle(sample_pane_no_ui):
     # No interactive UI, not working → idle agent waiting for input.
-    assert rc.decide_confirm_action(sample_pane_no_ui) == "type_yes"
+    assert rc.decide_confirm_action(sample_pane_no_ui) == ("type_yes", ())
 
 
 def test_decide_skip_when_working():
@@ -46,7 +46,7 @@ def test_decide_skip_when_working():
         "──────────────────────────────────────\n"
         "  [Opus 4.7] Context: 41%\n"
     )
-    assert rc.decide_confirm_action(pane) == "skip"
+    assert rc.decide_confirm_action(pane) == ("skip", ())
 
 
 def test_decide_skip_when_codex_working():
@@ -58,10 +58,10 @@ def test_decide_skip_when_codex_working():
         "› Summarize recent commits\n"
         "  gpt-5.5 medium · /home/user/project\n"
     )
-    assert rc.decide_confirm_action(pane, "codex") == "skip"
+    assert rc.decide_confirm_action(pane, "codex") == ("skip", ())
     # Same pane misjudged as idle under the wrong runtime — documents WHY the
     # caller must pass the bound window's runtime.
-    assert rc.decide_confirm_action(pane, "claude") == "type_yes"
+    assert rc.decide_confirm_action(pane, "claude") == ("type_yes", ())
 
 
 def test_decide_enter_on_codex_menu():
@@ -74,7 +74,7 @@ def test_decide_enter_on_codex_menu():
         "  2. No, and tell Codex what to do differently (esc)\n"
         "  Press enter to confirm or esc to cancel\n"
     )
-    assert rc.decide_confirm_action(pane, "codex") == "enter"
+    assert rc.decide_confirm_action(pane, "codex") == ("confirm", ("Enter",))
 
 
 # ── _has_confirm_emoji ───────────────────────────────────────────────────
@@ -137,3 +137,20 @@ def test_note_disabled_is_noop(monkeypatch):
     monkeypatch.setattr(rc.config, "reaction_confirm_enabled", False)
     rc.note_topic_message(chat_id=-100, message_id=42, user_id=7, thread_id=5)
     assert (-100, 42) not in rc._msg_index
+
+
+def test_grok_approval_confirms_yes_once_not_always_approve():
+    """👍 on grok's approval prompt must NOT accept the preselected «Yes, and
+    don't ask again» (permanent always-approve) — the pattern's confirm_keys
+    route it Down (→ «Yes, proceed») then Enter."""
+    pane = (
+        "  ┃  Remove test directory\n"
+        "  ┃  rm -rf ./subdir\n"
+        "  ┃\n"
+        "  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)\n"
+        "  ┃  2 (○) Yes, proceed\n"
+        "  ┃  3 (○) No, reject (type to add feedback)\n"
+        "\n"
+        "  1/3:select  │  Ctrl+o:always-approve  │  Ctrl+c:cancel\n"
+    )
+    assert rc.decide_confirm_action(pane, "grok") == ("confirm", ("Down", "Enter"))

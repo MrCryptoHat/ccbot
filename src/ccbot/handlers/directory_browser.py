@@ -53,8 +53,8 @@ BROWSE_PAGE_KEY = "browse_page"
 BROWSE_DIRS_KEY = "browse_dirs"  # Cache of subdirs for current path
 UNBOUND_WINDOWS_KEY = "unbound_windows"  # Cache of (name, cwd) tuples
 STATE_SELECTING_SESSION = "selecting_session"
-SESSIONS_KEY = "cached_sessions"  # Cache of AgentSession list (of the active tab)
-PICKER_RUNTIME_KEY = "picker_runtime"  # active runtime tab in the session picker
+SESSIONS_KEY = "cached_sessions"  # Cache of AgentSession list (active runtime's)
+PICKER_RUNTIME_KEY = "picker_runtime"  # active runtime in the session picker
 
 
 def browse_start_path() -> str:
@@ -379,7 +379,9 @@ def build_runtime_menu(
     buttons: list[list[InlineKeyboardButton]] = []
     for rt in pickable_runtimes():
         if rt.name == active_runtime:
-            label = f"● {rt.display_name} — {tr('dirb.sessions_n', n=session_count)}"
+            # ▸ (the panel's active-tab convention), NOT ● — a filled circle
+            # reads as just another runtime icon next to Grok's ⚫.
+            label = f"▸ {rt.display_name} — {tr('dirb.sessions_n', n=session_count)}"
         else:
             label = f"{rt.picker_icon} {rt.display_name}".strip()
         buttons.append(

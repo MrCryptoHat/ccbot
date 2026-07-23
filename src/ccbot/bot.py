@@ -836,6 +836,12 @@ async def _create_and_bind_window(
                     pending_text = f"{build_on_directive()}\n\n---\n{pending_text}"
                 elif directive == "off":
                     pending_text = f"{off_directive()}\n\n---\n{pending_text}"
+                # Hookless runtimes that auto-forward declare their boot time
+                # (first_message_settle_sec) — keys typed into a still-booting
+                # TUI can be swallowed. Claude's is 0 (the hook wait above
+                # already spaced the forward).
+                if rt.first_message_settle_sec > 0:
+                    await asyncio.sleep(rt.first_message_settle_sec)
                 send_ok, send_msg = await session_manager.send_to_window(
                     created_wid,
                     pending_text,

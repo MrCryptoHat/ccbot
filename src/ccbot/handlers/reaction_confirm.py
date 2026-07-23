@@ -41,7 +41,7 @@ from ..config import config
 from ..i18n import current_language, tr
 from ..session import session_manager
 from ..runtimes import get_runtime
-from ..terminal_parser import is_interactive_ui
+from ..terminal_parser import extract_interactive_content
 from . import is_user_allowed
 from .message_sender import safe_send
 
@@ -75,25 +75,34 @@ def _has_confirm_emoji(reactions: Sequence[ReactionType]) -> bool:
     return any(isinstance(r, ReactionTypeEmoji) and r.emoji == emoji for r in reactions)
 
 
-def decide_confirm_action(pane_text: str | None, runtime: str = "claude") -> str:
+def decide_confirm_action(
+    pane_text: str | None, runtime: str = "claude"
+) -> tuple[str, tuple[str, ...]]:
     """Pure: given the agent's pane, what does a 👍 mean here?
 
-    Returns ``"enter"`` (press Enter on the interactive prompt), ``"type_yes"``
-    (type «да» — agent is idle waiting for input), or ``"skip"`` (agent busy or
-    pane unavailable — don't touch it).
+    Returns ``(action, keys)``:
+      - ``("confirm", keys)`` — press ``keys`` in order on the live
+        interactive prompt. The keys come from the matched UI pattern's
+        ``confirm_keys`` (default a plain Enter) — a widget whose preselected
+        option is dangerous declares a safe route instead (GrokApproval
+        preselects permanent always-approve; its blind confirm is Down →
+        «Yes, proceed» → Enter).
+      - ``("type_yes", ())`` — agent idle waiting for input; type «да».
+      - ``("skip", ())``     — agent busy or pane unavailable; don't touch it.
 
     ``runtime`` selects the busy-detection chrome (Claude's status line vs
     Codex's counter); the caller passes the bound window's runtime so a busy
-    codex isn't mistaken for idle. ``is_interactive_ui`` is already runtime-
-    agnostic (login / AskUserQuestion / codex menus all match).
+    codex isn't mistaken for idle. ``extract_interactive_content`` is already
+    runtime-agnostic (login / AskUserQuestion / codex menus all match).
     """
     if not pane_text or not pane_text.strip():
-        return "skip"
-    if is_interactive_ui(pane_text):
-        return "enter"
+        return "skip", ()
+    ui = extract_interactive_content(pane_text)
+    if ui is not None:
+        return "confirm", ui.confirm_keys
     if not get_runtime(runtime).is_working(pane_text):
-        return "type_yes"
-    return "skip"
+        return "type_yes", ()
+    return "skip", ()
 
 
 async def handle_message_reaction(
@@ -164,15 +173,24 @@ async def _do_confirm(
         return
     chat_id = session_manager.resolve_chat_id(user_id, tid)
     pane = await session_manager.capture_pane(binding)
-    action = decide_confirm_action(pane, session_manager.window_runtime(binding))
+    action, keys = decide_confirm_action(pane, session_manager.window_runtime(binding))
     logger.info(
-        "Reaction confirm: msg=%s binding=%s action=%s", message_id, binding, action
+        "Reaction confirm: msg=%s binding=%s action=%s keys=%s",
+        message_id,
+        binding,
+        action,
+        keys,
     )
 
-    if action == "enter":
-        if await session_manager.send_keys(
-            binding, "Enter", enter=False, literal=False
-        ):
+    if action == "confirm":
+        ok = True
+        for key in keys:
+            ok = await session_manager.send_keys(
+                binding, key, enter=False, literal=False
+            )
+            if not ok:
+                break
+        if ok:
             await safe_send(bot, chat_id, tr("rconf.confirmed"), message_thread_id=tid)
         return
     if action == "type_yes":

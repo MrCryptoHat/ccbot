@@ -589,10 +589,29 @@ class SessionMonitor:
         """Clean up all tracked sessions not in current session_map (used on startup)."""
         current_map = await self._load_current_session_map()
         active_session_ids = set(current_map.values())
+        # Hookless runtimes (codex/grok) never appear in a session_map — their
+        # sessions are resolved by cwd. Purging them here reset their byte
+        # offsets on EVERY bot restart, so whatever the agent wrote between the
+        # last poll and the restart (often the reply the user was waiting for)
+        # was silently skipped by the EOF re-track. Keep any tracked session a
+        # hookless-runtime window still points at; truly dead ones are dropped
+        # by the regular per-tick change detection once the window goes away.
+        from .runtimes import get_runtime
+        from .session import session_manager
+
+        hookless_session_ids = {
+            ws.session_id
+            for ws in session_manager.window_states.values()
+            if ws.session_id
+            and not get_runtime(getattr(ws, "runtime", None)).uses_session_map
+        }
 
         stale_sessions = []
         for session_id in self.state.tracked_sessions.keys():
-            if session_id not in active_session_ids:
+            if (
+                session_id not in active_session_ids
+                and session_id not in hookless_session_ids
+            ):
                 stale_sessions.append(session_id)
 
         if stale_sessions:

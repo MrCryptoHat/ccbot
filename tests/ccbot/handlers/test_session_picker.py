@@ -140,7 +140,8 @@ class TestRuntimeMenu:
         # (that's the design — back IS "re-open the active tab") and would
         # overwrite its label in the dict.
         labels = {_cd(b): b.text for row in kb.inline_keyboard[:-1] for b in row}
-        assert labels[f"{CB_RUNTIME_TAB}claude"].startswith("●")
+        # ▸ per the active-tab convention (● would collide with Grok's ⚫ icon).
+        assert labels[f"{CB_RUNTIME_TAB}claude"].startswith("▸")
         assert "2" in labels[f"{CB_RUNTIME_TAB}claude"]
         # Inactive rows keep their icon, no count.
         assert labels[f"{CB_RUNTIME_TAB}codex"].startswith("🔵")

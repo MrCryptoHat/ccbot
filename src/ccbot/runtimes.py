@@ -74,7 +74,7 @@ from .terminal_parser import (
     is_grok_working,
 )
 from .transcript_parser import ParsedEntry, TranscriptParser
-from .utils import is_valid_session_id
+from .utils import is_valid_session_id, same_dir as _same_dir
 
 logger = logging.getLogger(__name__)
 
@@ -107,22 +107,32 @@ _CODEX_SCAN_CAP = 60
 _GROK_LIST_MAX = 10
 
 # binary name -> (login-shell `command -v` result, probe monotonic time).
-# Positives are effectively stable (re-probed only after the TTL, cheap);
-# negatives expire after the TTL so a transient miss (CLI self-update swapping
-# the binary, install-in-progress) self-heals without a bot restart. Only the
-# slow login-shell leg is cached; the shutil.which fast path stays per-call.
+# POSITIVES are cached for the process lifetime — a resolved path doesn't move,
+# and the probe is a SYNCHRONOUS subprocess on the event loop (sh -l loads the
+# user's profile; with nvm-style profiles that's 0.3-1 s of frozen handlers),
+# so it must run at most once per binary. NEGATIVES expire after the TTL so a
+# transient miss (CLI self-update swapping the binary, install-in-progress)
+# self-heals without a bot restart; a genuinely-absent CLI re-probes at most
+# once a minute, and only from user-driven picker renders. Only the slow
+# login-shell leg is cached; the shutil.which fast path stays per-call.
 _login_shell_which_cache: dict[str, tuple[str | None, float]] = {}
-_LOGIN_WHICH_TTL = 60.0
+_LOGIN_WHICH_NEGATIVE_TTL = 60.0
+# Binaries whose PATH-divergence WARNING already fired (once per process —
+# the divergence is a stable host property, not a per-render event).
+_login_shell_warned: set[str] = set()
 
 
 def _login_shell_which(binary: str) -> str | None:
-    """``command -v`` under a login shell, cached per binary name (TTL'd).
+    """``command -v`` under a login shell, cached per binary name.
 
     Kept as a separate seam so tests can stub it out — the real probe would
     find the host's actual CLIs and defeat availability-gating assertions.
     """
     cached = _login_shell_which_cache.get(binary)
-    if cached is not None and time.monotonic() - cached[1] < _LOGIN_WHICH_TTL:
+    if cached is not None and (
+        cached[0] is not None
+        or time.monotonic() - cached[1] < _LOGIN_WHICH_NEGATIVE_TTL
+    ):
         return cached[0]
     path: str | None = None
     try:
@@ -132,15 +142,19 @@ def _login_shell_which(binary: str) -> str | None:
             text=True,
             timeout=5,
         )
-        out = proc.stdout.strip()
-        if proc.returncode == 0 and out.startswith("/"):
-            path = out.splitlines()[-1].strip()
+        # Judge the LAST stdout line: a chatty ~/.profile may print banners
+        # before command -v's answer, and testing the whole stdout against
+        # startswith("/") would discard a perfectly good resolution.
+        last = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout else ""
+        if proc.returncode == 0 and last.startswith("/"):
+            path = last
     except (OSError, subprocess.SubprocessError):
         path = None
-    if path is not None:
+    if path is not None and binary not in _login_shell_warned:
         # which() missed but the login shell resolves it — the PATH divergence
-        # this fallback exists for. Logged so a live process shows WHY a tab
-        # was about to vanish (see 2026-07-23: claude briefly unavailable).
+        # this fallback exists for. Logged ONCE so a live process shows WHY a
+        # picker tab would have vanished (2026-07-23: claude in ~/.npm-global).
+        _login_shell_warned.add(binary)
         logger.warning(
             "CLI %r not on the bot's PATH; resolved via login shell to %s",
             binary,
@@ -169,27 +183,6 @@ def _resolve_cli_binary(binary: str) -> str | None:
     if os.path.isabs(binary):
         return None  # explicit path that doesn't exist — nothing to probe
     return _login_shell_which(binary)
-
-
-def _same_dir(a: str | None, b: str | None) -> bool:
-    """True when two directory paths refer to the same directory.
-
-    Hookless runtimes match a window's cwd against the cwd the CLI itself
-    recorded — and CLIs canonicalize: grok records the REALPATH (codex may
-    too), while ``WindowState.cwd`` keeps the path the window was created
-    with. Where an agent dir is a symlink (this server's ``~/agents/<name>``
-    → rclone mount), a literal compare silently never matches and the topic
-    goes dark — a symlinked agent dir. Literal equality
-    first (cheap), realpath equality second.
-    """
-    if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
-        return False
-    if a == b:
-        return True
-    try:
-        return os.path.realpath(a) == os.path.realpath(b)
-    except OSError:
-        return False
 
 
 def _entry_context_tokens(entry: dict) -> int | None:
@@ -243,6 +236,12 @@ class AgentRuntime(abc.ABC):
     #: startup screen (Codex's sign-in menu) where blind typing + Enter would
     #: take a step the user didn't choose.
     auto_forward_first_message: bool = True
+    #: Seconds to wait after launch before auto-typing that first message.
+    #: Claude needs none (its hook wait already spaces the forward); a
+    #: hookless runtime that DOES auto-forward (Grok) declares its boot time
+    #: here explicitly instead of relying on incidental awaits to cover it —
+    #: keys typed into a still-booting TUI can be swallowed.
+    first_message_settle_sec: float = 0.0
     #: Keys sent by /esc to interrupt a running turn, in order (tmux key
     #: names). Claude Code takes Escape (agent) + Ctrl-C (bash command);
     #: Codex must NOT get the trailing Ctrl-C — on its TUI an idle Ctrl-C arms
@@ -447,7 +446,14 @@ class AgentRuntime(abc.ABC):
     def parse_entries(
         self, raw_entries: list[dict], pending_tools: dict
     ) -> tuple[list[ParsedEntry], dict]:
-        """Parse raw transcript lines into ParsedEntry + carried pending tools."""
+        """Parse raw transcript lines into ParsedEntry + carry-state.
+
+        ``pending_tools`` is an OPAQUE per-session dict the monitor hands back
+        on the next batch — tool_use↔tool_result pairing for Claude/Codex, but
+        a runtime may stash any cross-batch parser state in it (Grok carries a
+        still-streaming chunk buffer under a reserved key). Consumers must not
+        assume every value is a pending-tool record.
+        """
         ...
 
     def latest_context_tokens(self, raw_entries: list[dict]) -> int | None:
@@ -878,8 +884,10 @@ class GrokRuntime(AgentRuntime):
     # tracked by cwd, so bootstrap persists cwd and skips the hook wait/alarm.
     uses_session_map = False
     # Verified live: the welcome screen's composer accepts blind-typed text
-    # ~1.5 s after launch and Enter submits it as the first prompt.
+    # ~1.5 s after launch and Enter submits it as the first prompt. The
+    # settle delay covers the boot window explicitly (see base class).
     auto_forward_first_message = True
+    first_message_settle_sec = 1.5
     # Esc cancels a running turn immediately (draft preserved). No trailing
     # Ctrl-C: grok's Ctrl-C clears the draft / escalates toward quit, and an
     # idle DOUBLE-Esc opens the rewind picker — one Escape per /esc is safe.
@@ -961,9 +969,26 @@ class GrokRuntime(AgentRuntime):
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError, ValueError):
             return []
-        return (
-            [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
-        )
+        if not isinstance(data, list):
+            return []
+        live: list[dict] = []
+        for e in data:
+            if not isinstance(e, dict):
+                continue
+            # Drop entries whose pid is dead: an uncleanly-killed grok (OOM,
+            # SIGKILL) leaves its registry row behind, and a newer-opened_at
+            # dead row would otherwise outrank the LIVE session for the same
+            # cwd — pinning the topic to a transcript nothing writes to.
+            pid = e.get("pid")
+            if isinstance(pid, int):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    continue
+                except (PermissionError, OSError):
+                    pass  # pid exists but isn't ours / unknown — keep the row
+            live.append(e)
+        return live
 
     def _group_dir_for_cwd(self, cwd: str) -> Path | None:
         """The sessions group directory whose (decoded) name is ``cwd``.
@@ -1159,7 +1184,7 @@ RUNTIMES: dict[str, AgentRuntime] = {
 
 
 def pickable_runtimes() -> list[AgentRuntime]:
-    """Runtimes offered as tabs in the session picker, in display order.
+    """Runtimes offered in the session picker's agent menu, in display order.
 
     Registered runtimes whose CLI is actually installed (``is_available``) —
     a fresh install without codex must never see a Codex tab whose "new

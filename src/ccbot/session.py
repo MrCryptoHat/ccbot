@@ -45,6 +45,7 @@ from .transcript_parser import TranscriptParser
 from .utils import (
     atomic_write_json,
     is_valid_session_id,
+    same_dir,
     schedule_async_json_write,
 )
 from .voice.safety import BudgetEvent, VoiceBudget
@@ -1275,7 +1276,12 @@ class SessionManager:
         for wid, ws in list(self.window_states.items()):
             if (getattr(ws, "runtime", None) or "claude") != runtime:
                 continue
-            if not ws.cwd or ws.cwd != cwd:
+            # same_dir, not literal ==: transcript resolution matches cwds by
+            # realpath (symlinked agent dirs), so the guard MUST use the same
+            # equivalence — literal comparison would admit a second window on
+            # the symlink's target path, and both topics would then mirror the
+            # same session (the exact cross-talk this guard exists to refuse).
+            if not ws.cwd or not same_dir(ws.cwd, cwd):
                 continue
             if self._is_docker_binding(wid):
                 continue

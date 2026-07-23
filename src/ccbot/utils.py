@@ -159,3 +159,44 @@ def read_cwd_from_jsonl(file_path: str | Path) -> str:
     except OSError:
         pass
     return ""
+
+
+# path-pair -> verdict memo for same_dir. realpath stats every path component,
+# and on this class of deployment decoded agent paths point into a FUSE mount
+# (rclone) — re-running it on every 2 s monitor tick would hand the event loop
+# to the mount's health (a hung rclone would freeze every handler, not just
+# the monitor). The same few pairs recur each tick, so a small memo removes
+# the syscalls entirely. Symlink retargeting mid-run would serve a stale
+# verdict until restart — accepted (it doesn't happen to agent dirs in
+# practice, and a bot restart clears the memo).
+_same_dir_memo: dict[tuple[str, str], bool] = {}
+_SAME_DIR_MEMO_MAX = 256
+
+
+def same_dir(a: str | None, b: str | None) -> bool:
+    """True when two directory paths refer to the same directory.
+
+    Hookless agent runtimes match a window's cwd against the cwd the CLI
+    itself recorded — and CLIs canonicalize: grok records the REALPATH (codex
+    may too), while ``WindowState.cwd`` keeps the path the window was created
+    with. Where an agent dir is a symlink (e.g. ``~/agents/<name>`` → a
+    mount), a literal compare silently never matches — transcripts stop
+    resolving AND the same-cwd cross-talk guard stops guarding. Literal
+    equality first (cheap), memoized realpath equality second.
+    """
+    if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
+        return False
+    if a == b:
+        return True
+    key = (a, b)
+    cached = _same_dir_memo.get(key)
+    if cached is not None:
+        return cached
+    try:
+        verdict = os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return False  # transient (unreadable path) — don't memoize
+    if len(_same_dir_memo) >= _SAME_DIR_MEMO_MAX:
+        _same_dir_memo.pop(next(iter(_same_dir_memo)))
+    _same_dir_memo[key] = verdict
+    return verdict

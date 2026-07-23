@@ -49,10 +49,11 @@ CB_SESSION_SELECT = "rs:sel:"  # rs:sel:<index>  (resume session of active runti
 CB_SESSION_CANCEL = "rs:cancel"  # cancel
 CB_SESSION_BROWSE = "rs:browse"  # open directory browser (wrong auto-bound folder)
 
-# Runtime tab / new-session. CB_RUNTIME_TAB re-renders the picker with the
-# tapped runtime's sessions; CB_RUNTIME_SELECT starts a FRESH window on that
-# runtime (the "➕ New session" button under the active tab). Both carry the
-# runtime id; the handler creates+binds with it.
+# Session-picker runtime plumbing. CB_RUNTIME_MENU opens the agent list under
+# the picker's switcher row; CB_RUNTIME_TAB re-renders the picker with the
+# chosen runtime's sessions (also serves as the menu's «← Назад»);
+# CB_RUNTIME_SELECT starts a FRESH window on that runtime («➕ Новая сессия»).
+# TAB/SELECT carry the runtime id; the handler creates+binds with it.
 CB_RUNTIME_TAB = "rt:tab:"  # rt:tab:<runtime>  (show picker with runtime's sessions)
 CB_RUNTIME_SELECT = "rt:sel:"  # rt:sel:<runtime>  (new window on runtime)
 CB_RUNTIME_MENU = "rt:menu"  # open the agent list («🤖 Агент: … ▾» switcher row)
