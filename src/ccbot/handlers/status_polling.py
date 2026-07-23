@@ -153,8 +153,13 @@ async def update_status_message(
                     action="typing",
                     message_thread_id=thread_id,
                 )
-            except Exception:
-                pass
+                logger.debug(
+                    "typing heartbeat sent (thread=%s, %s)", thread_id, window_id
+                )
+            except Exception as e:
+                # Swallowed by design (typing is best-effort), but silently
+                # eating it made a broken heartbeat undiagnosable — log it.
+                logger.debug("typing heartbeat failed (thread=%s): %s", thread_id, e)
 
     # Capture pane via session_manager so the same UI-detection logic
     # works for both tmux ("@<id>") and docker ("docker:<agent>") bindings.
