@@ -310,9 +310,14 @@ class TestAvailabilityGating:
     def _patch_which(self, monkeypatch, present: set[str]):
         import shutil as _shutil
 
+        import ccbot.runtimes as rt
+
         monkeypatch.setattr(
             _shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd in present else None
         )
+        # Stub the login-shell fallback: the real probe would find the host's
+        # actual CLIs and defeat the availability-gating assertions below.
+        monkeypatch.setattr(rt, "_login_shell_which", lambda b: None)
 
     def _patch_cfg(self, monkeypatch, default="claude"):
         from unittest.mock import MagicMock

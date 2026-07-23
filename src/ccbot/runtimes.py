@@ -55,6 +55,8 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -103,6 +105,70 @@ _CODEX_SCAN_CAP = 60
 # per-cwd group directory is already the index, so only the newest N session
 # dirs are read at all.
 _GROK_LIST_MAX = 10
+
+# binary name -> (login-shell `command -v` result, probe monotonic time).
+# Positives are effectively stable (re-probed only after the TTL, cheap);
+# negatives expire after the TTL so a transient miss (CLI self-update swapping
+# the binary, install-in-progress) self-heals without a bot restart. Only the
+# slow login-shell leg is cached; the shutil.which fast path stays per-call.
+_login_shell_which_cache: dict[str, tuple[str | None, float]] = {}
+_LOGIN_WHICH_TTL = 60.0
+
+
+def _login_shell_which(binary: str) -> str | None:
+    """``command -v`` under a login shell, cached per binary name (TTL'd).
+
+    Kept as a separate seam so tests can stub it out — the real probe would
+    find the host's actual CLIs and defeat availability-gating assertions.
+    """
+    cached = _login_shell_which_cache.get(binary)
+    if cached is not None and time.monotonic() - cached[1] < _LOGIN_WHICH_TTL:
+        return cached[0]
+    path: str | None = None
+    try:
+        proc = subprocess.run(
+            ["sh", "-lc", f"command -v {shlex.quote(binary)}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        out = proc.stdout.strip()
+        if proc.returncode == 0 and out.startswith("/"):
+            path = out.splitlines()[-1].strip()
+    except (OSError, subprocess.SubprocessError):
+        path = None
+    if path is not None:
+        # which() missed but the login shell resolves it — the PATH divergence
+        # this fallback exists for. Logged so a live process shows WHY a tab
+        # was about to vanish (see 2026-07-23: claude briefly unavailable).
+        logger.warning(
+            "CLI %r not on the bot's PATH; resolved via login shell to %s",
+            binary,
+            path,
+        )
+    _login_shell_which_cache[binary] = (path, time.monotonic())
+    return path
+
+
+def _resolve_cli_binary(binary: str) -> str | None:
+    """Absolute path of an agent CLI binary, or None when not installed.
+
+    ``shutil.which`` first (the bot process's PATH), then a one-time cached
+    login-shell probe. The second leg is load-bearing, not a nicety: the bot
+    runs under systemd/tmux with a minimal PATH, while the CLI may live in a
+    login-shell-only dir (``~/.npm-global/bin``, nvm) — the PANES that launch
+    the CLI run the user's login shell, so its resolution is the truth. With
+    which() alone, claude's picker tab silently vanished and its version
+    canary went dark on exactly such a host, while claude windows kept
+    launching fine.
+    """
+    binary = os.path.expanduser(binary)
+    found = shutil.which(binary)
+    if found:
+        return found
+    if os.path.isabs(binary):
+        return None  # explicit path that doesn't exist — nothing to probe
+    return _login_shell_which(binary)
 
 
 def _entry_context_tokens(entry: dict) -> int | None:
@@ -216,18 +282,20 @@ class AgentRuntime(abc.ABC):
         ...
 
     def is_available(self) -> bool:
-        """True iff this runtime's CLI binary is installed (on PATH).
+        """True iff this runtime's CLI binary is installed.
 
         Gates the picker tabs (``pickable_runtimes``): a runtime whose binary
         is absent must not be offered — typing a missing command into a fresh
         pane leaves a dead window the health check reaps 30 s later, with no
-        explanation the user can act on. Probed per call (cheap PATH stat) so
-        installing the CLI needs no bot restart.
+        explanation the user can act on. Resolution goes through
+        ``_resolve_cli_binary`` — the bot process's PATH alone is NOT the
+        truth (see that helper: a claude living in ``~/.npm-global/bin``
+        vanished from the picker while its windows launched fine).
         """
         parts = self.cli_command().split()
         if not parts:
             return False
-        return shutil.which(os.path.expanduser(parts[0])) is not None
+        return _resolve_cli_binary(parts[0]) is not None
 
     async def cli_version(self) -> str | None:
         """First line of ``<cli> --version`` output (None if the probe fails).
@@ -242,7 +310,11 @@ class AgentRuntime(abc.ABC):
         parts = self.cli_command().split()
         if not parts:
             return None
-        binary = os.path.expanduser(parts[0])
+        binary = _resolve_cli_binary(parts[0])
+        if binary is None:
+            # Un-resolvable binary (also under the service PATH divergence
+            # _resolve_cli_binary covers) — a relative exec would fail anyway.
+            return None
         try:
             proc = await asyncio.create_subprocess_exec(
                 binary,

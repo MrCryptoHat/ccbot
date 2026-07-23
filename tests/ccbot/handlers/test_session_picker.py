@@ -1,27 +1,34 @@
-"""Tests for the runtime-tabbed session picker (directory_browser).
+"""Tests for the session picker with the agent-switcher row (directory_browser).
 
-The picker shows one tab per runtime (Claude Code / Codex / …) on top and the
-active runtime's resumable sessions below, with a "➕ New session" button that
-starts a fresh window on the active runtime. Tabs come from the runtime registry
-so a new runtime appears automatically.
+Redesigned 2026-07-23 (design review with the operator): full-width resume
+buttons carrying title + short age, «➕ Новая сессия — <agent>», and a single
+«🤖 Агент: … ▾» switcher row that opens the runtime menu — replacing the old
+wrapping tab row, which didn't scale past a couple of runtimes and squeezed
+session titles into 14-char mush.
 """
 
 import pytest
 
 from ccbot.agent_session import AgentSession
 from ccbot.handlers.callback_data import (
+    CB_RUNTIME_MENU,
     CB_RUNTIME_SELECT,
     CB_RUNTIME_TAB,
+    CB_SESSION_BROWSE,
     CB_SESSION_SELECT,
 )
-from ccbot.handlers.directory_browser import build_session_picker
+from ccbot.handlers.directory_browser import (
+    PICKER_SESSION_ROWS,
+    build_runtime_menu,
+    build_session_picker,
+)
 from ccbot.runtimes import AgentRuntime
 
 
 @pytest.fixture(autouse=True)
 def _all_runtimes_available(monkeypatch):
-    # pickable_runtimes() gates tabs on an installed CLI (shutil.which); pin
-    # every runtime "installed" so tab assertions don't depend on the host.
+    # pickable_runtimes() gates on an installed CLI; pin every runtime
+    # "installed" so layout assertions don't depend on the host.
     monkeypatch.setattr(AgentRuntime, "is_available", lambda self: True)
 
 
@@ -39,58 +46,109 @@ _SESSIONS = [
 ]
 
 
-class TestRuntimeTabs:
-    def test_tab_row_has_one_button_per_runtime(self):
+class TestSessionRows:
+    def test_full_width_rows_indexed_in_order(self):
         _, kb = build_session_picker(_SESSIONS, "/home/user/project", "claude")
-        tab_data = [
-            b.callback_data for b in _flat(kb) if _cd(b).startswith(CB_RUNTIME_TAB)
+        resume_rows = [
+            row
+            for row in kb.inline_keyboard
+            if any(_cd(b).startswith(CB_SESSION_SELECT) for b in row)
         ]
-        assert f"{CB_RUNTIME_TAB}claude" in tab_data
-        assert f"{CB_RUNTIME_TAB}codex" in tab_data
-
-    def test_active_tab_marked_with_pointer(self):
-        _, kb = build_session_picker(_SESSIONS, "/d", "claude")
-        labels = {b.callback_data: b.text for b in _flat(kb)}
-        assert labels[f"{CB_RUNTIME_TAB}claude"].startswith("▸")
-        assert "Claude Code" in labels[f"{CB_RUNTIME_TAB}claude"]
-        # Inactive tab keeps its icon (🟠), no pointer.
-        assert not labels[f"{CB_RUNTIME_TAB}codex"].startswith("▸")
-        assert "Codex" in labels[f"{CB_RUNTIME_TAB}codex"]
-
-    def test_codex_tab_active_switches_pointer_and_new_button(self):
-        _, kb = build_session_picker([], "/d", "codex")
-        labels = {b.callback_data: b.text for b in _flat(kb)}
-        assert labels[f"{CB_RUNTIME_TAB}codex"].startswith("▸")
-        assert not labels[f"{CB_RUNTIME_TAB}claude"].startswith("▸")
-        # ➕ New session starts a codex window.
-        new = [b for b in _flat(kb) if _cd(b) == f"{CB_RUNTIME_SELECT}codex"]
-        assert len(new) == 1
-
-
-class TestSessionButtons:
-    def test_resume_buttons_indexed_in_order(self):
-        _, kb = build_session_picker(_SESSIONS, "/d", "claude")
-        resume = [b for b in _flat(kb) if _cd(b).startswith(CB_SESSION_SELECT)]
-        assert [_cd(b) for b in resume] == [
+        # One session per row (full width), indices in list order.
+        assert all(len(row) == 1 for row in resume_rows)
+        assert [_cd(row[0]) for row in resume_rows] == [
             f"{CB_SESSION_SELECT}0",
             f"{CB_SESSION_SELECT}1",
         ]
-        assert "First task" in resume[0].text
+        assert "First task" in resume_rows[0][0].text
 
-    def test_new_session_targets_active_runtime(self):
+    def test_rows_capped(self):
+        many = [
+            AgentSession(f"id-{i}", f"Task {i}", 1, "/tmp/x.jsonl") for i in range(9)
+        ]
+        _, kb = build_session_picker(many, "/d", "claude")
+        resume = [b for b in _flat(kb) if _cd(b).startswith(CB_SESSION_SELECT)]
+        assert len(resume) == PICKER_SESSION_ROWS
+        # The cap keeps the prefix — indices still address the cached list.
+        assert _cd(resume[0]) == f"{CB_SESSION_SELECT}0"
+        assert _cd(resume[-1]) == f"{CB_SESSION_SELECT}{PICKER_SESSION_ROWS - 1}"
+
+    def test_no_numbered_list_in_text(self):
+        # Session info lives on the buttons now; the text stays header+folder.
+        text, _ = build_session_picker(_SESSIONS, "/home/user/project", "claude")
+        assert "First task" not in text
+        assert "Second task" not in text
+
+
+class TestNewSessionAndSwitcher:
+    def test_new_session_names_active_agent(self):
         _, kb = build_session_picker(_SESSIONS, "/d", "claude")
         new = [b for b in _flat(kb) if _cd(b) == f"{CB_RUNTIME_SELECT}claude"]
         assert len(new) == 1
+        assert "Claude Code" in new[0].text
 
-    def test_empty_sessions_still_shows_tabs_and_new(self):
+    def test_switcher_row_names_active_agent(self):
+        _, kb = build_session_picker(_SESSIONS, "/d", "codex")
+        switcher = [b for b in _flat(kb) if _cd(b) == CB_RUNTIME_MENU]
+        assert len(switcher) == 1
+        assert "Codex" in switcher[0].text
+
+    def test_single_runtime_hides_switcher(self, monkeypatch):
+        # With one CLI installed there's nothing to switch to.
+        monkeypatch.setattr(
+            AgentRuntime, "is_available", lambda self: self.name == "claude"
+        )
+        _, kb = build_session_picker(_SESSIONS, "/d", "claude")
+        assert not any(_cd(b) == CB_RUNTIME_MENU for b in _flat(kb))
+
+    def test_no_tab_row(self):
+        # The old wrapping tab row is gone — runtime switching goes through
+        # the menu, so no CB_RUNTIME_TAB buttons in the picker itself.
+        _, kb = build_session_picker(_SESSIONS, "/d", "claude")
+        assert not any(_cd(b).startswith(CB_RUNTIME_TAB) for b in _flat(kb))
+
+    def test_empty_sessions_still_offers_new_and_switcher(self):
         text, kb = build_session_picker([], "/d", "claude")
-        # No resume buttons…
         assert not any(_cd(b).startswith(CB_SESSION_SELECT) for b in _flat(kb))
-        # …but tabs and a New button are present.
-        assert any(_cd(b).startswith(CB_RUNTIME_TAB) for b in _flat(kb))
         assert any(_cd(b) == f"{CB_RUNTIME_SELECT}claude" for b in _flat(kb))
+        assert any(_cd(b) == CB_RUNTIME_MENU for b in _flat(kb))
 
-    def test_session_list_rendered_in_text(self):
-        text, _ = build_session_picker(_SESSIONS, "/home/user/project", "claude")
-        assert "First task" in text
-        assert "Second task" in text
+    def test_folder_and_cancel_share_a_row(self):
+        _, kb = build_session_picker(_SESSIONS, "/d", "claude")
+        last = kb.inline_keyboard[-1]
+        assert len(last) == 2
+        assert _cd(last[0]) == CB_SESSION_BROWSE
+
+
+class TestRuntimeMenu:
+    def test_one_row_per_runtime_via_tab_callback(self):
+        _, kb = build_runtime_menu("/d", "claude", 2)
+        tab_rows = [
+            row
+            for row in kb.inline_keyboard
+            if any(_cd(b).startswith(CB_RUNTIME_TAB) for b in row)
+        ]
+        assert all(len(row) == 1 for row in tab_rows)
+        data = [_cd(row[0]) for row in tab_rows]
+        assert f"{CB_RUNTIME_TAB}claude" in data
+        assert f"{CB_RUNTIME_TAB}codex" in data
+        assert f"{CB_RUNTIME_TAB}grok" in data
+
+    def test_active_marked_with_count(self):
+        _, kb = build_runtime_menu("/d", "claude", 2)
+        # Skip the last row: «← Назад» shares the active runtime's callback
+        # (that's the design — back IS "re-open the active tab") and would
+        # overwrite its label in the dict.
+        labels = {_cd(b): b.text for row in kb.inline_keyboard[:-1] for b in row}
+        assert labels[f"{CB_RUNTIME_TAB}claude"].startswith("●")
+        assert "2" in labels[f"{CB_RUNTIME_TAB}claude"]
+        # Inactive rows keep their icon, no count.
+        assert labels[f"{CB_RUNTIME_TAB}codex"].startswith("🔵")
+
+    def test_back_returns_to_active_runtime_view(self):
+        # «← Назад» is just CB_RUNTIME_TAB for the active runtime — the tab
+        # handler re-enumerates sessions and re-renders the picker.
+        _, kb = build_runtime_menu("/d", "codex", 0)
+        back_row = kb.inline_keyboard[-1]
+        assert len(back_row) == 1
+        assert _cd(back_row[0]) == f"{CB_RUNTIME_TAB}codex"

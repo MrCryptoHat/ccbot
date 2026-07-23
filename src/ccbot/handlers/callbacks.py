@@ -72,6 +72,7 @@ from .callback_data import (
     CB_HISTORY_NEXT,
     CB_HISTORY_PREV,
     CB_KEYS_PREFIX,
+    CB_RUNTIME_MENU,
     CB_RUNTIME_SELECT,
     CB_RUNTIME_TAB,
     CB_SCREENSHOT_REFRESH,
@@ -103,6 +104,7 @@ from .directory_browser import (
     UNBOUND_WINDOWS_KEY,
     browse_start_path,
     build_directory_browser,
+    build_runtime_menu,
     build_session_picker,
     clamp_parent_path,
     clear_browse_state,
@@ -515,6 +517,37 @@ async def _handle_session_select(
         resume_session_id=session.session_id,
         runtime=runtime,
     )
+
+
+async def _handle_runtime_menu(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+) -> None:
+    """Open the agent list under the picker's «🤖 Агент: … ▾» switcher row.
+
+    Pure re-render from cached picker state (active runtime + its session
+    count) — picking an agent routes through CB_RUNTIME_TAB, which owns the
+    session re-enumeration, so this handler never touches disk.
+    """
+    pending_tid = _get_user_data(context, "_pending_thread_id")
+    if pending_tid is None:
+        pending_tid = get_thread_id(update)
+    if pending_tid is not None and get_thread_id(update) != pending_tid:
+        await _answer_stale(query)
+        return
+    selected_path = _get_user_data(context, "_selected_path")
+    if selected_path is None:
+        # Menu tap on a picker that predates a bot restart — the path is gone.
+        await _answer_stale(query)
+        return
+    runtime = _get_user_data(context, PICKER_RUNTIME_KEY, "claude")
+    sessions = _get_user_data(context, SESSIONS_KEY, []) or []
+    text, keyboard = build_runtime_menu(selected_path, runtime, len(sessions))
+    await safe_edit(query, text, reply_markup=keyboard)
+    await query.answer()
 
 
 async def _handle_runtime_tab(
@@ -1770,6 +1803,7 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     (CB_DIR_SELECT, _handle_dir_select),
     (CB_DIR_PAGE, _handle_dir_page),
     (CB_SESSION_SELECT, _handle_session_select),
+    (CB_RUNTIME_MENU, _handle_runtime_menu),
     (CB_RUNTIME_TAB, _handle_runtime_tab),
     (CB_RUNTIME_SELECT, _handle_runtime_select),
     (CB_WIN_BIND, _handle_win_bind),

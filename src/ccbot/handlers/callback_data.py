@@ -53,8 +53,9 @@ CB_SESSION_BROWSE = "rs:browse"  # open directory browser (wrong auto-bound fold
 # tapped runtime's sessions; CB_RUNTIME_SELECT starts a FRESH window on that
 # runtime (the "➕ New session" button under the active tab). Both carry the
 # runtime id; the handler creates+binds with it.
-CB_RUNTIME_TAB = "rt:tab:"  # rt:tab:<runtime>  (switch picker tab)
+CB_RUNTIME_TAB = "rt:tab:"  # rt:tab:<runtime>  (show picker with runtime's sessions)
 CB_RUNTIME_SELECT = "rt:sel:"  # rt:sel:<runtime>  (new window on runtime)
+CB_RUNTIME_MENU = "rt:menu"  # open the agent list («🤖 Агент: … ▾» switcher row)
 
 # Screenshot control keys
 CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>

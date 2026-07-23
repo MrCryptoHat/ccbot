@@ -647,18 +647,27 @@ STRINGS.update(
             "en": "*Which agent to run?*\n",
         },
         "dirb.resume_found": {
-            "ru": "Сохранённые разговоры в этой папке — нажмите, чтобы продолжить:",
-            "en": "Saved conversations here — tap one to resume:",
+            "ru": "Продолжите сохранённый разговор или начните новый:",
+            "en": "Resume a saved conversation or start a new one:",
         },
         "dirb.no_sessions": {
             "ru": "Здесь пока нет сохранённых разговоров с этим агентом.",
             "en": "No saved conversations with this agent here yet.",
         },
-        "dirb.msgs": {"ru": "{n} сообщ.", "en": "{n} msgs"},
-        "dirb.time_now": {"ru": "только что", "en": "just now"},
-        "dirb.time_min": {"ru": "{n} мин назад", "en": "{n}m ago"},
-        "dirb.time_hour": {"ru": "{n} ч назад", "en": "{n}h ago"},
-        "dirb.time_day": {"ru": "{n} дн назад", "en": "{n}d ago"},
+        "dirb.ts_now": {"ru": "сейчас", "en": "now"},
+        "dirb.ts_min": {"ru": "{n}м", "en": "{n}m"},
+        "dirb.ts_hour": {"ru": "{n}ч", "en": "{n}h"},
+        "dirb.ts_day": {"ru": "{n}д", "en": "{n}d"},
+        "dirb.new_session_on": {
+            "ru": "➕ Новая сессия — {agent}",
+            "en": "➕ New session — {agent}",
+        },
+        "dirb.agent_row": {
+            "ru": "🤖 Агент: {agent} ▾",
+            "en": "🤖 Agent: {agent} ▾",
+        },
+        "dirb.sessions_n": {"ru": "{n} сесс.", "en": "{n} sess."},
+        "dirb.back": {"ru": "← Назад", "en": "← Back"},
         # -- fwd --
         "fwd.no_session": {
             "ru": "❌ В этом топике нет агента. Отправьте обычное сообщение — предложу выбрать папку и запустить его.",

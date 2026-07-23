@@ -23,13 +23,14 @@ from ..agent_session import AgentSession
 
 from ..config import config
 from ..i18n import tr
-from ..runtimes import pickable_runtimes
+from ..runtimes import get_runtime, pickable_runtimes
 from .callback_data import (
     CB_DIR_CANCEL,
     CB_DIR_CONFIRM,
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_UP,
+    CB_RUNTIME_MENU,
     CB_RUNTIME_SELECT,
     CB_RUNTIME_TAB,
     CB_SESSION_BROWSE,
@@ -238,20 +239,40 @@ def build_directory_browser(
     return text, InlineKeyboardMarkup(buttons), subdirs
 
 
-def _relative_time(file_path: str) -> str:
-    """Format file mtime as a human-readable relative time string."""
+def _relative_time_short(file_path: str) -> str:
+    """Compact age for a resume-button label («7д» / "7d") — a full-width
+    button fits ~30 chars, so the session title gets the room."""
     try:
         mtime = os.path.getmtime(file_path)
     except OSError:
         return ""
     delta = int(time.time() - mtime)
     if delta < 60:
-        return tr("dirb.time_now")
+        return tr("dirb.ts_now")
     if delta < 3600:
-        return tr("dirb.time_min", n=delta // 60)
+        return tr("dirb.ts_min", n=delta // 60)
     if delta < 86400:
-        return tr("dirb.time_hour", n=delta // 3600)
-    return tr("dirb.time_day", n=delta // 86400)
+        return tr("dirb.ts_hour", n=delta // 3600)
+    return tr("dirb.ts_day", n=delta // 86400)
+
+
+def _folder_lines(directory: str | None) -> list[str]:
+    """The 📂 folder line shared by the picker and the runtime menu."""
+    if not directory:
+        return []
+    try:
+        shown = "~/" + str(Path(directory).relative_to(Path.home()))
+    except ValueError:
+        shown = directory
+    # Inside a MarkdownV2 code span only backtick and backslash escape.
+    code = shown.replace("\\", "\\\\").replace("`", "\\`")
+    return [f"📂 `{code}`\n"]
+
+
+# Session rows shown in the picker. Full-width rows cost vertical space, so
+# the newest N (list_sessions delivers newest-first) are offered; anything
+# older is reachable via the CLI's own /resume once a session is open.
+PICKER_SESSION_ROWS = 5
 
 
 def build_session_picker(
@@ -259,98 +280,116 @@ def build_session_picker(
     directory: str | None = None,
     active_runtime: str = "claude",
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Runtime-tabbed session picker.
+    """Session picker with an agent-switcher row.
 
-    Top row = one tab per runtime (Claude Code / Codex / …). The ``active_runtime``
-    tab's resumable ``sessions`` are listed below with resume buttons and a
-    "➕ New session" button that starts a FRESH window on that runtime. Tapping
-    another tab re-renders with that runtime's sessions.
+    The active runtime's resumable sessions are FULL-WIDTH resume buttons
+    (title + short age — the info lives on the button, no numbered list in
+    the message text), then «➕ Новая сессия — <agent>», then ONE
+    «🤖 Агент: <agent> ▾» switcher row that opens the agent list
+    (:func:`build_runtime_menu`). The switcher replaces the old wrapping tab
+    row: it stays one row tall for ANY number of runtimes, and is hidden
+    entirely when only one CLI is installed. Chosen over flat tabs / an
+    agent-first two-step flow in a design review (2026-07-23): switching
+    agents is the rare action, resuming is the common one.
 
     Args:
         sessions: resumable sessions of ``active_runtime`` for the folder
-            (newest first). May be empty — the tab still shows, with just the
-            "new session" button.
+            (newest first). May be empty — the picker still offers "new
+            session" and the switcher.
         directory: absolute path of the folder (``$HOME`` collapsed to ``~`` in
             the header) so the user can confirm the topic resolved as expected.
-        active_runtime: the runtime whose tab is selected / whose sessions these
-            are.
+        active_runtime: the runtime whose sessions these are.
 
     Returns: (text, keyboard).
     """
+    rt = get_runtime(active_runtime)
     lines = [tr("dirb.resume_header")]
-    if directory:
-        try:
-            shown = "~/" + str(Path(directory).relative_to(Path.home()))
-        except ValueError:
-            shown = directory
-        # Inside a MarkdownV2 code span only backtick and backslash escape.
-        code = shown.replace("\\", "\\\\").replace("`", "\\`")
-        lines.append(f"📂 `{code}`\n")
-
-    if sessions:
-        lines.append(tr("dirb.resume_found"))
-        for i, s in enumerate(sessions):
-            summary = s.summary[:40] + "…" if len(s.summary) > 40 else s.summary
-            rel = _relative_time(s.file_path)
-            time_str = f" ({rel})" if rel else ""
-            msgs = tr("dirb.msgs", n=s.message_count)
-            lines.append(f"{i + 1}. {summary} — {msgs}{time_str}")
-    else:
-        lines.append(tr("dirb.no_sessions"))
+    lines.extend(_folder_lines(directory))
+    lines.append(tr("dirb.resume_found") if sessions else tr("dirb.no_sessions"))
 
     buttons: list[list[InlineKeyboardButton]] = []
 
-    # Runtime tabs (built from the registry, so a new runtime is automatic).
-    tab_row: list[InlineKeyboardButton] = []
-    for rt in pickable_runtimes():
-        if rt.name == active_runtime:
-            label = f"▸ {rt.display_name}"
-        else:
-            label = f"{rt.picker_icon} {rt.display_name}".strip()
-        tab_row.append(
-            InlineKeyboardButton(label, callback_data=f"{CB_RUNTIME_TAB}{rt.name}")
+    # Resume buttons, one full-width row per session — a 2-per-row grid
+    # squeezed titles into ~14 chars of mush (the redesign's trigger). Indices
+    # address the SESSIONS_KEY cache, so showing a prefix keeps them aligned.
+    for i, s in enumerate(sessions[:PICKER_SESSION_ROWS]):
+        title = s.summary[:24] + "…" if len(s.summary) > 24 else s.summary
+        age = _relative_time_short(s.file_path)
+        label = f"▶ {title} · {age}" if age else f"▶ {title}"
+        buttons.append(
+            [InlineKeyboardButton(label, callback_data=f"{CB_SESSION_SELECT}{i}")]
         )
-        if len(tab_row) == 2:
-            buttons.append(tab_row)
-            tab_row = []
-    if tab_row:
-        buttons.append(tab_row)
 
-    # Resume buttons for the active runtime's sessions (2 per row).
-    for i in range(0, len(sessions), 2):
-        row = []
-        for j in range(min(2, len(sessions) - i)):
-            s = sessions[i + j]
-            label = s.summary[:14] + "…" if len(s.summary) > 14 else s.summary
-            row.append(
-                InlineKeyboardButton(
-                    f"▶ {label}", callback_data=f"{CB_SESSION_SELECT}{i + j}"
-                )
-            )
-        buttons.append(row)
-
-    # ➕ New session on the active runtime (the tab tells you which agent).
+    # ➕ New session names the agent it will start — with the tab row gone,
+    # this button and the switcher are what carry the active runtime.
     buttons.append(
         [
             InlineKeyboardButton(
-                tr("dirb.new_session"),
+                tr("dirb.new_session_on", agent=rt.display_name),
                 callback_data=f"{CB_RUNTIME_SELECT}{active_runtime}",
             )
         ]
     )
+    if len(pickable_runtimes()) > 1:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    tr("dirb.agent_row", agent=rt.display_name),
+                    callback_data=CB_RUNTIME_MENU,
+                )
+            ]
+        )
     # Escape hatch: the picker is shown after a name-based auto-bind, which
-    # can resolve to the wrong folder. This drops into the directory browser
+    # can resolve to the wrong folder. Browse drops into the directory browser
     # rooted at the matched dir (where "📁 .." navigates up) to pick another.
     buttons.append(
         [
             InlineKeyboardButton(
                 tr("dirb.change_folder"), callback_data=CB_SESSION_BROWSE
-            )
+            ),
+            InlineKeyboardButton(
+                tr("commands.cancel"), callback_data=CB_SESSION_CANCEL
+            ),
         ]
-    )
-    buttons.append(
-        [InlineKeyboardButton(tr("commands.cancel"), callback_data=CB_SESSION_CANCEL)]
     )
 
     text = "\n".join(lines)
     return text, InlineKeyboardMarkup(buttons)
+
+
+def build_runtime_menu(
+    directory: str | None = None,
+    active_runtime: str = "claude",
+    session_count: int = 0,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """The agent list behind the picker's «🤖 Агент: … ▾» switcher row.
+
+    One full-width row per installed runtime — vertical, so any number of
+    CLIs fits without the wrapping-tab problem. The active runtime is marked
+    ``●`` and shows its session count for the folder (counts for the OTHER
+    runtimes would cost a full list_sessions scan each — deliberately not
+    fetched). Every row routes through CB_RUNTIME_TAB, which re-enumerates
+    that runtime's sessions and re-renders the picker, and «← Назад» is just
+    CB_RUNTIME_TAB for the active runtime — the menu holds no state of its
+    own.
+    """
+    lines = [tr("dirb.resume_header")]
+    lines.extend(_folder_lines(directory))
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    for rt in pickable_runtimes():
+        if rt.name == active_runtime:
+            label = f"● {rt.display_name} — {tr('dirb.sessions_n', n=session_count)}"
+        else:
+            label = f"{rt.picker_icon} {rt.display_name}".strip()
+        buttons.append(
+            [InlineKeyboardButton(label, callback_data=f"{CB_RUNTIME_TAB}{rt.name}")]
+        )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                tr("dirb.back"), callback_data=f"{CB_RUNTIME_TAB}{active_runtime}"
+            )
+        ]
+    )
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
