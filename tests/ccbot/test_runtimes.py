@@ -725,6 +725,21 @@ class TestGrokSessionResolution:
         self._patch_root(monkeypatch, tmp_path / "grok" / "sessions")
         assert GROK._resolve_session_dir("/nowhere") is None
 
+    def test_symlinked_cwd_matches_canonical_group(self, tmp_path, monkeypatch):
+        # The window's cwd is a SYMLINK (~/agents/<name> → rclone mount) while
+        # grok records the realpath — a literal compare left the topic dark
+        # (agentdir/grok, 2026-07-23). Resolution must match via realpath.
+        real = tmp_path / "mnt" / "agentdir"
+        real.mkdir(parents=True)
+        link = tmp_path / "agentdir-link"
+        link.symlink_to(real)
+        root = tmp_path / "grok" / "sessions"
+        sdir = _write_grok_session(
+            root, str(real), "019f0000-0000-7000-8000-000000000007"
+        )
+        self._patch_root(monkeypatch, root)
+        assert GROK._resolve_session_dir(str(link)) == sdir
+
     @pytest.mark.asyncio
     async def test_list_sessions_newest_first_with_titles(self, tmp_path, monkeypatch):
         root = tmp_path / "grok" / "sessions"

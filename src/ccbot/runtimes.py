@@ -171,6 +171,27 @@ def _resolve_cli_binary(binary: str) -> str | None:
     return _login_shell_which(binary)
 
 
+def _same_dir(a: str | None, b: str | None) -> bool:
+    """True when two directory paths refer to the same directory.
+
+    Hookless runtimes match a window's cwd against the cwd the CLI itself
+    recorded — and CLIs canonicalize: grok records the REALPATH (codex may
+    too), while ``WindowState.cwd`` keeps the path the window was created
+    with. Where an agent dir is a symlink (this server's ``~/agents/<name>``
+    → rclone mount), a literal compare silently never matches and the topic
+    goes dark — a symlinked agent dir. Literal equality
+    first (cheap), realpath equality second.
+    """
+    if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
+        return False
+    if a == b:
+        return True
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return False
+
+
 def _entry_context_tokens(entry: dict) -> int | None:
     """Context-window fill (input-side tokens) for a Claude assistant entry.
 
@@ -710,7 +731,7 @@ class CodexRuntime(AgentRuntime):
     def _sticky_rollout(self, cwd: str) -> Path | None:
         """Last rollout resolved for ``cwd``, if it still exists and matches."""
         cached = self._last_rollout.get(cwd)
-        if cached and cached.exists() and self._rollout_cwd(cached) == cwd:
+        if cached and cached.exists() and _same_dir(self._rollout_cwd(cached), cwd):
             return cached
         return None
 
@@ -729,7 +750,7 @@ class CodexRuntime(AgentRuntime):
         if files is None:
             files = self._rollout_files_newest_first()
         for f in files[:_CODEX_SCAN_CAP]:
-            if self._rollout_cwd(f) == cwd:
+            if _same_dir(self._rollout_cwd(f), cwd):
                 self._last_rollout[cwd] = f
                 return f
         return self._sticky_rollout(cwd)
@@ -746,7 +767,7 @@ class CodexRuntime(AgentRuntime):
         for f in files[:_CODEX_LIST_SCAN_CAP]:
             if len(sessions) >= _CODEX_LIST_MAX:
                 break
-            if self._rollout_cwd(f) != cwd:
+            if not _same_dir(self._rollout_cwd(f), cwd):
                 continue
             match = _CODEX_ROLLOUT_SID_RE.search(f.name)
             if not match or not is_valid_session_id(match.group(1)):
@@ -970,7 +991,7 @@ class GrokRuntime(AgentRuntime):
                     continue
             else:
                 decoded = urllib.parse.unquote(d.name)
-            if decoded == cwd:
+            if _same_dir(decoded, cwd):
                 return d
         return None
 
@@ -986,7 +1007,7 @@ class GrokRuntime(AgentRuntime):
         live = [
             e
             for e in self._read_active_sessions()
-            if e.get("cwd") == cwd and isinstance(e.get("session_id"), str)
+            if _same_dir(e.get("cwd"), cwd) and isinstance(e.get("session_id"), str)
         ]
         if live and group is not None:
             newest = max(live, key=lambda e: str(e.get("opened_at") or ""))
