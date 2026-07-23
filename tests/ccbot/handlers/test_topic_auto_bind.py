@@ -220,3 +220,49 @@ async def test_auto_resume_off_shows_picker(tmp_path: Path):
     assert result is True
     tm.create_window.assert_not_awaited()  # picker path — no window created
     assert ctx.user_data[cmd.STATE_KEY] == cmd.STATE_SELECTING_SESSION
+
+
+@pytest.mark.asyncio
+async def test_never_bound_topic_no_sessions_shows_picker(tmp_path: Path):
+    """A NEVER-bound topic with a fresh (empty) folder gets the picker, not a
+    silent default-runtime window — the empty picker's «New session — <agent>»
+    + agent-switcher row IS the runtime choice (operator request 2026-07-23)."""
+    d = tmp_path / "editor"
+    d.mkdir()
+    sm, tm = _autobind_mocks([])
+    sm.get_remembered_runtime = MagicMock(return_value=None)
+    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+    with (
+        patch.object(cmd, "session_manager", sm),
+        patch.object(cmd, "tmux_manager", tm),
+        patch.object(cmd.config, "auto_resume_agents", False),
+        patch.object(cmd, "safe_reply", new=AsyncMock()),
+        patch.object(cmd, "build_session_picker", return_value=("pick", None)),
+    ):
+        result = await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
+
+    assert result is True
+    tm.create_window.assert_not_awaited()  # picker path — no silent window
+    assert ctx.user_data[cmd.STATE_KEY] == cmd.STATE_SELECTING_SESSION
+
+
+@pytest.mark.asyncio
+async def test_remembered_runtime_rebinds_silently_without_sessions(tmp_path: Path):
+    """A topic that already chose its runtime (remembered) rebinds silently —
+    the picker is only for topics whose agent was never chosen."""
+    d = tmp_path / "editor"
+    d.mkdir()
+    sm, tm = _autobind_mocks([])
+    sm.get_remembered_runtime = MagicMock(return_value="claude")
+    sm.has_live_agent_on_cwd = AsyncMock(return_value=False)
+    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+    with (
+        patch.object(cmd, "session_manager", sm),
+        patch.object(cmd, "tmux_manager", tm),
+        patch.object(cmd.config, "auto_resume_agents", False),
+        patch.object(cmd, "safe_reply", new=AsyncMock()),
+        patch.object(cmd, "safe_send", new=AsyncMock(), create=True),
+    ):
+        await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
+
+    tm.create_window.assert_awaited_once()  # silent rebind — no picker

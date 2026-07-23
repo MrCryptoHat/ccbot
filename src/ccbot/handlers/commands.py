@@ -1798,11 +1798,20 @@ async def _auto_bind_to_directory(
             user_id,
             thread_id,
         )
-    elif sessions:
+    elif sessions or (remembered_rt is None and not config.auto_resume_agents):
         # Existing history in this folder — let the user pick. State below is
         # the same shape _handle_session_{select,new,cancel} already consume,
         # so the picker callbacks Just Work without changes. The active tab is
         # the topic's remembered/default runtime.
+        #
+        # A NEVER-bound topic (no remembered runtime) gets the picker even
+        # with zero sessions: its empty state is «➕ Новая сессия — <agent>» +
+        # the agent-switcher row, i.e. exactly the "which CLI do I want here"
+        # choice. Silently launching the default CLI was wrong the moment a
+        # second runtime existed — the user prepares a folder, names a topic
+        # after it, and must still get to pick the agent (operator request,
+        # 2026-07-23). Rebinds (remembered runtime) and CCBOT_AUTO_RESUME_AGENTS
+        # deployments (non-technical users, no-UI philosophy) stay silent.
         if context.user_data is not None:
             context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
             context.user_data[SESSIONS_KEY] = sessions
@@ -1823,8 +1832,8 @@ async def _auto_bind_to_directory(
         )
         return True
 
-    # No sessions (fresh window) or auto-resume enabled (continue the newest
-    # session) — create the window and bind right away.
+    # Silent create-and-bind: a rebind on the topic's remembered runtime, or
+    # an auto-resume deployment (with or without sessions to resume).
     # Same-cwd guard for hookless runtimes: their transcript resolves by cwd
     # ("newest wins"), so a second live window on this directory would make
     # both topics mirror the same session.
