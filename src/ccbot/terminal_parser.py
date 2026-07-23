@@ -256,6 +256,31 @@ UI_PATTERNS: list[UIPattern] = [
         min_gap=1,
     ),
     UIPattern(
+        # Grok tool-approval prompt — radio-style numbered options ("1 (●) Yes,
+        # and don't ask again…" / "2 (○) Yes, proceed" / "3 (○) No, reject…")
+        # with a "1/3:select" footer, drawn when grok's permission system asks
+        # about a tool call. NOT caught by the generic ChoiceMenu below: grok
+        # draws no cursor glyph (`› 1.` / `❯ 1.`) — the (●) radio marks the
+        # selection instead. ↑/↓ move the radio and Enter confirms (verified
+        # live on 0.2.111), so the standard photo + nav keyboard drives it.
+        name="GrokApproval",
+        top=(re.compile(r"^\s*┃?\s*\d+\s+\([●○]\)\s"),),
+        bottom=(re.compile(r"\d+/\d+:select"),),
+        min_gap=0,
+    ),
+    UIPattern(
+        # Grok sign-in screen (browser/device flow): "Approve in your browser
+        # to finish signing in." + a one-time code + "Waiting for approval…".
+        # The full URL is hidden behind OSC 8 "click here" links, which
+        # parse_login_url already reads (accounts.x.ai is allowlisted); the
+        # code is picked up by parse_login_code. Photo is the fallback.
+        name="GrokLogin",
+        top=(re.compile(r"Approve in your browser to finish signing in"),),
+        bottom=(re.compile(r"Waiting for approval"),),
+        min_gap=1,
+        is_login=True,
+    ),
+    UIPattern(
         # GENERIC numbered-choice menu — last resort so ANY agent CLI's
         # "pick an option" prompt surfaces via the same photo + ↑↓⏎ keyboard
         # as login / AskUserQuestion, with no per-menu pattern. Catches codex's
@@ -466,6 +491,7 @@ def _looks_like_login_url(url: str) -> bool:
         or "claude.com/cai" in low
         or "/login" in low
         or "auth.openai.com" in low
+        or "accounts.x.ai" in low
     )
 
 
@@ -743,6 +769,52 @@ def has_codex_queued_messages(pane_text: str) -> bool:
         return False
     tail = "\n".join(pane_text.split("\n")[-15:])
     return bool(_CODEX_QUEUED_RE.search(tail))
+
+
+# Grok status row (pinned above the input box while a turn runs):
+# "⠙ <verb/tool description>… 3.0s      5.0s ⇣14.0k [↓][stop]". The left text
+# varies per phase (tool description, "Waiting for response…"), so the anchor
+# is the constant RIGHT side: the session token counter (⇣<n>k) followed by
+# bracket badges ending in [stop] at end of line. Neither half alone is safe in
+# prose; the combination on one line is. Captured live on grok 0.2.111.
+_GROK_WORKING_RE = re.compile(
+    r"⇣[\d.,]+[kKmM]?\s*(?:\[[^\]\n]*\]\s*)*\[stop\]\s*$", re.MULTILINE
+)
+
+
+def is_grok_working(pane_text: str) -> bool:
+    """True iff a Grok pane shows a turn actively running (interruptible).
+
+    Grok (like codex) has no ─ chrome separator for is_claude_working to
+    anchor on — its busy signal is the status row's "⇣<tokens> … [stop]"
+    right-hand side, gone the moment the turn ends ("Worked for 12s" done
+    marker carries neither). Bottom rows only, so scrollback prose that
+    happens to contain the combo can't false-fire.
+    """
+    if not pane_text:
+        return False
+    tail = "\n".join(pane_text.split("\n")[-15:])
+    return bool(_GROK_WORKING_RE.search(tail))
+
+
+# Grok's analog of Claude Code's queued-messages hint: a message typed mid-turn
+# queues and grok pins "Queued · Enter to send now" above the input box (the
+# queued rows themselves render as "#1 <text>"). Presence means the latest
+# input has NOT yet entered the agent's context — same reaction-ack semantics
+# as has_queued_messages.
+_GROK_QUEUED_RE = re.compile(r"Queued\b.*Enter to send now")
+
+
+def has_grok_queued_messages(pane_text: str) -> bool:
+    """True if Grok is showing buffered (not-yet-ingested) input.
+
+    Bottom-rows only, like has_queued_messages, so a scrollback occurrence of
+    the phrase can't false-fire.
+    """
+    if not pane_text:
+        return False
+    tail = "\n".join(pane_text.split("\n")[-15:])
+    return bool(_GROK_QUEUED_RE.search(tail))
 
 
 # Canary for Claude Code TUI updates: a status line we found but could not

@@ -11,6 +11,7 @@ from ccbot.terminal_parser import (
     is_codex_working,
     is_interactive_ui,
     is_tui_ready,
+    parse_login_code,
     parse_login_url,
     parse_status_line,
     strip_pane_chrome,
@@ -903,3 +904,101 @@ class TestChoiceMenu:
             "  gpt-5.5 medium · /home/user/project\n"
         )
         assert is_interactive_ui(pane) is False
+
+
+# ── Grok terminal detection (GrokApproval / GrokLogin patterns) ──────────
+
+_GROK_APPROVAL = (
+    "     ◆ user_prompt_submit  [hooks: 1]\n"
+    "     ◆ Thought for 2.4s\n"
+    "\n"
+    "    ◆ Remove test directory… 3.1s          7.0s ⇣14.6k [↓][stop]\n"
+    "\n"
+    "  ┃\n"
+    "  ┃  Remove test directory\n"
+    "  ┃  rm -rf /home/user/project/subdir\n"
+    "  ┃\n"
+    "  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)\n"
+    "  ┃  2 (○) Yes, proceed\n"
+    "  ┃  3 (○) No, reject (type to add feedback)\n"
+    "  ┃\n"
+    "\n"
+    "  1/3:select  │  Ctrl+o:always-approve  │  Ctrl+c:cancel\n"
+)
+
+_GROK_LOGIN = (
+    "                     Approve in your browser to finish signing in.\n"
+    "\n"
+    "                                    GRTC-1234\n"
+    "\n"
+    "                     Make sure your browser shows this code.\n"
+    "\n"
+    "                     If it doesn't open, click here to copy.\n"
+    "\n"
+    "                            Waiting for approval...\n"
+    "\n"
+    "                                  ctrl+q  quit\n"
+)
+
+_GROK_IDLE_PANE = (
+    "     pong                                            1:07 PM\n"
+    "\n"
+    "     Worked for 12s\n"
+    "\n"
+    "  ╭──────────────────────────────╮\n"
+    "  │ ❯                            │\n"
+    "  ╰──────────── Grok 4.5 (high) ─╯\n"
+    "\n"
+    "  Shift+Tab:mode  │  Ctrl+x:shortcuts\n"
+)
+
+
+class TestGrokApproval:
+    """Grok's tool-approval prompt: radio-style numbered options + a
+    "N/M:select" footer — no cursor glyph, so ChoiceMenu can't catch it."""
+
+    def test_approval_detected(self):
+        res = extract_interactive_content(_GROK_APPROVAL)
+        assert res is not None
+        assert res.name == "GrokApproval"
+        assert is_interactive_ui(_GROK_APPROVAL) is True
+
+    def test_idle_pane_not_approval(self):
+        assert is_interactive_ui(_GROK_IDLE_PANE) is False
+
+    def test_numbered_prose_without_radio_not_approval(self):
+        pane = (
+            "     Here are your options:\n"
+            "     1. keep the file\n"
+            "     2. delete it\n"
+            "  ╭──────────────╮\n"
+            "  │ ❯            │\n"
+            "  ╰──────────────╯\n"
+        )
+        assert is_interactive_ui(pane) is False
+
+
+class TestGrokLogin:
+    """Grok's sign-in screen: one-time code on screen, URL behind OSC 8
+    "click here" links — is_login surfaces both when parseable."""
+
+    def test_login_detected_with_code(self):
+        res = extract_interactive_content(_GROK_LOGIN)
+        assert res is not None
+        assert res.name == "GrokLogin"
+        assert res.is_login is True
+        assert parse_login_code(_GROK_LOGIN) == "GRTC-1234"
+
+    def test_login_url_recovered_from_osc8(self):
+        # The visible label says "click here"; the URL lives in the OSC 8
+        # escape and accounts.x.ai is allowlisted.
+        pane = (
+            "Approve in your browser to finish signing in.\n"
+            "\x1b]8;;https://accounts.x.ai/oauth2/device?user_code=AAAA-0000\x1b\\"
+            "click here to copy\x1b]8;;\x1b\\\n"
+            "Waiting for approval...\n"
+        )
+        assert (
+            parse_login_url(pane)
+            == "https://accounts.x.ai/oauth2/device?user_code=AAAA-0000"
+        )

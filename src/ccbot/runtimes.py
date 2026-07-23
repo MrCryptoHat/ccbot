@@ -1,4 +1,4 @@
-"""Agent runtime abstraction — Claude Code, Codex, and future CLIs.
+"""Agent runtime abstraction — Claude Code, Codex, Grok, and future CLIs.
 
 An agent *runtime* is the CLI a topic's window runs (Claude Code, OpenAI Codex,
 …). It is a second axis, independent of the *transport* (tmux vs docker — see
@@ -40,7 +40,7 @@ Window-bootstrap divergence is expressed as *capabilities*, not name checks:
 compare ``runtime.name``.
 
 Key API: ``get_runtime(name)`` → AgentRuntime; module singletons ``CLAUDE`` /
-``CODEX``; ``RUNTIMES`` registry; ``monitored_runtimes()`` /
+``CODEX`` / ``GROK``; ``RUNTIMES`` registry; ``monitored_runtimes()`` /
 ``pickable_runtimes()`` (installed CLIs only) / ``default_runtime()``
 (CCBOT_DEFAULT_RUNTIME, validated + availability-checked); ``is_valid_runtime``.
 """
@@ -55,17 +55,21 @@ import os
 import re
 import shlex
 import shutil
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
 from .agent_session import AgentSession
 from .codex_transcript_parser import CodexTranscriptParser
 from .config import config
+from .grok_transcript_parser import GrokTranscriptParser
 from .terminal_parser import (
     has_codex_queued_messages,
+    has_grok_queued_messages,
     has_queued_messages,
     is_claude_working,
     is_codex_working,
+    is_grok_working,
 )
 from .transcript_parser import ParsedEntry, TranscriptParser
 from .utils import is_valid_session_id
@@ -74,6 +78,7 @@ logger = logging.getLogger(__name__)
 
 CLAUDE_RUNTIME = "claude"
 CODEX_RUNTIME = "codex"
+GROK_RUNTIME = "grok"
 
 # A transcript reference the monitor tracks: (session_id, file_path).
 TranscriptRef = tuple[str, Path]
@@ -93,6 +98,11 @@ _CODEX_LIST_MAX = 10
 # tick. A window whose rollout falls outside this prefix is covered by the
 # sticky ``_last_rollout`` fallback (see CodexRuntime.__init__).
 _CODEX_SCAN_CAP = 60
+
+# Sessions full-read when listing a cwd's grok sessions for the picker. Grok's
+# per-cwd group directory is already the index, so only the newest N session
+# dirs are read at all.
+_GROK_LIST_MAX = 10
 
 
 def _entry_context_tokens(entry: dict) -> int | None:
@@ -740,10 +750,319 @@ class CodexRuntime(AgentRuntime):
         return self._resolve_rollout(ws.cwd)
 
 
+class GrokRuntime(AgentRuntime):
+    """xAI Grok CLI ("Grok Build", the `grok` binary).
+
+    Launch: bare ``grok`` (no ``--name`` flag; resume = ``grok --resume
+    <uuid>``; exit = ``/quit``). An authenticated launch opens grok's welcome
+    screen, whose composer is LIVE — typing + Enter submits a prompt and
+    starts the session (verified on 0.2.111), so the pending topic message CAN
+    be auto-forwarded (unlike codex's sign-in menu). An unauthenticated launch
+    shows the browser-approval screen, surfaced via the GrokLogin UI pattern
+    (photo + one-time code + OSC8-recovered accounts.x.ai URL).
+
+    Transcript: grok has no ccbot session_map (its Claude-compat hook scan DOES
+    run ``ccbot hook``, but grok's stdin payload is camelCase so the hook
+    no-ops by design) — a window's session is resolved by cwd:
+    ``~/.grok/active_sessions.json`` (live pid registry grok maintains) names
+    the live session for the cwd; fallback is the newest session dir in the
+    cwd's group (``~/.grok/sessions/<url-encoded-cwd>/``, matched by DECODING
+    group names, so the exact encoding never matters). The monitored file is
+    ``updates.jsonl`` — the only per-session log that survives ``/compact``
+    without a rewrite (chat_history.jsonl is truncated in place, which would
+    break byte-offset reads). Like codex, two live grok windows on one cwd
+    would cross-talk — the same-cwd guard applies via ``uses_session_map``.
+
+    /diff: none — grok renders edit diffs with colour-only line numbering (no
+    ±  gutter), which diff_view's shared gutter check can't anchor on; wiring
+    it needs a per-runtime gutter seam first.
+    """
+
+    name = GROK_RUNTIME
+    display_name = "Grok"
+    picker_icon = "⚫"
+    # No usable SessionStart session_map (see class docstring) — windows are
+    # tracked by cwd, so bootstrap persists cwd and skips the hook wait/alarm.
+    uses_session_map = False
+    # Verified live: the welcome screen's composer accepts blind-typed text
+    # ~1.5 s after launch and Enter submits it as the first prompt.
+    auto_forward_first_message = True
+    # Esc cancels a running turn immediately (draft preserved). No trailing
+    # Ctrl-C: grok's Ctrl-C clears the draft / escalates toward quit, and an
+    # idle DOUBLE-Esc opens the rewind picker — one Escape per /esc is safe.
+    interrupt_keys = ("Escape",)
+    # Grok's TUI foreground process is `grok` (a native binary, not node).
+    pane_alive_commands = frozenset({"grok"})
+    # Probed live on 0.2.111: Shift+Tab cycles Normal → Plan → Always-approve
+    # ("mode"), /effort, /compact, /clear (alias of /new), /model, /context,
+    # Ctrl+B sends the running command to the background. EXCLUDED: "worktree"
+    # (grok worktree topics not built — fork them FROM claude topics).
+    panel_actions = frozenset(
+        {"mode", "effort", "compact", "clear", "model", "context", "mcp", "background"}
+    )
+    panel_slash_commands = {
+        **AgentRuntime.panel_slash_commands,
+        "mcp": "/mcps",  # grok's MCP modal command (plural, unlike claude/codex)
+    }
+    # native_image_input stays False: grok's composer creates image chips only
+    # from paste/drag, not from a typed path — the text marker is the way in
+    # (grok reads the file itself via its read tool; no sandbox in the way).
+
+    def __init__(self) -> None:
+        # cwd -> last resolved session dir. Sticky fallback mirroring codex's:
+        # active_sessions.json can momentarily miss the entry (written after
+        # launch, cleared on exit) and the group scan can race a fresh dir —
+        # the cached path keeps a quiet window tracking. Re-checked (exists)
+        # before use.
+        self._last_session_dir: dict[str, Path] = {}
+
+    def cli_command(self) -> str:
+        return config.grok_command
+
+    def exit_command(self) -> str:
+        return "/quit"  # grok's TUI quit (alias /exit; verified 0.2.111)
+
+    def is_working(self, pane_text: str) -> bool:
+        # Grok has no ─ chrome separator; its status row's "⇣<tokens> …
+        # [stop]" right side is the busy signal.
+        return is_grok_working(pane_text)
+
+    def has_queued_input(self, pane_text: str) -> bool:
+        # Grok's "Queued · Enter to send now" hint (analog of Claude's
+        # "Press up to edit queued messages").
+        return has_grok_queued_messages(pane_text)
+
+    def launch_command(
+        self, window_name: str, resume_session_id: str | None = None
+    ) -> str:
+        grok = config.grok_command
+        if resume_session_id and is_valid_session_id(resume_session_id):
+            return f"{grok} --resume {resume_session_id}"
+        elif resume_session_id:
+            logger.warning(
+                "Ignoring malformed resume session id for grok window %s; "
+                "starting fresh",
+                window_name,
+            )
+        return grok
+
+    def parse_entries(
+        self, raw_entries: list[dict], pending_tools: dict
+    ) -> tuple[list[ParsedEntry], dict]:
+        return GrokTranscriptParser.parse_entries(raw_entries, pending_tools)
+
+    # latest_context_tokens: grok's turn_completed carries usage (inputTokens/
+    # totalTokens), but the context window is per-model (grok-4.5 shows 500K),
+    # not the fixed 1M the alert thresholds assume — skipped like codex's.
+
+    def _read_active_sessions(self) -> list[dict]:
+        """Entries of grok's live-process registry ([] on any error).
+
+        ``active_sessions.json`` sits next to the sessions root (normally
+        ``~/.grok/``): grok appends {session_id, pid, cwd, opened_at} on
+        launch and removes the entry on clean exit — the authoritative "which
+        session is live in this cwd" source.
+        """
+        path = config.grok_sessions_path.parent / "active_sessions.json"
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            return []
+        return (
+            [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+        )
+
+    def _group_dir_for_cwd(self, cwd: str) -> Path | None:
+        """The sessions group directory whose (decoded) name is ``cwd``.
+
+        Group names are the URL-encoded cwd; names over 255 bytes become a
+        slug+hash with the original path in a ``.cwd`` file inside. Matching
+        by DECODING (unquote / .cwd read-back) sidesteps ever reproducing
+        grok's exact encoder.
+        """
+        root = config.grok_sessions_path
+        if not root.is_dir():
+            return None
+        try:
+            candidates = list(root.iterdir())
+        except OSError:
+            return None
+        for d in candidates:
+            if not d.is_dir():
+                continue
+            cwd_file = d / ".cwd"
+            if cwd_file.is_file():
+                try:
+                    decoded = cwd_file.read_text().strip()
+                except OSError:
+                    continue
+            else:
+                decoded = urllib.parse.unquote(d.name)
+            if decoded == cwd:
+                return d
+        return None
+
+    def _resolve_session_dir(self, cwd: str) -> Path | None:
+        """The session directory of the live grok session for ``cwd``.
+
+        active_sessions.json names the live session (newest ``opened_at`` on a
+        cwd collision); fallback is the group's newest session dir by
+        updates.jsonl mtime (covers a just-exited grok whose registry entry is
+        gone, e.g. for history views), then the sticky last-resolved dir.
+        """
+        group = self._group_dir_for_cwd(cwd)
+        live = [
+            e
+            for e in self._read_active_sessions()
+            if e.get("cwd") == cwd and isinstance(e.get("session_id"), str)
+        ]
+        if live and group is not None:
+            newest = max(live, key=lambda e: str(e.get("opened_at") or ""))
+            candidate = group / newest["session_id"]
+            if (candidate / "updates.jsonl").is_file():
+                self._last_session_dir[cwd] = candidate
+                return candidate
+        if group is not None:
+            best: Path | None = None
+            best_mtime = -1.0
+            try:
+                subdirs = list(group.iterdir())
+            except OSError:
+                subdirs = []
+            for d in subdirs:
+                try:
+                    mtime = (d / "updates.jsonl").stat().st_mtime
+                except OSError:
+                    continue
+                if mtime > best_mtime:
+                    best, best_mtime = d, mtime
+            if best is not None:
+                self._last_session_dir[cwd] = best
+                return best
+        cached = self._last_session_dir.get(cwd)
+        if cached is not None and (cached / "updates.jsonl").is_file():
+            return cached
+        return None
+
+    async def iter_transcripts(
+        self, session_manager: Any, monitor: Any, active_session_ids: set[str]
+    ) -> list[TranscriptRef]:
+        grok_windows = [
+            (binding, ws)
+            for binding, ws in list(session_manager.window_states.items())
+            if getattr(ws, "runtime", CLAUDE_RUNTIME) == self.name
+        ]
+        if not grok_windows:
+            return []
+        refs: list[TranscriptRef] = []
+        for binding, ws in grok_windows:
+            cwd = ws.cwd
+            # cwd is normally set at bind time; recover it from the live tmux
+            # window if it was lost (mirrors CodexRuntime.iter_transcripts).
+            if not cwd:
+                from .tmux_manager import tmux_manager
+
+                win = await tmux_manager.find_window_by_id(binding)
+                if win and win.cwd:
+                    cwd = win.cwd
+                    ws.cwd = cwd
+                    session_manager.save_state()
+                else:
+                    continue
+            session_dir = self._resolve_session_dir(cwd)
+            if session_dir is None:
+                continue
+            sid = session_dir.name
+            if not is_valid_session_id(sid):
+                continue
+            transcript = session_dir / "updates.jsonl"
+            # Mirror the session id onto the window so routing works.
+            if ws.session_id != sid:
+                ws.session_id = sid
+                session_manager.save_state()
+            refs.append((sid, transcript))
+        return refs
+
+    def _summary_title(self, session_dir: Path) -> str:
+        """The session's own generated title from summary.json ("" if none)."""
+        try:
+            data = json.loads((session_dir / "summary.json").read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        for key in ("generated_title", "session_summary"):
+            val = data.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()[:50]
+        return ""
+
+    async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
+        """Grok sessions recorded for ``cwd`` (newest first, capped).
+
+        The group directory IS the per-cwd index, so unlike codex there's no
+        global scan: enumerate its session dirs, newest updates.jsonl first,
+        and full-read only the top ``_GROK_LIST_MAX`` for the row summary
+        (grok's own generated title when present, else the first user line).
+        """
+        group = self._group_dir_for_cwd(cwd)
+        if group is None:
+            return []
+        rows: list[tuple[float, Path]] = []
+        try:
+            subdirs = list(group.iterdir())
+        except OSError:
+            return []
+        for d in subdirs:
+            if not is_valid_session_id(d.name):
+                continue
+            try:
+                mtime = (d / "updates.jsonl").stat().st_mtime
+            except OSError:
+                continue
+            rows.append((mtime, d))
+        rows.sort(key=lambda r: r[0], reverse=True)
+        sessions: list[AgentSession] = []
+        for _, d in rows[:_GROK_LIST_MAX]:
+            try:
+                with open(d / "updates.jsonl", "r", encoding="utf-8") as fh:
+                    entries = [json.loads(ln) for ln in fh if ln.strip()]
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+            summary, count = GrokTranscriptParser.summarize(entries)
+            if count == 0:
+                continue  # header-only session (no real turn yet) — skip
+            sessions.append(
+                AgentSession(
+                    session_id=d.name,
+                    summary=self._summary_title(d) or summary,
+                    message_count=count,
+                    file_path=str(d / "updates.jsonl"),
+                )
+            )
+        return sessions
+
+    async def history_transcript(
+        self, session_manager: Any, window_id: str
+    ) -> Path | None:
+        # History reads the same updates.jsonl the monitor tracks — resolved
+        # by cwd, not via the Claude projects tree.
+        ws = session_manager.get_window_state(window_id)
+        if not ws.cwd:
+            return None
+        session_dir = self._resolve_session_dir(ws.cwd)
+        return (session_dir / "updates.jsonl") if session_dir else None
+
+
 CLAUDE = ClaudeRuntime()
 CODEX = CodexRuntime()
+GROK = GrokRuntime()
 
-RUNTIMES: dict[str, AgentRuntime] = {CLAUDE.name: CLAUDE, CODEX.name: CODEX}
+RUNTIMES: dict[str, AgentRuntime] = {
+    CLAUDE.name: CLAUDE,
+    CODEX.name: CODEX,
+    GROK.name: GROK,
+}
 
 
 def pickable_runtimes() -> list[AgentRuntime]:

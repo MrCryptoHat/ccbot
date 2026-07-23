@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from ccbot.runtimes import CLAUDE, CODEX, get_runtime
+from ccbot.runtimes import CLAUDE, CODEX, GROK, get_runtime
 
 _SEP = "─" * 40
 
@@ -40,6 +40,37 @@ _CODEX_QUEUED = (
     "(press esc to interrupt and send immediately)\n"
     "› Summarize recent commits\n"
     "  gpt-5.5 medium · /home/user/project\n"
+)
+
+_GROK_BOX = (
+    "  ╭────────────────────────────────────────╮\n"
+    "  │ ❯                                      │\n"
+    "  ╰──────────────────────── Grok 4.5 (high) ─╯\n"
+)
+# Grok: no ─ chrome separator either; the busy signal is the status row's
+# right side "<N>s ⇣<K>k [badges][stop]" pinned above the input box.
+_GROK_WORKING = (
+    "     ❯ Summarize recent commits                      1:07 PM\n"
+    "\n"
+    "    ⠙ Waiting for response… 10s              11s ⇣13.6k [stop]\n"
+    "\n" + _GROK_BOX + "\n  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+x:shortcuts\n"
+)
+_GROK_WORKING_BADGED = (
+    "    ◆ Remove test directory… 3.1s        7.0s ⇣14.6k [↓][stop]\n" + _GROK_BOX
+)
+_GROK_IDLE = (
+    "     pong                                            1:07 PM\n"
+    "\n"
+    "     Worked for 12s\n"
+    "\n" + _GROK_BOX + "\n  Shift+Tab:mode  │  Ctrl+x:shortcuts\n"
+)
+_GROK_QUEUED = (
+    "    #1 and after that tell me a joke\n"
+    "\n"
+    "    ⠹ Sleep 12 seconds then echo done… 5.4s   7.4s ⇣14.0k [↓][stop]\n"
+    "\n"
+    "  Queued · Enter to send now\n"
+    "\n" + _GROK_BOX
 )
 
 
@@ -75,6 +106,23 @@ class TestIsWorkingDispatch:
         # finds no anchor and reports idle (the very gap this feature fixes).
         assert CLAUDE.is_working(_CODEX_WORKING) is False
 
+    def test_grok_detects_its_status_row(self):
+        assert GROK.is_working(_GROK_WORKING) is True
+        assert GROK.is_working(_GROK_WORKING_BADGED) is True  # [↓][stop] badges
+        assert GROK.is_working(_GROK_IDLE) is False
+
+    def test_grok_detector_blind_to_other_runtimes(self):
+        # Neither claude's status line nor codex's counter carries the
+        # "⇣<tokens> … [stop]" combo grok's detector anchors on.
+        assert GROK.is_working(_CLAUDE_WORKING) is False
+        assert GROK.is_working(_CODEX_WORKING) is False
+
+    def test_other_detectors_blind_to_grok_pane(self):
+        # Grok's box borders pass the ─-run test, but the line above them is
+        # the ❯ prompt, not a claude spinner → no false busy.
+        assert CLAUDE.is_working(_GROK_WORKING) is False
+        assert CODEX.is_working(_GROK_WORKING) is False
+
 
 class TestHasQueuedInputDispatch:
     def test_claude_queue_hint(self):
@@ -86,15 +134,22 @@ class TestHasQueuedInputDispatch:
         assert CODEX.has_queued_input(_CODEX_QUEUED) is True
         assert CODEX.has_queued_input(_CODEX_IDLE) is False
 
+    def test_grok_queue_hint(self):
+        assert GROK.has_queued_input(_GROK_QUEUED) is True
+        assert GROK.has_queued_input(_GROK_WORKING) is False
+        assert GROK.has_queued_input(_GROK_IDLE) is False
+
 
 class TestRuntimeMetadata:
     def test_exit_commands(self):
         assert CLAUDE.exit_command() == "/exit"
         assert CODEX.exit_command() == "/quit"
+        assert GROK.exit_command() == "/quit"
 
     def test_names(self):
         assert CLAUDE.name == "claude"
         assert CODEX.name == "codex"
+        assert GROK.name == "grok"
 
 
 class TestEditToolDispatch:
@@ -178,17 +233,22 @@ class TestPaneAliveCommands:
         assert "codex" in CODEX.pane_alive_commands
         assert "node" not in CODEX.pane_alive_commands
 
+    def test_grok_set(self):
+        # `grok` is a native binary too.
+        assert GROK.pane_alive_commands == frozenset({"grok"})
+
     def test_unknown_runtime_degrades_to_claude_set(self):
         # get_runtime(None) → CLAUDE, so an untracked window uses claude's set.
         assert get_runtime(None).pane_alive_commands == frozenset({"claude", "node"})
 
 
 class TestPickerIcon:
-    """Tab colours: Codex 🔵, Claude Code 🟠 (per operator preference)."""
+    """Tab colours: Codex 🔵, Claude Code 🟠, Grok ⚫ (per operator preference)."""
 
     def test_icons(self):
         assert CLAUDE.picker_icon == "🟠"
         assert CODEX.picker_icon == "🔵"
+        assert GROK.picker_icon == "⚫"
 
 
 class TestBootstrapCapabilities:
@@ -199,18 +259,25 @@ class TestBootstrapCapabilities:
     def test_session_map(self):
         assert CLAUDE.uses_session_map is True
         assert CODEX.uses_session_map is False
+        # Grok's Claude-compat hook scan runs `ccbot hook`, but its camelCase
+        # payload makes the hook no-op — tracked by cwd like codex.
+        assert GROK.uses_session_map is False
 
     def test_first_message_forward(self):
         # Codex can open on its sign-in menu — blind typing + Enter would pick
-        # a menu option the user never chose.
+        # a menu option the user never chose. Grok's welcome screen has a LIVE
+        # composer (verified 0.2.111), so forwarding is safe there.
         assert CLAUDE.auto_forward_first_message is True
         assert CODEX.auto_forward_first_message is False
+        assert GROK.auto_forward_first_message is True
 
     def test_interrupt_keys(self):
         # Codex must not get the trailing Ctrl-C: on its TUI an idle Ctrl-C
-        # arms the quit sequence instead of being a no-op.
+        # arms the quit sequence instead of being a no-op. Same for grok
+        # (Ctrl-C clears the draft / escalates toward quit).
         assert CLAUDE.interrupt_keys == ("Escape", "C-c")
         assert CODEX.interrupt_keys == ("Escape",)
+        assert GROK.interrupt_keys == ("Escape",)
 
     def test_ready_message_keys(self):
         assert CLAUDE.ready_message_key(resumed=False) == "bot.window_ready"
@@ -218,6 +285,21 @@ class TestBootstrapCapabilities:
         # Codex explains its sign-in flow for fresh AND resumed windows.
         assert CODEX.ready_message_key(resumed=False) == "bot.window_codex_ready"
         assert CODEX.ready_message_key(resumed=True) == "bot.window_codex_ready"
+        # Grok launches straight into a usable composer — default messages fit.
+        assert GROK.ready_message_key(resumed=False) == "bot.window_ready"
+        assert GROK.ready_message_key(resumed=True) == "bot.window_resumed"
+
+    def test_grok_panel_set(self):
+        # Probed live on 0.2.111 — /mcps is grok's MCP command (plural).
+        assert GROK.supports_panel_action("background") is True
+        assert GROK.supports_panel_action("worktree") is False
+        assert GROK.panel_slash("mcp") == "/mcps"
+        assert GROK.panel_slash("context") == "/context"
+
+    def test_grok_has_no_diff_support(self):
+        # Grok renders edit diffs colour-only (no ± gutter) — /diff no-ops.
+        assert GROK.edit_tool_names == frozenset()
+        assert GROK.diff_header_re is None
 
 
 class TestAvailabilityGating:
@@ -243,6 +325,7 @@ class TestAvailabilityGating:
             MagicMock(
                 claude_command="claude",
                 codex_command="codex",
+                grok_command="grok",
                 default_runtime=default,
             ),
         )
@@ -253,6 +336,13 @@ class TestAvailabilityGating:
         self._patch_cfg(monkeypatch)
         self._patch_which(monkeypatch, {"claude", "codex"})
         assert pickable_runtimes() == [CLAUDE, CODEX]
+
+    def test_all_three_installed_all_pickable(self, monkeypatch):
+        from ccbot.runtimes import pickable_runtimes
+
+        self._patch_cfg(monkeypatch)
+        self._patch_which(monkeypatch, {"claude", "codex", "grok"})
+        assert pickable_runtimes() == [CLAUDE, CODEX, GROK]
 
     def test_missing_codex_hides_its_tab(self, monkeypatch):
         from ccbot.runtimes import pickable_runtimes
@@ -480,6 +570,210 @@ class TestStickyRolloutResolution:
         path.unlink()
         monkeypatch.setattr(rt, "_CODEX_SCAN_CAP", 0)
         assert CODEX._resolve_rollout("/home/user/project") is None
+
+
+def _write_grok_session(
+    root,
+    cwd,
+    sid,
+    *,
+    turns=("hi",),
+    title="",
+    mtime=None,
+    group_name=None,
+):
+    """Write a minimal grok session dir under root and return it.
+
+    ``group_name`` overrides the URL-encoded group directory name (for the
+    slug+hash ``.cwd`` variant)."""
+    import os
+    import urllib.parse
+
+    group = root / (group_name or urllib.parse.quote(cwd, safe=""))
+    if group_name:
+        group.mkdir(parents=True, exist_ok=True)
+        (group / ".cwd").write_text(cwd + "\n")
+    sdir = group / sid
+    sdir.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for t in turns:
+        lines.append(
+            {
+                "timestamp": 1700000000,
+                "method": "session/update",
+                "params": {
+                    "sessionId": sid,
+                    "update": {
+                        "sessionUpdate": "user_message_chunk",
+                        "content": {"type": "text", "text": t},
+                    },
+                },
+            }
+        )
+        lines.append(
+            {
+                "timestamp": 1700000001,
+                "method": "_x.ai/session/update",
+                "params": {
+                    "sessionId": sid,
+                    "update": {"sessionUpdate": "turn_completed"},
+                },
+            }
+        )
+    updates = sdir / "updates.jsonl"
+    updates.write_text("\n".join(json.dumps(x) for x in lines))
+    if title:
+        (sdir / "summary.json").write_text(json.dumps({"generated_title": title}))
+    if mtime is not None:
+        os.utime(updates, (mtime, mtime))
+    return sdir
+
+
+class TestGrokSessionResolution:
+    """GrokRuntime resolves a window's session by cwd: the group directory is
+    matched by DECODING its name (or its .cwd file), the live session comes
+    from active_sessions.json, and the newest updates.jsonl is the fallback."""
+
+    _CWD = "/home/user/project"
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cache(self):
+        GROK._last_session_dir.clear()
+        yield
+        GROK._last_session_dir.clear()
+
+    def _patch_root(self, monkeypatch, root):
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt,
+            "config",
+            MagicMock(grok_command="grok", grok_sessions_path=root),
+        )
+        return root
+
+    def _write_active(self, root, entries):
+        (root.parent / "active_sessions.json").write_text(json.dumps(entries))
+
+    def test_resolves_newest_by_mtime(self, tmp_path, monkeypatch):
+        root = tmp_path / "grok" / "sessions"
+        _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000001", mtime=1000
+        )
+        new = _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000002", mtime=2000
+        )
+        self._patch_root(monkeypatch, root)
+        assert GROK._resolve_session_dir(self._CWD) == new
+
+    def test_active_sessions_registry_wins_over_mtime(self, tmp_path, monkeypatch):
+        # The registry names the LIVE session — even when another session dir
+        # in the group was written more recently (e.g. an /export touched it).
+        root = tmp_path / "grok" / "sessions"
+        live = _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000001", mtime=1000
+        )
+        _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000002", mtime=2000
+        )
+        self._patch_root(monkeypatch, root)
+        self._write_active(
+            root,
+            [
+                {
+                    "session_id": "019f0000-0000-7000-8000-000000000001",
+                    "pid": 1234,
+                    "cwd": self._CWD,
+                    "opened_at": "2026-07-15T10:00:00Z",
+                }
+            ],
+        )
+        assert GROK._resolve_session_dir(self._CWD) == live
+
+    def test_cwd_file_group_variant(self, tmp_path, monkeypatch):
+        # Over-long cwds get a slug+hash group dir with the path in .cwd.
+        root = tmp_path / "grok" / "sessions"
+        sdir = _write_grok_session(
+            root,
+            self._CWD,
+            "019f0000-0000-7000-8000-000000000003",
+            group_name="project-abc123hash",
+        )
+        self._patch_root(monkeypatch, root)
+        assert GROK._resolve_session_dir(self._CWD) == sdir
+
+    def test_sticky_survives_root_going_missing(self, tmp_path, monkeypatch):
+        # The last-resolved dir keeps a window tracking if the group lookup
+        # transiently fails (root unreadable / registry rewrite race).
+        root = tmp_path / "grok" / "sessions"
+        sdir = _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000004"
+        )
+        self._patch_root(monkeypatch, root)
+        assert GROK._resolve_session_dir(self._CWD) == sdir
+        self._patch_root(monkeypatch, tmp_path / "does-not-exist")
+        assert GROK._resolve_session_dir(self._CWD) == sdir
+
+    def test_unknown_cwd_returns_none(self, tmp_path, monkeypatch):
+        self._patch_root(monkeypatch, tmp_path / "grok" / "sessions")
+        assert GROK._resolve_session_dir("/nowhere") is None
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_newest_first_with_titles(self, tmp_path, monkeypatch):
+        root = tmp_path / "grok" / "sessions"
+        _write_grok_session(
+            root,
+            self._CWD,
+            "019f0000-0000-7000-8000-000000000001",
+            turns=["old task"],
+            mtime=1000,
+        )
+        _write_grok_session(
+            root,
+            self._CWD,
+            "019f0000-0000-7000-8000-000000000002",
+            turns=["new task", "more"],
+            title="Grok Titled It",
+            mtime=2000,
+        )
+        # Group-level non-session file (grok keeps prompt_history.jsonl there).
+        import urllib.parse
+
+        group = root / urllib.parse.quote(self._CWD, safe="")
+        (group / "prompt_history.jsonl").write_text("{}\n")
+        self._patch_root(monkeypatch, root)
+
+        sessions = await GROK.list_sessions(None, self._CWD)
+        assert [s.session_id[-1] for s in sessions] == ["2", "1"]  # newest first
+        assert sessions[0].summary == "Grok Titled It"  # summary.json title wins
+        assert sessions[0].message_count == 2
+        assert sessions[1].summary == "old task"  # first-user-line fallback
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_skips_empty_session(self, tmp_path, monkeypatch):
+        root = tmp_path / "grok" / "sessions"
+        _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000005", turns=[]
+        )
+        self._patch_root(monkeypatch, root)
+        assert await GROK.list_sessions(None, self._CWD) == []
+
+    @pytest.mark.asyncio
+    async def test_history_transcript_resolves_by_window_cwd(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        root = tmp_path / "grok" / "sessions"
+        sdir = _write_grok_session(
+            root, self._CWD, "019f0000-0000-7000-8000-000000000006"
+        )
+        self._patch_root(monkeypatch, root)
+        sm = MagicMock()
+        sm.get_window_state.return_value = MagicMock(cwd=self._CWD)
+        assert await GROK.history_transcript(sm, "@7") == sdir / "updates.jsonl"
 
 
 class TestHistoryTranscript:

@@ -285,6 +285,20 @@ class Config:
             if codex_sessions
             else Path.home() / ".codex" / "sessions"
         )
+        # Grok CLI command (launched in a grok-runtime window). Like codex,
+        # no `--name` flag — the tmux window name is set at creation.
+        self.grok_command = os.getenv("GROK_COMMAND", "grok")
+        # Root of Grok's session store (~/.grok/sessions/<url-encoded-cwd>/
+        # <session-id>/updates.jsonl). A grok window's transcript is resolved
+        # by matching a group directory's decoded name to the window's cwd
+        # (newest session inside wins). Override via GROK_SESSIONS_PATH
+        # (e.g. non-default GROK_HOME).
+        grok_sessions = os.getenv("GROK_SESSIONS_PATH")
+        self.grok_sessions_path = (
+            Path(grok_sessions).expanduser()
+            if grok_sessions
+            else Path.home() / ".grok" / "sessions"
+        )
 
         # All state files live under config_dir
         self.state_file = self.config_dir / "state.json"
