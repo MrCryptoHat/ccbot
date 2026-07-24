@@ -11,4 +11,7 @@ import tempfile
 # Force-set (not setdefault) to prevent real env vars from leaking into tests
 os.environ["TELEGRAM_BOT_TOKEN"] = "test:0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 os.environ["ALLOWED_USERS"] = "12345"
+# The deployment .env in the repo root is dotenv-loaded at config import, so
+# any validated-against-ALLOWED_USERS var must be pinned too (empty = none).
+os.environ["CCBOT_USER_ALIASES"] = ""
 os.environ["CCBOT_DIR"] = tempfile.mkdtemp(prefix="ccbot-test-")

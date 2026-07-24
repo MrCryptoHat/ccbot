@@ -31,7 +31,13 @@ from telegram.helpers import escape_markdown
 
 from typing import Literal
 
-from . import effective_user, get_thread_id, is_user_allowed, pane_cache
+from . import (
+    effective_user,
+    get_thread_id,
+    is_user_allowed,
+    not_authorized_text,
+    pane_cache,
+)
 from .callback_data import (
     CB_CMD_CANCEL,
     CB_CMD_CLEAR,
@@ -328,7 +334,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if update.message:
             await safe_reply(
                 update.message,
-                tr("common.not_authorized", uid=user.id if user else "?"),
+                not_authorized_text(user.id if user else None),
             )
         return
     if not update.message:
@@ -342,7 +348,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if update.message:
             await safe_reply(
                 update.message,
-                tr("common.not_authorized", uid=user.id if user else "?"),
+                not_authorized_text(user.id if user else None),
             )
         return
 

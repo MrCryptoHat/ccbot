@@ -47,3 +47,19 @@ def test_non_alias_id_untouched(monkeypatch):
 
 def test_update_without_user_is_none():
     assert handlers.effective_user(Update(update_id=1)) is None
+
+
+def test_not_authorized_text_generic():
+    text = handlers.not_authorized_text(555)
+    assert "555" in text
+    assert "ALLOWED_USERS" in text
+
+
+def test_not_authorized_text_none_shows_placeholder():
+    assert "?" in handlers.not_authorized_text(None)
+
+
+def test_not_authorized_text_anonymous_admin():
+    text = handlers.not_authorized_text(handlers.ANONYMOUS_ADMIN_ID)
+    assert "CCBOT_USER_ALIASES" in text
+    assert "GroupAnonymousBot" in text

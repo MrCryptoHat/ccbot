@@ -109,6 +109,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "ru": "⛔ Доступ не настроен. Ваш Telegram id: {uid} — если это ваш бот, добавьте id в ALLOWED_USERS в .env и перезапустите бота.",
         "en": "⛔ Access not configured. Your Telegram id: {uid} — if this is your bot, add the id to ALLOWED_USERS in .env and restart the bot.",
     },
+    # The anonymous-admin service id gets its own advice: the generic «add it
+    # to ALLOWED_USERS» is the classic WRONG fix for it (access "works", but
+    # the service id forks into its own binding universe — the owner's topics
+    # start offering fresh sessions).
+    "common.not_authorized_anon": {
+        "ru": "⛔ Сообщение пришло в анонимном режиме админа: id {uid} — это служебный @GroupAnonymousBot, а не ваш аккаунт, добавлять его в ALLOWED_USERS не нужно. Выключите «Оставаться анонимным» в правах админа группы — либо разрешите анонимные сообщения строкой CCBOT_USER_ALIASES={uid}:<ваш id> в .env и перезапустите бота.",
+        "en": "⛔ This message came via anonymous-admin mode: id {uid} is the @GroupAnonymousBot service account, not your own — don't add it to ALLOWED_USERS. Turn off «Remain anonymous» in your group admin rights — or allow anonymous posts with CCBOT_USER_ALIASES={uid}:<your id> in .env and restart the bot.",
+    },
     # -- Context-fill alert (session_monitor) --------------------------
     "ctx.alert": {
         "ru": "📈 Контекст: {k}k токенов (~{pct}% из 1M)",

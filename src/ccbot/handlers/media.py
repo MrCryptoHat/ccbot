@@ -16,7 +16,7 @@ from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from . import effective_user, get_thread_id, is_user_allowed
+from . import effective_user, get_thread_id, is_user_allowed, not_authorized_text
 from .delivery import deliver_user_text
 from .message_sender import safe_reply, send_photo
 from .task_pin import pin_task_message, should_pin_task
@@ -209,7 +209,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if update.message:
             await safe_reply(
                 update.message,
-                tr("common.not_authorized", uid=user.id if user else "?"),
+                not_authorized_text(user.id if user else None),
             )
         return
 
@@ -295,7 +295,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if update.message:
             await safe_reply(
                 update.message,
-                tr("common.not_authorized", uid=user.id if user else "?"),
+                not_authorized_text(user.id if user else None),
             )
         return
 
@@ -380,7 +380,7 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         if update.message:
             await safe_reply(
                 update.message,
-                tr("common.not_authorized", uid=user.id if user else "?"),
+                not_authorized_text(user.id if user else None),
             )
         return
 

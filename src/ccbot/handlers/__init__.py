@@ -20,6 +20,11 @@ and imported by the handler submodules.
 from telegram import Update, User
 
 from ..config import config
+from ..i18n import tr
+
+ANONYMOUS_ADMIN_ID = 1087968824
+"""@GroupAnonymousBot — the service account Telegram substitutes as the
+sender whenever a group admin posts with «Remain anonymous» enabled."""
 
 
 def effective_user(update: Update) -> User | None:
@@ -28,7 +33,11 @@ def effective_user(update: Update) -> User | None:
     ``user.id``, so aliased accounts (a second personal account, an
     anonymous-admin post arriving as @GroupAnonymousBot) must collapse to one
     identity BEFORE the id is used as a state key — otherwise each alias gets
-    its own parallel binding universe."""
+    its own parallel binding universe.
+
+    Caveat: the rewritten ``User`` keeps the alias's own name/username and
+    carries no bot binding — only ``.id`` is canonical. Read ids off it;
+    don't feed it to ``mention_html()``/``send_message()``-style calls."""
     user = update.effective_user
     if user is None:
         return None
@@ -38,6 +47,15 @@ def effective_user(update: Update) -> User | None:
     data = user.to_dict()
     data["id"] = canonical
     return User.de_json(data, None)
+
+
+def not_authorized_text(user_id: int | None) -> str:
+    """Denial reply for an unauthorized sender. The anonymous-admin service
+    id gets tailored advice — the generic «add the id to ALLOWED_USERS» is
+    the classic wrong fix for it (see ``common.not_authorized_anon``)."""
+    if user_id == ANONYMOUS_ADMIN_ID:
+        return tr("common.not_authorized_anon", uid=user_id)
+    return tr("common.not_authorized", uid=user_id if user_id is not None else "?")
 
 
 def get_thread_id(update: Update) -> int | None:

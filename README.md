@@ -210,6 +210,7 @@ Only two variables are required:
 | -------------------- | -------------------------------------------------- |
 | `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | `ALLOWED_USERS`      | Your numeric Telegram user ID (get it from [@userinfobot](https://t.me/userinfobot)); comma-separated for several |
+| `CCBOT_USER_ALIASES` | Optional `alias:canonical` id pairs — extra ids that act as the *same* user (a second account, or `1087968824` = @GroupAnonymousBot so posting as an anonymous admin still reaches your own topics) |
 
 Everything else is optional with a sane default — see
 [`.env.example`](.env.example) for the full annotated list.

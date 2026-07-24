@@ -38,7 +38,12 @@ from . import plugins
 from .config import config
 from .hook import hook_installed_in_settings
 from .rate_limiter import CcbotRateLimiter
-from .handlers import effective_user, get_thread_id, is_user_allowed
+from .handlers import (
+    effective_user,
+    get_thread_id,
+    is_user_allowed,
+    not_authorized_text,
+)
 from .handlers.coalesce import coalesce_text
 from .handlers.delivery import deliver_user_text
 from .handlers.callbacks import callback_handler
@@ -211,7 +216,7 @@ async def text_handler(
         if update.message:
             await safe_reply(
                 update.message,
-                i18n.tr("common.not_authorized", uid=user.id if user else "?"),
+                not_authorized_text(user.id if user else None),
             )
         return
 
