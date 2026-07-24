@@ -16,7 +16,7 @@ from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from . import get_thread_id, is_user_allowed
+from . import effective_user, get_thread_id, is_user_allowed
 from .delivery import deliver_user_text
 from .message_sender import safe_reply, send_photo
 from .task_pin import pin_task_message, should_pin_task
@@ -204,7 +204,7 @@ async def _deliver_media_text(
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle photos sent by the user: download and forward path to Claude Code."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
             await safe_reply(
@@ -290,7 +290,7 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle documents sent by the user: download and forward path to Claude Code."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
             await safe_reply(
@@ -375,7 +375,7 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe via OpenAI and forward text to Claude Code."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
             await safe_reply(

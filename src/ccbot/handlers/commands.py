@@ -31,7 +31,7 @@ from telegram.helpers import escape_markdown
 
 from typing import Literal
 
-from . import get_thread_id, is_user_allowed, pane_cache
+from . import effective_user, get_thread_id, is_user_allowed, pane_cache
 from .callback_data import (
     CB_CMD_CANCEL,
     CB_CMD_CLEAR,
@@ -323,7 +323,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     it /help would be typed into the agent's terminal (bound topic) or
     answered with a useless "no session" error (unbound/private chat).
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
             await safe_reply(
@@ -337,7 +337,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
             await safe_reply(
@@ -383,7 +383,7 @@ async def bind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     so this is the deliberate entry point. Adds ``docker:<name>`` to
     thread_bindings and names the topic after the agent.
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -440,7 +440,7 @@ async def bind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Toggle voice mode (TTS) for the current topic."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -467,7 +467,7 @@ async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def react_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Toggle reaction-ack: bot marks an ingested message with 👀 (global)."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -485,7 +485,7 @@ async def react_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def tables_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Toggle table delivery: native Telegram tables vs screenshots (global)."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -536,7 +536,7 @@ async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Switch ccbot's UI language. `/lang ru` / `/lang en` set explicitly;
     bare `/lang` toggles ru↔en. Re-publishes the localized command menu and
     re-pins the menu keyboard so its labels relabel immediately."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -554,7 +554,7 @@ async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def diff_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Toggle diff-screenshot mode for the current topic (/diff)."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -591,7 +591,7 @@ async def pin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     mid-turn follow-up) gets pinned in the topic — the pinned list becomes
     the topic's task history. Logic in handlers/task_pin.py.
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -632,7 +632,7 @@ async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     Escape only — an idle Ctrl-C arms its TUI quit sequence, so the trailing
     press must not be sent (``AgentRuntime.interrupt_keys``).
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -674,7 +674,7 @@ async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Kill the agent for this topic — tmux window or container's tmux session."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -1060,7 +1060,7 @@ def _status_keyboard() -> InlineKeyboardMarkup:
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show server status: agents, Docker, services, resources, cron
     schedule + plugin sections. Includes the refresh inline keyboard."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -1364,7 +1364,7 @@ async def commands_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     against the topic's bound agent; the photo refreshes after every
     action so the user sees what the command did.
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -1420,7 +1420,7 @@ async def commands_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Re-attach the persistent command keyboard to the current chat."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -1442,7 +1442,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     Docker path: kill the container's tmux session and recreate it with
     Claude running in /workspace.
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -1587,7 +1587,7 @@ async def topic_closed_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handle topic closure — kill the associated tmux window and clean up state."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
 
@@ -1952,7 +1952,7 @@ async def topic_created_handler(
     renamed (handled by ``topic_edited_handler``) or fall back to the
     existing dir-browser flow on first message.
     """
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
 
@@ -1981,7 +1981,7 @@ async def topic_edited_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Handle topic rename — sync new name to tmux window and internal state."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
 
@@ -2024,7 +2024,7 @@ async def forward_command_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """Forward any non-bot command as a slash command to the active Claude Code session."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     if not update.message:
@@ -2065,7 +2065,7 @@ async def unsupported_content_handler(
     """Reply to non-text messages (stickers, video, etc.)."""
     if not update.message:
         return
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         return
     logger.debug("Unsupported content from user %d", user.id)

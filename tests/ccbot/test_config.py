@@ -336,3 +336,48 @@ class TestPortabilityKnobs:
     def test_topic_dir_roots_override_trims_blanks(self, monkeypatch):
         monkeypatch.setenv("CCBOT_TOPIC_DIR_ROOTS", "repos, work ,")
         assert Config().topic_dir_roots == ("repos", "work")
+
+
+@pytest.mark.usefixtures("_base_env")
+class TestUserAliases:
+    """CCBOT_USER_ALIASES — extra ids acting AS an allowed user (second
+    account, @GroupAnonymousBot). Alias resolves to the canonical id before
+    any per-user state is keyed."""
+
+    def test_no_aliases_by_default(self):
+        cfg = Config()
+        assert cfg.user_aliases == {}
+        assert cfg.canonical_user_id(12345) == 12345
+
+    def test_alias_parsed_and_allowed(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_USER_ALIASES", "1087968824:12345")
+        cfg = Config()
+        assert cfg.user_aliases == {1087968824: 12345}
+        assert cfg.canonical_user_id(1087968824) == 12345
+        assert cfg.is_user_allowed(1087968824) is True
+
+    def test_multiple_pairs_with_spaces(self, monkeypatch):
+        monkeypatch.setenv("ALLOWED_USERS", "12345,678")
+        monkeypatch.setenv("CCBOT_USER_ALIASES", " 111:12345 , 222:678 ")
+        cfg = Config()
+        assert cfg.user_aliases == {111: 12345, 222: 678}
+
+    def test_unknown_id_stays_denied(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_USER_ALIASES", "111:12345")
+        assert Config().is_user_allowed(999) is False
+
+    def test_canonical_not_allowed_rejected(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_USER_ALIASES", "111:99999")
+        with pytest.raises(ValueError, match="not in"):
+            Config()
+
+    def test_alias_also_in_allowed_users_rejected(self, monkeypatch):
+        monkeypatch.setenv("ALLOWED_USERS", "12345,111")
+        monkeypatch.setenv("CCBOT_USER_ALIASES", "111:12345")
+        with pytest.raises(ValueError, match="both"):
+            Config()
+
+    def test_malformed_pair_rejected(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_USER_ALIASES", "garbage")
+        with pytest.raises(ValueError, match="malformed"):
+            Config()

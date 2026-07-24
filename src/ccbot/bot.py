@@ -38,7 +38,7 @@ from . import plugins
 from .config import config
 from .hook import hook_installed_in_settings
 from .rate_limiter import CcbotRateLimiter
-from .handlers import get_thread_id, is_user_allowed
+from .handlers import effective_user, get_thread_id, is_user_allowed
 from .handlers.coalesce import coalesce_text
 from .handlers.delivery import deliver_user_text
 from .handlers.callbacks import callback_handler
@@ -206,7 +206,7 @@ async def text_handler(
     text for updates whose content isn't in ``message.text`` (rich messages
     flattened by rich_message_handler) — everything else (binding, states,
     coalescing, delivery) runs identically."""
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
             await safe_reply(

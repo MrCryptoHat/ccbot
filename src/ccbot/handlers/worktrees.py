@@ -42,7 +42,7 @@ from ..runtimes import get_runtime, pickable_runtimes
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from ..worktrees import WorktreeMeta
-from . import get_thread_id
+from . import effective_user, get_thread_id
 from .callback_data import (
     CB_WT_CANCEL,
     CB_WT_DEL,
@@ -412,7 +412,7 @@ async def consume_worktree_name(
     thread_id = get_thread_id(update)
     if ud.get("_wt_source_thread") != thread_id:
         return False  # state belongs to a different topic — don't consume
-    user = update.effective_user
+    user = effective_user(update)
     if user is None or update.message is None:
         return False
 

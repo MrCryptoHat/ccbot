@@ -233,6 +233,35 @@ class Config:
                 "Expected comma-separated Telegram user IDs."
             ) from e
 
+        # Extra ids that act AS an allowed user — same bindings, same
+        # sessions (a second personal account, or 1087968824 =
+        # @GroupAnonymousBot so admins posting with «Remain anonymous»
+        # keep their own topics). Format: "alias:canonical[,...]".
+        aliases_str = os.getenv("CCBOT_USER_ALIASES", "")
+        self.user_aliases: dict[int, int] = {}
+        try:
+            for pair in aliases_str.split(","):
+                if not pair.strip():
+                    continue
+                alias_s, canon_s = pair.split(":", 1)
+                self.user_aliases[int(alias_s.strip())] = int(canon_s.strip())
+        except ValueError as e:
+            raise ValueError(
+                f"CCBOT_USER_ALIASES is malformed: {e}. "
+                "Expected comma-separated alias:canonical Telegram id pairs."
+            ) from e
+        for alias, canon in self.user_aliases.items():
+            if canon not in self.allowed_users:
+                raise ValueError(
+                    f"CCBOT_USER_ALIASES: canonical id {canon} is not in "
+                    "ALLOWED_USERS — an alias must point at an allowed user."
+                )
+            if alias in self.allowed_users:
+                raise ValueError(
+                    f"CCBOT_USER_ALIASES: {alias} is listed in ALLOWED_USERS "
+                    "too — an id can't be both a user and an alias."
+                )
+
         # Tmux session name and window naming
         self.tmux_session_name = os.getenv("TMUX_SESSION_NAME", "ccbot")
         self.tmux_main_window_name = "__main__"
@@ -576,8 +605,12 @@ class Config:
         )
 
     def is_user_allowed(self, user_id: int) -> bool:
-        """Check if a user is in the allowed list."""
-        return user_id in self.allowed_users
+        """Check if a user (or an alias of one) is in the allowed list."""
+        return self.canonical_user_id(user_id) in self.allowed_users
+
+    def canonical_user_id(self, user_id: int) -> int:
+        """Resolve an aliased id to its canonical allowed user (identity otherwise)."""
+        return self.user_aliases.get(user_id, user_id)
 
     def _load_docker_agents(self) -> list[DockerAgentConfig]:
         """Read docker-agent configs from process environment.

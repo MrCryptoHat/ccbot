@@ -116,6 +116,8 @@ def main() -> None:
     from .tmux_manager import tmux_manager
 
     logger.info("Allowed users: %s", config.allowed_users)
+    if config.user_aliases:
+        logger.info("User aliases: %s", config.user_aliases)
     logger.info("Claude projects path: %s", config.claude_projects_path)
 
     # First-run trap: without the SessionStart hook, session_map.json is never

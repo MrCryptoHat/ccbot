@@ -30,7 +30,7 @@ from telegram import (
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from . import get_thread_id
+from . import effective_user, get_thread_id
 from .. import plugins
 from ..config import config
 from ..i18n import tr
@@ -1918,7 +1918,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not query or not query.data:
         return
 
-    user = update.effective_user
+    user = effective_user(update)
     if not user or not config.is_user_allowed(user.id):
         await query.answer(tr("cb.not_authorized_toast"))
         return
