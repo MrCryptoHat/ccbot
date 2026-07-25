@@ -63,8 +63,9 @@ Source of truth for their topics — CLAUDE.md links here, doesn't restate them.
 `topic-architecture.md` is always-loaded; the rest carry `paths:` frontmatter and load
 when you open the code they cover. Read one directly when working outside those paths.
 
-- `@.claude/rules/topic-architecture.md` — topic ↔ window ↔ session mapping, binding lifecycle, name-based auto-bind (docker agent / `~/projects/` / `~/agents/`) on `forum_topic_created`
-- `.claude/rules/architecture.md` — module map, agent-panel & menu keyboards, interactive-prompt rendering, post-slash handlers, key design decisions
+- `.claude/rules/topic-architecture.md` — topic ↔ binding ↔ session mapping, message flows, topic and session lifecycle
+- `.claude/rules/binding-flows.md` — how a topic acquires its binding: name-based auto-bind on `forum_topic_created`, the fallback first-message flow, the session picker
+- `.claude/rules/architecture.md` — cross-file invariants, agent-panel decisions, interactive-prompt surfacing, extension points, key design decisions
 - `.claude/rules/message-handling.md` — message queue, merging, rate limiting, voice mode, block rendering, inline-keyboard tap-latency
 - `.claude/rules/runtimes.md` — Claude / Codex / Grok behind `AgentRuntime`, and each one's gotchas
 - `.claude/rules/worktree-agents.md` — parallel agents on one project via git worktree (🌳 panel button); two-tier teardown safety invariant, `reopen_forum_topic` deletion probe, `worktree_meta` state
