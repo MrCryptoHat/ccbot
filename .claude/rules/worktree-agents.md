@@ -1,3 +1,10 @@
+---
+paths:
+  - "src/ccbot/worktrees.py"
+  - "src/ccbot/handlers/worktrees.py"
+  - "tests/**worktree**"
+---
+
 # Worktree agents — parallel agents on one project
 
 Run several Claude agents on one repo at once, each isolated in its own `git
@@ -22,16 +29,12 @@ show the guard, so it would silently destroy unmerged work (CLAUDE.md «never
 silently destroy»). `handle_deleted_worktree_topic` is the seam — it runs the
 guard and only tears down when clean.
 
-## Deletion detection — probe with `reopen_forum_topic`, not `unpin`
+## Deletion detection — every worktree topic, every ~10 s
 
-Telegram sends no event on topic *delete*. The existence probe MUST use
-`reopen_forum_topic`: `unpin_all_forum_topic_messages` and `send_chat_action`
-deceptively return **OK** on a hard-deleted topic (verified live) — only
-`reopen` raises `Topic_id_invalid`. On a live *open* topic reopen is a no-op
-(`Topic_not_modified`), and every bound topic is open (closing unbinds), so no
-visible effect. Worktree topics are probed **every `WT_TOPIC_CHECK_INTERVAL`
-(~10 s)**, all of them (not round-robin), so a natively-deleted agent reclaims
-in seconds. (Detail also in topic-architecture.md / message-handling.md.)
+Why the probe is `reopen_forum_topic` and not `unpin`: topic-architecture.md,
+«Topic lifecycle». What's worktree-specific: worktree topics are probed **every
+`WT_TOPIC_CHECK_INTERVAL` (~10 s)**, all of them (not round-robin, unlike plain
+bound topics), so a natively-deleted agent reclaims in seconds.
 
 ## State, naming, layout — the non-obvious bits
 

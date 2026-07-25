@@ -1,3 +1,16 @@
+---
+paths:
+  - "src/ccbot/handlers/**"
+  - "src/ccbot/markdown_v2.py"
+  - "src/ccbot/telegram_sender.py"
+  - "src/ccbot/screenshot.py"
+  - "src/ccbot/rate_limiter.py"
+  - "src/ccbot/rich_message.py"
+  - "src/ccbot/transcribe.py"
+  - "src/ccbot/voice/**"
+  - "tests/**"
+---
+
 # Message Handling
 
 The queue, merging, rate-limiting, and voice-mode logic below are **transport-agnostic**: tmux and docker bindings both write to the same JSONL stream that `SessionMonitor` reads, so inbound messages go through the same pipeline regardless of where Claude Code is running. Outbound routing (the transport branch) happens earlier, in `session_manager.send_to_window`.
@@ -117,6 +130,9 @@ Gemini quality knobs via env:
 - `GEMINI_TTS_MODEL` — default `gemini-3.1-flash-tts-preview`; `gemini-2.5-pro-preview-tts` is available at identical pricing ($1/$20 per 1M in/out tokens) but ~50% slower
 - `GEMINI_TTS_STYLE_PREFIX` — whole-utterance style prefix prepended to every Gemini request inside `GeminiProvider._request`. More reliable than inline pace tags (which burn off after the first phrase). Empty string disables. Default: `"Speak warmly like you're chatting with a close friend, at a brisk natural pace:"`
 
-## No Message Truncation
+## Splitting at the send layer
 
-Historical messages (tool_use summaries, tool_result text, user/assistant messages) are always kept in full — no character-level truncation at the parsing layer. Long text is handled exclusively at the send layer: `split_message` splits by Telegram's 4096-character limit; real-time messages get `[1/N]` text suffixes, history pages get inline keyboard navigation.
+The no-truncation-at-the-parse-layer constraint lives in CLAUDE.md. What it means
+here: `split_message` is the only split point (Telegram's 4096-char limit) —
+real-time messages get `[1/N]` text suffixes, history pages get inline keyboard
+navigation instead.

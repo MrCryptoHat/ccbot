@@ -103,17 +103,12 @@ version drifts from the captured one.
 
 ## Checklist
 
-- [ ] Subclass in `runtimes.py`, singleton registered in `RUNTIMES`.
-- [ ] Parser module producing `ParsedEntry`, with a synthetic fixture in
-      `tests/fixtures/<name>/`.
-- [ ] Busy / queued-input detectors + tests pinning real (sanitized) panes.
-- [ ] `pane_alive_commands` verified against `tmux display -p
-      '#{pane_current_command}'` while the CLI runs.
-- [ ] i18n keys (ready message) in both languages.
-- [ ] `tests/` green: `uv run ruff check && uv run pyright src/ccbot/ &&
-      uv run pytest`.
-- [ ] One live end-to-end pass: create a topic, send a message, get the reply,
-      restart the session from the panel.
+The order of work and the verification gates live in the `adding-a-runtime`
+skill (`.claude/skills/adding-a-runtime/SKILL.md`) so they stay in one place —
+this page is the reference for *what each member does*, the skill is *how to
+proceed*. Working by hand, follow its steps: viability check → capture the real
+TUI → parser + synthetic fixture → subclass, register, detectors → live
+end-to-end pass → record the gotchas.
 
 What you get for free once registered: a picker tab with resume list, monitor
 delivery, runtime-aware busy gating everywhere, the agent panel (gated to your
