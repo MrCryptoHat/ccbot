@@ -17,6 +17,7 @@ import asyncio
 import io
 import logging
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,7 @@ from ..session import session_manager
 from ..terminal_parser import is_tui_ready
 from ..tmux_manager import tmux_manager
 from .callback_data import (
+    CALLBACK_WID_MAX,
     CB_ASK_DOWN,
     CB_ASK_ENTER,
     CB_ASK_ESC,
@@ -83,6 +85,11 @@ from .callback_data import (
     CB_WIN_BIND,
     CB_WIN_CANCEL,
     CB_WIN_NEW,
+    CB_AGENT_DEL,
+    CB_AGENT_DELNO,
+    CB_AGENT_DELOK,
+    CB_SIB_CANCEL,
+    CB_SIB_NEW,
     CB_WT_CANCEL,
     CB_WT_DEL,
     CB_WT_DELNO,
@@ -125,6 +132,12 @@ from .interactive_ui import (
     handle_interactive_ui,
 )
 from .message_sender import safe_edit, safe_send
+from .agent_delete import (
+    _handle_agent_del,
+    _handle_agent_delno,
+    _handle_agent_delok,
+)
+from .siblings import _handle_sib_cancel, _handle_sib_new
 from .worktrees import (
     _handle_wt_cancel,
     _handle_wt_del,
@@ -1482,8 +1495,10 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
     # can be answered only once, a second answer() is silently ignored.
 
     if session_manager._is_docker_binding(window_id):
-        agent = config.get_docker_agent(window_id[len("docker:") :])
-        if not agent or not await docker_driver.is_container_alive(agent.container):
+        target = session_manager.resolve_docker_target(window_id)
+        if not target or not await docker_driver.is_container_alive(
+            target.agent.container
+        ):
             await query.answer(tr("cb.container_not_running"), show_alert=True)
             return
         await query.answer(
@@ -1491,10 +1506,15 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
         )
         # send_lock: no other writer may type into the pane mid-restart.
         async with session_manager.send_lock(window_id):
-            await docker_driver.kill_session(agent.container)
+            await docker_driver.kill_session(
+                target.agent.container, session=target.tmux_session
+            )
             await asyncio.sleep(1)
-            await docker_driver.start_session(
-                agent.container, resume_session_id=resume_id or None
+            await session_manager.start_docker_agent(
+                window_id,
+                resume_session_id=resume_id or None,
+                new_session_id=str(uuid.uuid4()) if fresh else None,
+                cwd=session_manager.get_window_state(window_id).cwd or "/workspace",
             )
         await _wait_pane_ready(window_id)
         await _cmd_refresh_photo(query, window_id, tab="ses")
@@ -1851,6 +1871,13 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     (CB_WT_DEL, _handle_wt_del),
     (CB_WT_DROP, _handle_wt_drop),
     (CB_WT_KEEP, _handle_wt_keep),
+    # Sibling agents (another agent beside this one, no worktree)
+    (CB_SIB_NEW, _handle_sib_new),
+    (CB_SIB_CANCEL, _handle_sib_cancel),
+    # 🗑 delete agent + topic (non-worktree topics)
+    (CB_AGENT_DELOK, _handle_agent_delok),
+    (CB_AGENT_DELNO, _handle_agent_delno),
+    (CB_AGENT_DEL, _handle_agent_del),
 ]
 
 
@@ -1886,6 +1913,8 @@ _WID_GUARD_SIMPLE: tuple[str, ...] = (
     CB_CMD_KILL,
     CB_WT_NEW,
     CB_WT_DEL,
+    CB_SIB_NEW,
+    CB_AGENT_DEL,
 )
 # Prefixes with one routing field before the window_id
 # (kb:<key>:<wid>, cm:ref:<tab>:<wid>, cm:tab:<tab>:<wid>, cm:cfm:<action>:<wid>).
@@ -1937,7 +1966,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     guarded = _guarded_wid(data)
     if guarded is not None:
         bound = session_manager.resolve_window_for_thread(user.id, cb_thread_id)
-        if bound != guarded:
+        # Compare truncated: the builder can only fit CALLBACK_WID_MAX chars of
+        # the binding into the payload, so comparing against the full value
+        # would mark every tap in a long-binding topic stale.
+        if (bound or "")[:CALLBACK_WID_MAX] != guarded:
             logger.info(
                 "Stale panel tap: data=%s bound=%s (user=%d thread=%s)",
                 data,

@@ -119,6 +119,34 @@ _typing_last_sent: dict[tuple[int, int], float] = {}
 _model_switch_seen: dict[str, bool] = {}
 
 
+# Rising-edge dedup for the "your sibling agent is down" notice, keyed by
+# binding: tell the user once, re-arm when it's back up.
+_sibling_down_seen: dict[str, bool] = {}
+
+
+async def _notify_dead_sibling(
+    bot: Bot, window_id: str, thread_id: int | None, user_id: int
+) -> None:
+    """Tell the topic once that its sibling agent is no longer running."""
+    if not session_manager.is_docker_sub_agent(window_id):
+        return
+    if await session_manager.docker_agent_running(window_id):
+        _sibling_down_seen.pop(window_id, None)  # alive again — re-arm
+        return
+    if _sibling_down_seen.get(window_id):
+        return
+    _sibling_down_seen[window_id] = True
+    try:
+        await safe_send(
+            bot,
+            session_manager.resolve_chat_id(user_id, thread_id),
+            tr("spoll.sibling_down", name=session_manager.get_display_name(window_id)),
+            message_thread_id=thread_id,
+        )
+    except Exception as e:  # noqa: BLE001 — a notice is best-effort
+        logger.debug("sibling-down notice failed for %s: %s", window_id, e)
+
+
 async def update_status_message(
     bot: Bot,
     user_id: int,
@@ -170,7 +198,12 @@ async def update_status_message(
     pane_text = await session_manager.capture_pane(window_id)
     if not pane_text:
         # Tmux window gone, docker container down, or transient capture
-        # failure — nothing to inspect this tick.
+        # failure — nothing to inspect this tick. For a SIBLING agent this is
+        # also the only sign it died: its session lives inside a container that
+        # is still perfectly healthy (a `docker restart` recreates the
+        # entrypoint's agent but none of the siblings), so nothing else would
+        # ever notice, and its topic would just go quiet.
+        await _notify_dead_sibling(bot, window_id, thread_id, user_id)
         return
 
     # Reaction-ack: fire the pending 👀 once this window's input queue drains —

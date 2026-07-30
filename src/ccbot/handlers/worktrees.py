@@ -725,7 +725,9 @@ async def _handle_wt_delno(
         await query.edit_message_caption(
             caption=caption,
             parse_mode="MarkdownV2",
-            reply_markup=_build_commands_keyboard(wid, tab="act"),
+            # "ses" — the tab 🗑 lives on, so cancelling puts the user back on
+            # the buttons they tapped from (the panel's home-tab rule).
+            reply_markup=_build_commands_keyboard(wid, tab="ses"),
         )
     except Exception as e:  # noqa: BLE001
         logger.debug("wt delete cancel restore failed: %s", e)

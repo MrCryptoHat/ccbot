@@ -37,8 +37,13 @@ import aiofiles
 
 from . import i18n
 from .agent_session import AgentSession
-from .config import config
-from .docker_driver import docker_driver
+from .config import DockerAgentConfig, config
+from .docker_driver import (
+    AGENT_NAME_ENV,
+    SUB_SESSION_PREFIX,
+    docker_driver,
+    sub_tmux_session,
+)
 from .runtimes import get_runtime
 from .tmux_manager import tmux_manager
 from .transcript_parser import TranscriptParser
@@ -52,6 +57,30 @@ from .voice.safety import BudgetEvent, VoiceBudget
 from .worktrees import WorktreeMeta
 
 logger = logging.getLogger(__name__)
+
+# Binding-value grammar for containers: "docker:<agent>" (the agent's own
+# long-lived session) and "docker:<agent>/<slug>" (a ccbot-created sub-agent
+# beside it in the same container).
+DOCKER_PREFIX = "docker:"
+
+# Sub-agent slugs are filesystem/tmux/JSON-key safe by construction: lowercase
+# alnum + dashes, leading alnum, ≤30 chars. Same shape as worktree slugs.
+_SUB_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,29}$")
+
+
+@dataclass(frozen=True)
+class DockerTarget:
+    """Where a docker binding points inside the container.
+
+    ``agent`` is always the CONFIGURED agent (container, workspace mount,
+    claude-home, session-map path) — a sub-agent shares all of them with its
+    parent. Only ``tmux_session`` differs: the entrypoint's ``claude`` for the
+    main binding, ``claude-<sub>`` for a sub-agent.
+    """
+
+    agent: DockerAgentConfig
+    tmux_session: str
+    sub: str | None = None
 
 
 @dataclass
@@ -342,7 +371,61 @@ class SessionManager:
     @staticmethod
     def _is_docker_binding(value: str) -> bool:
         """Check if a binding value points to a docker-agent (prefix form)."""
-        return value.startswith("docker:") and len(value) > len("docker:")
+        return value.startswith(DOCKER_PREFIX) and len(value) > len(DOCKER_PREFIX)
+
+    @staticmethod
+    def split_docker_binding(value: str) -> tuple[str, str | None] | None:
+        """``docker:<agent>[/<sub>]`` → ``(agent, sub|None)``; None if not one.
+
+        The optional ``/<sub>`` names a **sub-agent**: a second Claude Code
+        process in the SAME container (own tmux session, same /workspace, same
+        claude-home). The slug is validated here — it ends up in a tmux session
+        name and in a session_map key written from inside the container, so a
+        malformed one is rejected rather than propagated.
+        """
+        if not SessionManager._is_docker_binding(value):
+            return None
+        rest = value[len(DOCKER_PREFIX) :]
+        agent, sep, sub = rest.partition("/")
+        if not agent:
+            return None
+        if not sep:
+            return agent, None
+        if not _SUB_SLUG_RE.match(sub):
+            return None
+        return agent, sub
+
+    def resolve_docker_target(self, value: str) -> "DockerTarget | None":
+        """Resolve a docker binding to its container + in-container tmux session.
+
+        The single seam every docker call site uses instead of re-deriving
+        ``config.get_docker_agent(value[len("docker:"):])`` — that shape is
+        blind to sub-agents (``docker:<agent>/<slug>``), which share the parent
+        agent's container/workspace/claude-home but live in their own tmux
+        session. Returns None when the flag is off or the agent is unknown.
+        """
+        parsed = self.split_docker_binding(value)
+        if parsed is None:
+            return None
+        agent_name, sub = parsed
+        agent = config.get_docker_agent(agent_name)
+        if agent is None:
+            return None
+        return DockerTarget(
+            agent=agent,
+            tmux_session=sub_tmux_session(sub) if sub else docker_driver.tmux_session,
+            sub=sub,
+        )
+
+    def is_docker_sub_agent(self, value: str) -> bool:
+        """True iff the binding is a sub-agent (``docker:<agent>/<slug>``).
+
+        Sub-agents are ccbot-created and ccbot-owned: unlike a main docker
+        binding (whose lifecycle is the container's), closing their topic kills
+        their tmux session and drops their state.
+        """
+        parsed = self.split_docker_binding(value)
+        return parsed is not None and parsed[1] is not None
 
     def resolve_binding(
         self, user_id: int, thread_id: int | None
@@ -352,6 +435,7 @@ class SessionManager:
         Returns:
           ("tmux", "@12")       — bound to tmux window @12
           ("docker", "assistant") — bound to docker agent "assistant"
+          ("docker", "assistant/notes") — bound to a sub-agent of that agent
           None                  — no binding for this thread
 
         Callers can branch on the type to pick the right transport
@@ -366,7 +450,7 @@ class SessionManager:
         if not value:
             return None
         if self._is_docker_binding(value):
-            return "docker", value[len("docker:") :]
+            return "docker", value[len(DOCKER_PREFIX) :]
         return "tmux", value
 
     async def resolve_agent_binding(self, name: str) -> str | None:
@@ -1047,10 +1131,10 @@ class SessionManager:
         )
 
         if self._is_docker_binding(window_id):
-            agent = config.get_docker_agent(window_id[len("docker:") :])
-            if not agent:
+            target = self.resolve_docker_target(window_id)
+            if not target:
                 return False
-            map_path = agent.session_map_path
+            map_path = target.agent.session_map_path
             key = window_id
         else:
             map_path = config.session_map_file
@@ -1079,6 +1163,55 @@ class SessionManager:
         )
         return False
 
+    def _owns_map_key(self, agent_name: str, key: str) -> bool:
+        """May ``agent_name``'s (untrusted, in-container) map write this key?
+
+        Its own binding — and, of its sub-agents, only ones ccbot ALREADY
+        knows. ccbot is the only thing that creates a sibling, so a sub key it
+        has never heard of is either noise or a container inventing rows: left
+        unfiltered it would grow ``window_states`` without bound (they are
+        exempt from the stale sweep and persisted), keep dead sessions in the
+        monitor's active set, and resurrect a sibling that was just torn down.
+        """
+        parsed = self.split_docker_binding(key)
+        if parsed is None or parsed[0] != agent_name:
+            return False
+        if parsed[1] is None:
+            return True  # the agent's own binding, always its to write
+        return key in self.window_states or any(
+            value == key for _, _, value in self.iter_thread_bindings()
+        )
+
+    def _session_id_taken_by_other(self, binding_key: str, session_id: str) -> bool:
+        """Is this session_id already owned by a DIFFERENT binding?
+
+        The guard against a container hook that hardcodes its agent name: a
+        sub-agent's SessionStart then reports the sub's fresh session_id under
+        the PARENT's key, which would silently re-point the parent topic at its
+        child's transcript. One session_id belongs to one binding; a claim on
+        another binding's id is dropped (the correct key still arrives from a
+        hook that keys off ``AGENT_NAME``, which ccbot sets per sub-session).
+
+        Host tmux bindings count as owners too: this runs only on keys read
+        from a container's own file, so a container claiming a HOST agent's
+        session id is never legitimate — and it would mirror that agent's
+        output into the container's topic.
+        """
+        if not session_id:
+            return False
+        for other, state in self.window_states.items():
+            if other == binding_key or state.session_id != session_id:
+                continue
+            logger.warning(
+                "session_map: %s claims session %s already owned by %s — ignored "
+                "(container hook should key off AGENT_NAME)",
+                binding_key,
+                session_id,
+                other,
+            )
+            return True
+        return False
+
     async def load_session_map(self) -> None:
         """Merge every session_map source into ``window_states``.
 
@@ -1086,12 +1219,19 @@ class SessionManager:
           - Main ``~/.ccbot/session_map.json`` keyed ``"<tmux_session>:<window_id>"``.
             Prefix is stripped to the tmux window id (``@12``).
           - Each active docker agent's ``session_map_path`` keyed
-            ``"docker:<agent>"`` directly.
+            ``"docker:<agent>"`` — or ``"docker:<agent>/<sub>"`` for a
+            sub-agent — directly.
 
         Both kinds of keys land in ``window_states`` using the binding
         value (``@12`` or ``docker:assistant``) so downstream lookups are
         uniform. Also cleans up ``window_states`` entries that no longer
         appear in any session_map source, and refreshes display names.
+
+        **Docker rows are never reaped here.** A container's hook typically
+        rewrites its map file with a single key, so with sub-agents around any
+        given read shows only whichever session started last — absence in that
+        file says nothing about liveness. Their staleness is the tmux session's
+        lifecycle (killed on topic close / teardown, which drops the row).
         """
         valid_wids: set[str] = set()
         changed = False
@@ -1106,6 +1246,17 @@ class SessionManager:
             new_wname = info.get("window_name", "")
             if not new_sid:
                 return False
+            if not is_valid_session_id(new_sid):
+                # The id is interpolated into `<projects>/<cwd>/<id>.jsonl`, so
+                # a value with path separators would read a transcript outside
+                # the agent's own claude-home. The per-agent map is written
+                # inside the container; treat its ids as input, not fact.
+                logger.warning(
+                    "session_map: %s has a malformed session_id %r — ignored",
+                    binding_key,
+                    new_sid[:64],
+                )
+                return False
             state = self.get_window_state(binding_key)
             mutated = False
             if state.session_id != new_sid or state.cwd != new_cwd:
@@ -1118,7 +1269,11 @@ class SessionManager:
                 state.session_id = new_sid
                 state.cwd = new_cwd
                 mutated = True
-            if new_wname:
+            # Sub-agents keep the name ccbot gave them at creation. Their
+            # window_name comes back from the container as the raw binding
+            # ("assistant/notes" — whatever AGENT_NAME was set to), which is a
+            # routing key, not a label the user should see in the panel.
+            if new_wname and not self.is_docker_sub_agent(binding_key):
                 state.window_name = new_wname
                 if self.window_display_names.get(binding_key) != new_wname:
                     self.window_display_names[binding_key] = new_wname
@@ -1161,11 +1316,13 @@ class SessionManager:
                 any_source_corrupt = True
                 continue
             for key, info in agent_map.items():
-                # Only the agent's OWN binding key: the file is written
-                # inside the container (untrusted), so accepting any
-                # docker:* key would let a compromised agent overwrite
-                # another agent's window_state.
-                if key != f"docker:{agent.name}":
+                # Only the agent's OWN binding keys (itself and its
+                # sub-agents): the file is written inside the container
+                # (untrusted), so accepting any docker:* key would let a
+                # compromised agent overwrite another agent's window_state.
+                if not self._owns_map_key(agent.name, key):
+                    continue
+                if self._session_id_taken_by_other(key, info.get("session_id", "")):
                     continue
                 valid_wids.add(key)
                 if _apply(key, info):
@@ -1189,12 +1346,18 @@ class SessionManager:
         # session_map at all) must not be reaped for being absent from a map
         # it never writes to — that would drop its runtime tag mid-session.
         # Its staleness is the tmux window's lifecycle (dead-window check).
+        # Docker rows are exempt for the reason in the docstring.
+        def _reapable(w: str) -> bool:
+            if self._is_docker_binding(w):
+                # Docker rows outlive map absence (see the docstring) — but not
+                # their agent: one dropped from DOCKER_AGENTS would otherwise
+                # keep its rows, and its session ids in the monitor, forever.
+                parsed = self.split_docker_binding(w)
+                return parsed is None or config.get_docker_agent(parsed[0]) is None
+            return get_runtime(self.window_states[w].runtime).uses_session_map
+
         stale_wids = [
-            w
-            for w in self.window_states
-            if w
-            and w not in valid_wids
-            and get_runtime(self.window_states[w].runtime).uses_session_map
+            w for w in self.window_states if w and w not in valid_wids and _reapable(w)
         ]
         for wid in stale_wids:
             logger.info("Removing stale window_state: %s", wid)
@@ -1340,6 +1503,33 @@ class SessionManager:
         ws = self.window_states.get(binding_value)
         return is_git_repo(Path(ws.cwd)) if ws and ws.cwd else False
 
+    def can_offer_sibling(self, binding_value: str) -> bool:
+        """True iff the ➕ (another agent beside this one) button should show.
+
+        Docker: always — the sibling is a second tmux session in the same
+        container, no repo or extra config needed.
+
+        Tmux: only for runtimes tracked through a session_map (Claude). A
+        hookless runtime (codex/grok) resolves its transcript by cwd, so two of
+        its windows in one directory would mirror each other — the same
+        cross-talk ``has_live_agent_on_cwd`` refuses at creation time. A window
+        with no known cwd has nothing to clone.
+        """
+        if self._is_docker_binding(binding_value):
+            return (
+                config.docker_agents_enabled
+                and self.resolve_docker_target(binding_value) is not None
+            )
+        if self.is_worktree_window(binding_value):
+            # A worktree's teardown removes the directory itself, which would
+            # strand a sibling running inside it (bound, so the orphan janitor
+            # never reaps it). Fork another worktree with 🌳 instead.
+            return False
+        if not get_runtime(self.window_runtime(binding_value)).uses_session_map:
+            return False
+        ws = self.window_states.get(binding_value)
+        return bool(ws and ws.cwd)
+
     def clear_window_session(self, window_id: str) -> None:
         """Clear session association for a window (e.g., after /clear command)."""
         state = self.get_window_state(window_id)
@@ -1394,9 +1584,10 @@ class SessionManager:
         still does ``.is_file()``.
         """
         if self._is_docker_binding(binding_value):
-            agent = config.get_docker_agent(binding_value[len("docker:") :])
-            if not agent:
+            target = self.resolve_docker_target(binding_value)
+            if not target:
                 return None
+            agent = target.agent
             prefix = "/workspace/"
             if raw_path == "/workspace":
                 return agent.workspace_host_path
@@ -1423,9 +1614,12 @@ class SessionManager:
         the main path — reads will just miss, not blow up.
         """
         if self._is_docker_binding(binding_value):
-            agent = config.get_docker_agent(binding_value[len("docker:") :])
-            if agent:
-                return agent.claude_home_host_path / "projects"
+            target = self.resolve_docker_target(binding_value)
+            if target:
+                # Sub-agents share the parent's claude-home mount — one
+                # projects root per container, transcripts told apart by
+                # session_id like any other Claude sessions.
+                return target.agent.claude_home_host_path / "projects"
         return config.claude_projects_path
 
     def plans_dir_for_binding(self, binding_value: str) -> Path:
@@ -1925,13 +2119,16 @@ class SessionManager:
             if self._is_docker_binding(window_id):
                 if not config.docker_agents_enabled:
                     return False, "Docker agents disabled in config"
-                agent_name = window_id[len("docker:") :]
-                agent = config.get_docker_agent(agent_name)
-                if not agent:
+                agent_name = window_id[len(DOCKER_PREFIX) :]
+                target = self.resolve_docker_target(window_id)
+                if not target:
                     return False, f"Docker agent '{agent_name}' not configured"
+                agent = target.agent
                 if not await docker_driver.is_container_alive(agent.container):
                     return False, f"Container '{agent.container}' is not running"
-                success = await docker_driver.send_keys(agent.container, text)
+                success = await docker_driver.send_keys(
+                    agent.container, text, session=target.tmux_session
+                )
                 if success:
                     self.mark_generating(window_id)
                     return True, f"Sent to {display}"
@@ -1970,13 +2167,17 @@ class SessionManager:
             if self._is_docker_binding(binding_value):
                 if not config.docker_agents_enabled:
                     return False
-                agent = config.get_docker_agent(binding_value[len("docker:") :])
-                if not agent:
+                target = self.resolve_docker_target(binding_value)
+                if not target:
                     return False
-                if not await docker_driver.is_container_alive(agent.container):
+                if not await docker_driver.is_container_alive(target.agent.container):
                     return False
                 return await docker_driver.send_keys(
-                    agent.container, keys, enter=enter, literal=literal
+                    target.agent.container,
+                    keys,
+                    enter=enter,
+                    literal=literal,
+                    session=target.tmux_session,
                 )
             window = await tmux_manager.find_window_by_id(binding_value)
             if not window:
@@ -2060,15 +2261,16 @@ class SessionManager:
         if self._is_docker_binding(binding_value):
             if not config.docker_agents_enabled:
                 return None
-            agent = config.get_docker_agent(binding_value[len("docker:") :])
-            if not agent:
+            target = self.resolve_docker_target(binding_value)
+            if not target:
                 return None
-            if not await docker_driver.is_container_alive(agent.container):
+            if not await docker_driver.is_container_alive(target.agent.container):
                 return None
             return await docker_driver.capture_pane(
-                agent.container,
+                target.agent.container,
                 with_ansi=with_ansi,
                 scrollback_lines=scrollback_lines,
+                session=target.tmux_session,
             )
         window = await tmux_manager.find_window_by_id(binding_value)
         if not window:
@@ -2083,23 +2285,133 @@ class SessionManager:
         """Kill the bound agent.
 
         Tmux binding → kill the tmux window (the Claude process dies with it).
-        Docker binding → kill the in-container tmux session named `claude`;
-        the container itself stays up so /restart can re-spawn the session.
+        Docker binding → kill that binding's in-container tmux session (the
+        entrypoint's `claude`, or a sub-agent's `claude-<slug>`); the container
+        itself stays up so /restart can re-spawn the session.
         Returns True on success or if the target is already dead.
         """
         if self._is_docker_binding(binding_value):
             if not config.docker_agents_enabled:
                 return False
-            agent = config.get_docker_agent(binding_value[len("docker:") :])
-            if not agent:
+            target = self.resolve_docker_target(binding_value)
+            if not target:
                 return False
-            if not await docker_driver.is_container_alive(agent.container):
+            if not await docker_driver.is_container_alive(target.agent.container):
                 return True
-            return await docker_driver.kill_session(agent.container)
+            return await docker_driver.kill_session(
+                target.agent.container, session=target.tmux_session
+            )
         window = await tmux_manager.find_window_by_id(binding_value)
         if not window:
             return True
         return await tmux_manager.kill_window(window.window_id)
+
+    # --- Docker agent lifecycle (main binding + sub-agents) ---
+
+    async def start_docker_agent(
+        self,
+        binding_value: str,
+        *,
+        resume_session_id: str | None = None,
+        new_session_id: str | None = None,
+        cwd: str = "/workspace",
+    ) -> bool:
+        """(Re)launch the Claude process for a docker binding in its own session.
+
+        The one launcher for both the panel's restart and sub-agent
+        provisioning, so the two can't drift on the details that matter:
+        which tmux session is targeted, and the per-session ``AGENT_NAME``
+        that makes a container hook write THIS binding's session_map key
+        instead of the parent's.
+        """
+        target = self.resolve_docker_target(binding_value)
+        if not target or not config.docker_agents_enabled:
+            return False
+        if not await docker_driver.is_container_alive(target.agent.container):
+            return False
+        started = await docker_driver.start_session(
+            target.agent.container,
+            cwd=cwd,
+            resume_session_id=resume_session_id,
+            new_session_id=new_session_id,
+            session=target.tmux_session,
+            env={AGENT_NAME_ENV: binding_value[len(DOCKER_PREFIX) :]},
+        )
+        if started and new_session_id and not resume_session_id:
+            # We chose the id, so record it now instead of waiting on the
+            # container's hook — the whole point of pinning: a sub-agent stays
+            # trackable even where the hook writes a hardcoded parent key.
+            state = self.get_window_state(binding_value)
+            state.session_id = new_session_id
+            state.cwd = self._normalize_cwd(cwd)
+            self._save_state()
+        return started
+
+    async def docker_agent_running(self, binding_value: str) -> bool:
+        """True iff this docker binding's container AND tmux session are up.
+
+        The session check is what makes a sub-agent's death visible: killing
+        `claude-<slug>` leaves the container (and every sibling) running, so
+        container liveness alone would report a dead agent as healthy.
+        """
+        target = self.resolve_docker_target(binding_value)
+        if not target:
+            return False
+        if not await docker_driver.is_container_alive(target.agent.container):
+            return False
+        return await docker_driver.has_session(
+            target.agent.container, session=target.tmux_session
+        )
+
+    async def taken_sub_slugs(self, agent_name: str) -> set[str]:
+        """Slugs already in use for an agent — bound topics + live tmux sessions.
+
+        Both halves matter: a slug whose topic was deleted may still have a
+        running `claude-<slug>` in the container, and a freshly bound slug may
+        not have its session up yet.
+        """
+        taken: set[str] = set()
+        for key in self.window_states:
+            parsed = self.split_docker_binding(key)
+            if parsed and parsed[0] == agent_name and parsed[1]:
+                taken.add(parsed[1])
+        for _, _, value in self.iter_thread_bindings():
+            parsed = self.split_docker_binding(value)
+            if parsed and parsed[0] == agent_name and parsed[1]:
+                taken.add(parsed[1])
+        agent = config.get_docker_agent(agent_name)
+        if agent is not None:
+            for name in await docker_driver.list_sessions(agent.container):
+                if name.startswith(SUB_SESSION_PREFIX):
+                    taken.add(name[len(SUB_SESSION_PREFIX) :])
+        return taken
+
+    def forget_binding(self, binding_value: str) -> None:
+        """Drop a binding's window_state + display name (teardown only).
+
+        Docker rows survive session_map absence (see ``load_session_map``), so
+        a torn-down sub-agent has to be removed explicitly — otherwise the
+        monitor keeps polling a transcript nobody reads.
+        """
+        if self.window_states.pop(binding_value, None) is not None:
+            self.window_display_names.pop(binding_value, None)
+            self._save_state()
+            logger.info("Forgot binding state: %s", binding_value)
+
+    def docker_session_map(self) -> dict[str, str]:
+        """``docker:<binding> → session_id`` for every tracked docker binding.
+
+        The monitor's docker half of the merged session map. It reads
+        ``window_states`` rather than the per-agent files directly because a
+        container hook rewrites its file with one key: reading raw, a running
+        sub-agent's write would look like "the parent's window disappeared"
+        and the parent's session would be dropped from monitoring.
+        """
+        return {
+            key: state.session_id
+            for key, state in self.window_states.items()
+            if state.session_id and self._is_docker_binding(key)
+        }
 
     # --- Message history ---
 

@@ -82,6 +82,12 @@ async def purge_deleted_topic(bot: Bot, user_id: int, thread_id: int, wid: str) 
 
         if await handle_deleted_worktree_topic(bot, user_id, thread_id, meta):
             return  # clean worktree → already fully torn down
+    # Sibling agents inside a container: kill the in-container tmux session
+    # (headless-safe — a sibling shares the parent's files, so there is no
+    # unmerged work to lose the way a worktree has).
+    from .siblings import teardown_sibling
+
+    await teardown_sibling(user_id, thread_id, wid)
     if not session_manager._is_docker_binding(wid):
         w = await tmux_manager.find_window_by_id(wid)
         if w:

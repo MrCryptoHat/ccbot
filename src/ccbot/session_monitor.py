@@ -527,9 +527,12 @@ class SessionMonitor:
           - Main ``~/.ccbot/session_map.json`` keyed ``"<tmux_session>:<window_id>"``
             (e.g. ``ccbot:@12``). The tmux-session prefix is stripped so the
             resulting key is the tmux binding value (``@12``).
-          - Each active docker agent's ``session_map_path`` on host (written
-            by the container's hook via bind mount) keyed ``"docker:<agent>"``.
-            No prefix stripping — the key *is* the binding value.
+          - Docker bindings from ``session_manager.docker_session_map()`` —
+            i.e. what the per-agent hook files have been merged INTO, not the
+            files themselves. A container's hook rewrites its file with a
+            single key, so with sub-agents around a raw read would look like
+            "the parent's window vanished" and drop the parent's session from
+            monitoring on the very tick a sibling started.
 
         The merged dict is keyed by the binding value that thread_bindings
         stores, so ``_detect_and_cleanup_changes`` can compare tmux and
@@ -538,27 +541,12 @@ class SessionMonitor:
         window_to_session: dict[str, str] = {}
         prefix = f"{config.tmux_session_name}:"
 
-        def _ingest(
-            session_map: dict[str, Any],
-            tmux_prefix: str | None,
-            only_key: str | None = None,
-        ) -> None:
+        def _ingest(session_map: dict[str, Any], tmux_prefix: str) -> None:
             for key, info in session_map.items():
                 session_id = info.get("session_id", "")
-                if not session_id:
+                if not session_id or not key.startswith(tmux_prefix):
                     continue
-                if only_key is not None and key != only_key:
-                    # Per-agent maps are written inside the container
-                    # (untrusted) — accept only the agent's own binding
-                    # key, otherwise a compromised agent could spoof
-                    # another agent's session.
-                    continue
-                if tmux_prefix is not None:
-                    if not key.startswith(tmux_prefix):
-                        continue
-                    binding_key = key[len(tmux_prefix) :]
-                else:
-                    binding_key = key
+                binding_key = key[len(tmux_prefix) :]
                 if binding_key and binding_key not in window_to_session:
                     window_to_session[binding_key] = session_id
 
@@ -571,17 +559,13 @@ class SessionMonitor:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Per-agent session_maps (docker).
-        for agent in config.active_docker_agents():
-            path = agent.session_map_path
-            if not path.exists():
-                continue
-            try:
-                async with aiofiles.open(path, "r") as f:
-                    content = await f.read()
-                _ingest(json.loads(content), None, only_key=f"docker:{agent.name}")
-            except (json.JSONDecodeError, OSError):
-                pass
+        # Docker bindings — already merged into window_states by
+        # session_manager.load_session_map (which owns the per-agent files,
+        # their trust rules and the sub-agent keys).
+        from .session import session_manager as _sm
+
+        for binding_value, session_id in _sm.docker_session_map().items():
+            window_to_session.setdefault(binding_value, session_id)
 
         return window_to_session
 

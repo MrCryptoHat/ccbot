@@ -252,17 +252,15 @@ class TestDockerMultiRoot:
             )
         )
         monkeypatch.setattr(sm_mod.config, "session_map_file", main_map)
-        # Per-agent session_map (binding-value key, no prefix)
-        agent.session_map_path.parent.mkdir(parents=True, exist_ok=True)
-        agent.session_map_path.write_text(
-            json.dumps(
-                {
-                    "docker:assistant": {
-                        "session_id": "docker-sid",
-                        "cwd": "/workspace",
-                    }
-                }
-            )
+        # Docker half comes from window_states — session_manager owns the
+        # per-agent files (trust rules, sub-agent keys, and the merge that
+        # keeps a parent tracked while a sibling's hook rewrites the file).
+        from ccbot.session import WindowState, session_manager
+
+        monkeypatch.setitem(
+            session_manager.window_states,
+            "docker:assistant",
+            WindowState(session_id="docker-sid", cwd="/workspace"),
         )
         merged = await monitor._load_current_session_map()
         assert merged["@12"] == "tmux-sid"

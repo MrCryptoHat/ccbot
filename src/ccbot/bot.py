@@ -232,11 +232,14 @@ async def text_handler(
     if chat and chat.type in ("group", "supergroup"):
         session_manager.set_group_chat_id(user.id, thread_id, chat.id)
 
-    # Awaiting a worktree task name? Consume it and provision (returns True
-    # when handled, before any normal routing).
+    # Awaiting a worktree task name / a sibling agent's name? Consume it and
+    # provision (returns True when handled, before any normal routing).
+    from .handlers.siblings import consume_sibling_name
     from .handlers.worktrees import consume_worktree_name
 
     if await consume_worktree_name(update, context):
+        return
+    if await consume_sibling_name(update, context):
         return
 
     text = text_override or update.message.text
@@ -439,10 +442,10 @@ async def _forward_text_to_agent(
     if session_manager._is_docker_binding(wid):
         from .docker_driver import docker_driver
 
-        agent_name = wid[len("docker:") :]
-        agent = config.get_docker_agent(agent_name)
+        agent_name = session_manager.get_display_name(wid)
+        target = session_manager.resolve_docker_target(wid)
         container_alive = bool(
-            agent and await docker_driver.is_container_alive(agent.container)
+            target and await docker_driver.is_container_alive(target.agent.container)
         )
         if not container_alive:
             logger.info(

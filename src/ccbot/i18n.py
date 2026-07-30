@@ -434,6 +434,10 @@ STRINGS.update(
             "ru": "🌳 Worktree-агент",
             "en": "🌳 Worktree agent",
         },
+        "commands.btn_new_sibling": {
+            "ru": "➕ Ещё агент",
+            "en": "➕ One more agent",
+        },
         "commands.btn_restart": {"ru": "🔄 Перезапуск", "en": "🔄 Restart"},
         "commands.btn_resume": {"ru": "⏪ Продолжить", "en": "⏪ Resume"},
         "commands.btn_wipe_input": {"ru": "🧽 Стереть ввод", "en": "🧽 Wipe input"},
@@ -809,10 +813,61 @@ STRINGS.update(
             "ru": "👍 — отправил агенту «да»",
             "en": "👍 — sent «yes» to the agent",
         },
+        # -- agentdel --
+        "agentdel.confirm_tmux": {
+            "ru": "🗑 Удалить агента «{name}»?\n\nАгент остановится, а топик со всей перепиской удалится безвозвратно. Файлы в папке останутся; сам разговор агент помнит — новый агент в той же папке продолжит его через «⏪ Продолжить».",
+            "en": "🗑 Delete agent «{name}»?\n\nThe agent stops and the topic — with every message in it — is gone for good. Files in the folder stay; the agent's own history survives, so a new agent in that folder can pick it up with «⏪ Resume».",
+        },
+        "agentdel.confirm_sibling": {
+            "ru": "🗑 Удалить агента «{name}»?\n\nЭто соседний агент: он остановится, а топик со всей перепиской удалится безвозвратно. Общие файлы и соседние агенты не пострадают.",
+            "en": "🗑 Delete agent «{name}»?\n\nIt's a sibling agent: it stops, and the topic — with every message in it — is gone for good. The shared files and its neighbours are untouched.",
+        },
+        "agentdel.confirm_docker": {
+            "ru": "🗑 Удалить топик агента «{name}»?\n\nСам агент продолжит работать, но топик со всей перепиской удалится безвозвратно. Вернуть агента в чат: создать топик с именем «{name}».",
+            "en": "🗑 Delete agent «{name}»'s topic?\n\nThe agent itself keeps running, but the topic — with every message in it — is gone for good. To bring the agent back to the chat, create a topic named «{name}».",
+        },
+        "agentdel.ok": {"ru": "✅ Да, удалить", "en": "✅ Yes, delete"},
+        "agentdel.err_topic": {
+            "ru": "⚠️ Агент «{name}» остановлен, но удалить топик не вышло — у бота нет права удалять сообщения. Топик можно закрыть или удалить вручную.",
+            "en": "⚠️ Agent «{name}» is stopped, but the topic couldn't be deleted — the bot lacks the delete-messages right. Close or delete the topic by hand.",
+        },
+        # -- sib --
+        "sib.name_prompt": {
+            "ru": "➕ Ещё один агент рядом с {name}: те же файлы, но свой топик и своя переписка.\nПришли короткое название — оно станет именем топика.",
+            "en": "➕ One more agent beside {name}: the same files, but its own topic and its own conversation.\nSend a short name — it becomes the topic's name.",
+        },
+        "sib.no_parent": {
+            "ru": "Не удалось понять, рядом с каким агентом создавать нового",
+            "en": "Couldn't work out which agent to create this one beside",
+        },
+        "sib.err_hook": {
+            "ru": "контейнер агента «{name}» не умеет вести отдельные сессии для соседей: его хук подписывает их именем родителя. Как починить — docs/docker-agents.md, раздел про соседних агентов",
+            "en": "agent «{name}»'s container can't keep siblings apart: its hook labels them with the parent's name. How to fix it — docs/docker-agents.md, the sibling-agents section",
+        },
+        "sib.err_start": {
+            "ru": "не удалось запустить агента в контейнере",
+            "en": "couldn't start the agent in the container",
+        },
+        "sib.provision_ok": {
+            "ru": "Агент создан: {name}",
+            "en": "Agent created: {name}",
+        },
+        "sib.welcome_docker": {
+            "ru": "➕ Готово — ещё один агент рядом с {parent}, на тех же файлах.\nОн не видит переписку соседа, так что задачу опиши здесь 👇",
+            "en": "➕ Done — one more agent beside {parent}, on the same files.\nIt can't see its neighbour's chat, so describe the task here 👇",
+        },
+        "sib.welcome_tmux": {
+            "ru": "➕ Готово — ещё один агент в папке {path}.\nОн не видит переписку соседа, так что задачу опиши здесь 👇",
+            "en": "➕ Done — one more agent in {path}.\nIt can't see its neighbour's chat, so describe the task here 👇",
+        },
         # -- spoll --
         "spoll.agent_stopped": {
             "ru": "⚠️ Агент *{name}* остановлен. Окно будет закрыто через {grace}с. Используй /restart чтобы перезапустить.",
             "en": "⚠️ Agent *{name}* stopped. The window will be closed in {grace}s. Use /restart to restart it.",
+        },
+        "spoll.sibling_down": {
+            "ru": "💤 Агент «{name}» сейчас не запущен — например, перезапустился контейнер. Нажми «🔄 Перезапуск» в панели 👾 Агент, чтобы поднять его и продолжить разговор.",
+            "en": "💤 Agent «{name}» isn't running right now — its container may have restarted. Tap «🔄 Restart» in the 👾 Agent panel to bring it back and continue.",
         },
         "spoll.window_closed": {
             "ru": "💀 Окно *{name}* закрыто (агент не работал {secs}с).",

@@ -14,7 +14,7 @@ The bot operates exclusively in Telegram Forum (topics) mode. There is **no** `a
      (state.json)        + <agent>.session_map_path (per docker agent)
 ```
 
-Two binding shapes share the same string slot; `session_manager._is_docker_binding(value)` distinguishes them, and `resolve_binding(user, thread) → ("tmux"|"docker", target) | None` is the typed API. Tmux window IDs (`@0`, `@12`) are unique within a tmux server session; `window_display_names` holds display names for them. Docker binding values embed the agent name directly — no separate display map needed (the agent's configured name is the display name).
+Two binding shapes share the same string slot; `session_manager._is_docker_binding(value)` distinguishes them, and `resolve_binding(user, thread) → ("tmux"|"docker", target) | None` is the typed API. Tmux window IDs (`@0`, `@12`) are unique within a tmux server session; `window_display_names` holds display names for them. Docker binding values embed the agent name directly — no separate display map needed (the agent's configured name is the display name), except for **sibling agents** (`docker:<agent>/<slug>`, a second Claude in the same container), whose display name ccbot owns.
 
 ## Mapping 1: Topic → Binding value (thread_bindings)
 

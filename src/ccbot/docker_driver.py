@@ -11,6 +11,11 @@ long-lived Claude Code process. ccbot drives it via
     docker exec -e TERM=xterm-256color <container> \
         tmux send-keys / capture-pane -t claude ...
 
+Every primitive takes an optional ``session`` overriding that default —
+that's how **sub-agents** (``docker:<agent>/<slug>``) work: extra tmux
+sessions named ``claude-<slug>`` inside the SAME container, each with its
+own Claude Code process (see ``sub_tmux_session``).
+
 Pacing (200-char chunks, 0.5-1.5s post-text delay, 1s gap after ``!``)
 mirrors tmux_manager so Claude Code's TUI treats the paste and the
 Enter as separate events — same rule that makes tmux_manager work.
@@ -31,6 +36,25 @@ logger = logging.getLogger(__name__)
 # target it without per-agent config. Container entrypoints must create a
 # tmux session with this exact name.
 CONTAINER_TMUX_SESSION = "claude"
+
+# Sub-agents live in the same container under `claude-<slug>`. The prefix keeps
+# them recognisable in `tmux ls` and guarantees they never collide with the
+# entrypoint's own session (whose name has no suffix).
+SUB_SESSION_PREFIX = f"{CONTAINER_TMUX_SESSION}-"
+
+# Env var the container's SessionStart hook is expected to key its session_map
+# entry off (``{"docker:$AGENT_NAME": …}``). ccbot sets it per tmux session, so
+# a sub-agent's hook writes the sub's binding rather than clobbering the
+# parent's. A hook that hardcodes its name still works — the sub is tracked by
+# its pinned ``--session-id`` — but then the parent's key gets overwritten and
+# ``SessionManager._session_id_taken_by_other`` is what keeps the parent sane.
+AGENT_NAME_ENV = "AGENT_NAME"
+
+
+def sub_tmux_session(sub: str) -> str:
+    """In-container tmux session name for a sub-agent slug."""
+    return f"{SUB_SESSION_PREFIX}{sub}"
+
 
 # Session-id validation before we interpolate ``claude --resume <id>`` into the
 # argv handed to ``tmux new-session`` (which runs it through the container's
@@ -60,6 +84,33 @@ class DockerDriver:
 
     def __init__(self, tmux_session: str = CONTAINER_TMUX_SESSION) -> None:
         self.tmux_session = tmux_session
+
+    def _target(self, session: str | None) -> str:
+        """Which in-container tmux session a call addresses.
+
+        ``None`` = the agent's main session (the entrypoint's ``claude``);
+        a sub-agent passes its own ``claude-<slug>``.
+        """
+        return session or self.tmux_session
+
+    def _session_target(self, session: str | None) -> str:
+        """tmux *session* target, exact-matched.
+
+        The leading ``=`` disables tmux's prefix/fnmatch fallback. Without it
+        ``-t claude`` silently resolves to a sub-agent's ``claude-<slug>``
+        whenever the main session is gone — reporting a dead agent alive and
+        aiming kills/keys at a sibling.
+        """
+        return f"={self._target(session)}"
+
+    def _pane_target(self, session: str | None) -> str:
+        """tmux *pane* target (send-keys / capture-pane), exact-matched.
+
+        Pane targets need the trailing colon: ``=name`` alone is rejected as a
+        pane spec ("can't find pane"), ``=name:`` resolves to that session's
+        active pane.
+        """
+        return f"={self._target(session)}:"
 
     @staticmethod
     async def _run(
@@ -139,13 +190,15 @@ class DockerDriver:
             return False
         return out.strip() == b"true"
 
-    async def _send_literal(self, container: str, chars: str) -> bool:
+    async def _send_literal(
+        self, container: str, chars: str, session: str | None = None
+    ) -> bool:
         """Send literal text (no key interpretation) to the tmux pane."""
         argv = self._exec_prefix(container) + [
             "tmux",
             "send-keys",
             "-t",
-            self.tmux_session,
+            self._pane_target(session),
             "-l",
             # `--` so text starting with "-" isn't eaten as tmux flags.
             "--",
@@ -161,13 +214,15 @@ class DockerDriver:
             return False
         return True
 
-    async def _send_key(self, container: str, key: str) -> bool:
+    async def _send_key(
+        self, container: str, key: str, session: str | None = None
+    ) -> bool:
         """Send a named key (Enter, Escape, Up, …) to the tmux pane."""
         argv = self._exec_prefix(container) + [
             "tmux",
             "send-keys",
             "-t",
-            self.tmux_session,
+            self._pane_target(session),
             key,
         ]
         rc, _, stderr = await self._run(argv)
@@ -187,6 +242,7 @@ class DockerDriver:
         text: str,
         enter: bool = True,
         literal: bool = True,
+        session: str | None = None,
     ) -> bool:
         """Send text to the agent's tmux pane inside ``container``.
 
@@ -197,52 +253,67 @@ class DockerDriver:
         """
         if literal and enter:
             if text.startswith("!"):
-                if not await self._send_literal(container, "!"):
+                if not await self._send_literal(container, "!", session):
                     return False
                 rest = text[1:]
                 if rest:
                     await asyncio.sleep(1.0)
-                    if not await self._send_chunked_literal(container, rest):
+                    if not await self._send_chunked_literal(container, rest, session):
                         return False
             else:
-                if not await self._send_chunked_literal(container, text):
+                if not await self._send_chunked_literal(container, text, session):
                     return False
             delay = 1.5 if len(text) > _CHUNK_SIZE else 0.5
             await asyncio.sleep(delay)
-            return await self._send_key(container, "Enter")
+            return await self._send_key(container, "Enter", session)
 
         # Special-key or no-Enter paths.
         if literal:
-            return await self._send_literal(container, text)
-        return await self._send_key(container, text)
+            return await self._send_literal(container, text, session)
+        return await self._send_key(container, text, session)
 
-    async def _send_chunked_literal(self, container: str, text: str) -> bool:
+    async def _send_chunked_literal(
+        self, container: str, text: str, session: str | None = None
+    ) -> bool:
         for i in range(0, len(text), _CHUNK_SIZE):
             chunk = text[i : i + _CHUNK_SIZE]
-            if not await self._send_literal(container, chunk):
+            if not await self._send_literal(container, chunk, session):
                 return False
             if i + _CHUNK_SIZE < len(text):
                 await asyncio.sleep(0.1)
         return True
 
-    async def has_session(self, container: str) -> bool:
-        """Return True iff ``tmux has-session -t claude`` succeeds inside."""
+    async def has_session(self, container: str, session: str | None = None) -> bool:
+        """Return True iff ``tmux has-session -t <session>`` succeeds inside."""
         argv = self._exec_prefix(container) + [
             "tmux",
             "has-session",
             "-t",
-            self.tmux_session,
+            self._session_target(session),
         ]
         rc, _, _ = await self._run(argv)
         return rc == 0
 
-    async def kill_session(self, container: str) -> bool:
+    async def list_sessions(self, container: str) -> list[str]:
+        """Names of every tmux session inside the container (empty on error)."""
+        argv = self._exec_prefix(container) + [
+            "tmux",
+            "list-sessions",
+            "-F",
+            "#{session_name}",
+        ]
+        rc, out, _ = await self._run(argv)
+        if rc != 0:
+            return []
+        return [ln for ln in out.decode(errors="replace").split() if ln]
+
+    async def kill_session(self, container: str, session: str | None = None) -> bool:
         """Kill the agent's tmux session. Container itself stays up."""
         argv = self._exec_prefix(container) + [
             "tmux",
             "kill-session",
             "-t",
-            self.tmux_session,
+            self._session_target(session),
         ]
         rc, _, stderr = await self._run(argv)
         if rc != 0:
@@ -262,14 +333,28 @@ class DockerDriver:
         cwd: str = "/workspace",
         claude_cmd: str = "claude --dangerously-skip-permissions",
         resume_session_id: str | None = None,
+        session: str | None = None,
+        new_session_id: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> bool:
-        """(Re)create the agent's tmux session with Claude Code running inside.
+        """(Re)create a tmux session with Claude Code running inside.
 
         Matches the invocation container entrypoints use on boot so restart
         behavior stays consistent. ``resume_session_id`` appends
-        ``--resume <id>`` so the Claude process picks up the same JSONL.
+        ``--resume <id>`` so the Claude process picks up the same JSONL;
+        ``new_session_id`` instead PINS a brand-new session's id via
+        ``--session-id <uuid>`` — that's how a sub-agent is tracked without
+        depending on what key the container's hook happens to write.
+
+        ``env`` rides on tmux's ``-e`` (per-session environment, tmux ≥3.2):
+        the tmux *server* already runs, so plain ``docker exec -e`` would NOT
+        reach the spawned process — only the session environment does. Used to
+        hand a sub-agent its own ``AGENT_NAME`` so a hook that keys off it
+        writes the sub's binding, not the main agent's.
         """
         cmd = claude_cmd
+        # --resume and --session-id are mutually exclusive (resume carries its
+        # own id); resume wins — a restart of a live agent must keep the thread.
         if resume_session_id:
             if not is_valid_session_id(resume_session_id):
                 logger.error(
@@ -280,16 +365,26 @@ class DockerDriver:
                 )
             else:
                 cmd = f"{cmd} --resume {resume_session_id}"
+        elif new_session_id:
+            if not is_valid_session_id(new_session_id):
+                logger.error(
+                    "docker start_session: refusing malformed --session-id "
+                    "(container=%s, id=%r) — starting unpinned instead",
+                    container,
+                    new_session_id,
+                )
+            else:
+                cmd = f"{cmd} --session-id {new_session_id}"
         argv = self._exec_prefix(container) + [
             "tmux",
             "new-session",
             "-d",
             "-s",
-            self.tmux_session,
-            "-c",
-            cwd,
-            cmd,
+            self._target(session),
         ]
+        for key, value in (env or {}).items():
+            argv += ["-e", f"{key}={value}"]
+        argv += ["-c", cwd, cmd]
         rc, _, stderr = await self._run(argv)
         if rc != 0:
             logger.error(
@@ -301,10 +396,12 @@ class DockerDriver:
         # Restore the screenshot-friendly pane size — the new session would
         # otherwise inherit the in-container tmux default (80x24) and wrap
         # Claude Code's footer.
-        await self.ensure_pane_size(container, cols=100, rows=50)
+        await self.ensure_pane_size(container, cols=100, rows=50, session=session)
         return True
 
-    async def ensure_pane_size(self, container: str, cols: int, rows: int) -> None:
+    async def ensure_pane_size(
+        self, container: str, cols: int, rows: int, session: str | None = None
+    ) -> None:
         """Pin the in-container tmux pane size for screenshots.
 
         Same rationale as TmuxManager.ensure_session_pane_size: with no
@@ -331,7 +428,7 @@ class DockerDriver:
                 "tmux",
                 "resize-window",
                 "-t",
-                self.tmux_session,
+                self._session_target(session),
                 "-x",
                 str(cols),
                 "-y",
@@ -350,6 +447,7 @@ class DockerDriver:
         container: str,
         with_ansi: bool = False,
         scrollback_lines: int = 0,
+        session: str | None = None,
     ) -> str | None:
         """Return text of the agent's tmux pane, or None on error.
 
@@ -361,7 +459,7 @@ class DockerDriver:
             "capture-pane",
             "-p",
             "-t",
-            self.tmux_session,
+            self._pane_target(session),
         ]
         if with_ansi:
             argv.insert(-2, "-e")

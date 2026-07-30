@@ -172,6 +172,22 @@ async def _do_confirm(
         logger.info("Reaction confirm: thread %s has no binding, skipping", thread_id)
         return
     chat_id = session_manager.resolve_chat_id(user_id, tid)
+    # A 👍 can be the user's ONLY interaction in a topic (confirm, agent works,
+    # answers with a photo) — and a reply keyboard rides on messages, not on
+    # reactions. These notices are the reaction path's only messages, so the
+    # menu backstop hangs off them too, otherwise such a topic never gets it.
+    from .commands import pending_menu_markup
+
+    async def _notice(text: str) -> None:
+        # Resolved at send time: the pane capture and keypress above take
+        # seconds, and the queue worker may have delivered the menu meanwhile.
+        menu = pending_menu_markup(user_id, thread_id)
+        sent = await safe_send(
+            bot, chat_id, text, message_thread_id=tid, reply_markup=menu
+        )
+        if sent is not None and menu is not None:
+            session_manager.mark_menu_shown(user_id, thread_id)
+
     pane = await session_manager.capture_pane(binding)
     action, keys = decide_confirm_action(pane, session_manager.window_runtime(binding))
     logger.info(
@@ -191,7 +207,7 @@ async def _do_confirm(
             if not ok:
                 break
         if ok:
-            await safe_send(bot, chat_id, tr("rconf.confirmed"), message_thread_id=tid)
+            await _notice(tr("rconf.confirmed"))
         return
     if action == "type_yes":
         # Agent-directed word, keyed by UI language: an English deployment's
@@ -200,12 +216,7 @@ async def _do_confirm(
         confirm_word = {"ru": "да", "en": "yes"}.get(current_language(), "да")
         ok, _ = await session_manager.send_to_window(binding, confirm_word)
         if ok:
-            await safe_send(bot, chat_id, tr("rconf.sent_yes"), message_thread_id=tid)
+            await _notice(tr("rconf.sent_yes"))
         return
     # skip — agent busy or unavailable; tell the user the tap was seen.
-    await safe_send(
-        bot,
-        chat_id,
-        tr("rconf.agent_busy"),
-        message_thread_id=tid,
-    )
+    await _notice(tr("rconf.agent_busy"))

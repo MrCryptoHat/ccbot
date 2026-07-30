@@ -114,11 +114,20 @@ class TestDockerExecArgv:
         driver, calls = driver_with_spy
         await driver.send_keys("ctn", "x")
         for argv in calls:
-            # tmux -t <session> appears in both send-keys calls
+            # tmux -t <session> appears in both send-keys calls. `=name:` is
+            # the exact-match pane target — plain `claude` would prefix-match
+            # a sub-agent's `claude-<slug>` once the main session is gone.
             assert "tmux" in argv
             assert "-t" in argv
             ti = argv.index("-t")
-            assert argv[ti + 1] == "claude"
+            assert argv[ti + 1] == "=claude:"
+
+    async def test_sub_agent_session_is_targeted(self, driver_with_spy) -> None:
+        driver, calls = driver_with_spy
+        await driver.send_keys("ctn", "x", session="claude-notes")
+        for argv in calls:
+            ti = argv.index("-t")
+            assert argv[ti + 1] == "=claude-notes:"
 
 
 class TestSendKeysSimple:

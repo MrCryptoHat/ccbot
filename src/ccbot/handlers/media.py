@@ -18,6 +18,7 @@ from telegram.ext import ContextTypes
 
 from . import effective_user, get_thread_id, is_user_allowed, not_authorized_text
 from .delivery import deliver_user_text
+from .siblings import cancel_pending_naming
 from .message_sender import safe_reply, send_photo
 from .task_pin import pin_task_message, should_pin_task
 from ..config import config
@@ -115,9 +116,11 @@ def _inbound_save_path(wid: str, filename: str, default_dir: Path) -> tuple[Path
     Returns (host_path, marker_str).
     """
     if session_manager._is_docker_binding(wid):
-        agent = config.get_docker_agent(wid[len("docker:") :])
-        if agent:
-            host_dir = agent.workspace_host_path / _DOCKER_INBOX_DIRNAME
+        target = session_manager.resolve_docker_target(wid)
+        if target:
+            # Sub-agents share the parent's /workspace mount, so one .inbox
+            # serves every agent in the container.
+            host_dir = target.agent.workspace_host_path / _DOCKER_INBOX_DIRNAME
             host_dir.mkdir(parents=True, exist_ok=True)
             host_path = host_dir / filename
             marker = f"/workspace/{_DOCKER_INBOX_DIRNAME}/{filename}"
@@ -204,6 +207,10 @@ async def _deliver_media_text(
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle photos sent by the user: download and forward path to Claude Code."""
+    # A photo/voice message means the user moved on from a pending ➕
+    # "name your agent" step: it reaches the agent directly, so leaving
+    # the step armed would turn their next TYPED message into an agent.
+    cancel_pending_naming(context.user_data, get_thread_id(update))
     user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
@@ -290,6 +297,10 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle documents sent by the user: download and forward path to Claude Code."""
+    # A photo/voice message means the user moved on from a pending ➕
+    # "name your agent" step: it reaches the agent directly, so leaving
+    # the step armed would turn their next TYPED message into an agent.
+    cancel_pending_naming(context.user_data, get_thread_id(update))
     user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:
@@ -375,6 +386,10 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe via OpenAI and forward text to Claude Code."""
+    # A photo/voice message means the user moved on from a pending ➕
+    # "name your agent" step: it reaches the agent directly, so leaving
+    # the step armed would turn their next TYPED message into an agent.
+    cancel_pending_naming(context.user_data, get_thread_id(update))
     user = effective_user(update)
     if not user or not is_user_allowed(user.id):
         if update.message:

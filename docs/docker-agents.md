@@ -53,12 +53,15 @@ So the contract is small, but strict:
 
    ```sh
    #!/bin/sh
-   # /usr/local/bin/ccbot-session-hook — SessionStart hook for agent "assistant"
+   # /usr/local/bin/ccbot-session-hook — SessionStart hook
+   # AGENT_NAME comes from the container env; ccbot overrides it per tmux
+   # session so sibling agents (below) write their own key, not this one.
    payload=$(cat)
    sid=$(printf '%s' "$payload" | jq -r .session_id)
    cwd=$(printf '%s' "$payload" | jq -r .cwd)
-   jq -n --arg sid "$sid" --arg cwd "$cwd" \
-     '{"docker:assistant": {session_id:$sid, cwd:$cwd, window_name:"assistant"}}' \
+   name=${AGENT_NAME:-assistant}
+   jq -n --arg name "$name" --arg sid "$sid" --arg cwd "$cwd" \
+     '{("docker:" + $name): {session_id:$sid, cwd:$cwd, window_name:$name}}' \
      > /ipc/session-map.json.tmp && mv /ipc/session-map.json.tmp /ipc/session-map.json
    ```
 
@@ -111,6 +114,57 @@ Docker bindings survive ccbot/tmux restarts verbatim (no window id to go
 stale); their lifecycle is the container's. `/restart` from the agent panel
 kills and recreates the in-container tmux session, resuming the current
 Claude session.
+
+## Sibling agents in one container
+
+The agent panel's ➕ button starts **another** Claude Code beside the current
+one, in the same container, on the same `/workspace` — a second pair of hands
+on the same files, in its own Telegram topic. Naming a sibling `notes` under
+agent `assistant` gives:
+
+| | |
+| --- | --- |
+| binding | `docker:assistant/notes` |
+| topic | `➕ assistant-notes` |
+| in-container tmux session | `claude-notes` |
+| workspace, claude-home, session-map path | the parent agent's (shared) |
+
+ccbot creates it with the equivalent of
+
+```sh
+docker exec <ctn> tmux new-session -d -s claude-notes -e AGENT_NAME=assistant/notes \
+    -c /workspace "claude --dangerously-skip-permissions --session-id <uuid>"
+```
+
+Two details make this work with an unmodified container:
+
+- **`-e AGENT_NAME=...`** — the tmux *server* is already running, so `docker
+  exec -e` would not reach the new process; tmux's per-session environment
+  does. A hook that keys off `AGENT_NAME` (as above) therefore writes
+  `docker:assistant/notes` on its own. (Needs tmux ≥ 3.2 in the image for
+  `new-session -e`; on an older tmux the sibling simply fails to start.)
+- **`--session-id <uuid>`** — ccbot picks the session id up front, so the
+  sibling is tracked from its first second, with no wait on the hook.
+
+**Your hook must key off `AGENT_NAME`** for siblings to work. One that
+hardcodes its agent name reports the sibling's *every* session — its first
+`/clear` above all — under the parent's key, which would silently re-point the
+parent's topic at its child's transcript. ccbot checks for this right after
+starting a sibling: if the hook answers with the parent's key, the sibling is
+stopped and its topic removed again, and you get told to fix the hook instead
+of inheriting a trap. (Merging into the existing JSON rather than overwriting
+is also worth doing — ccbot tolerates the single-key rewrite, but the file then
+only ever shows whichever agent started last.)
+
+Lifecycle: unlike the container's own agent (which outlives its topic — that's
+the container's job), a sibling is ccbot-created and dies with its topic. Close
+the topic, delete it, or hit 🗑 in the panel and its `claude-<slug>` session is
+killed; `⏹ Завершить` leaves the binding so `🔄 Перезапуск` can revive it.
+Siblings show up in `/status` beside the configured agents.
+
+For parallel work on a **git repo** where the agents must not step on each
+other's edits, use 🌳 worktree agents instead — each gets its own branch and
+directory.
 
 ## Notes
 

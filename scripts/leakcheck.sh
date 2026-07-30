@@ -49,6 +49,20 @@ for d in "$HOME"/agents/*/ "$HOME"/projects/*/; do
     printf '%s\n' "$n" >>"$patterns"
 done
 
+# 2b. Docker-agent names from local .env. Their workspaces can live outside
+#     ~/agents (a mount, a custom DOCKER_AGENT_<N>_WORKSPACE), so the directory
+#     sweep above misses them — and an agent name is exactly as identifying as
+#     a project name. Same >=4 chars + already-public allowlist rules.
+for env in ./.env "$HOME/.ccbot/.env"; do
+    [ -f "$env" ] || continue
+    for n in $(sed -n 's/^DOCKER_AGENTS[[:space:]]*=[[:space:]]*//p' "$env" | tr ',' '\n' |
+        sed 's/^["'\'' ]*//;s/["'\'' ]*$//'); do
+        [ "${#n}" -ge 4 ] || continue
+        git grep -qiF "$n" "$base" -- 2>/dev/null && continue
+        printf '%s\n' "$n" >>"$patterns"
+    done
+done
+
 # 3. Secret/ID values from local .env files (never echoed anywhere).
 for env in ./.env "$HOME/.ccbot/.env"; do
     [ -f "$env" ] || continue

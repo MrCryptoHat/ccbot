@@ -64,6 +64,15 @@ CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
 # /status inline buttons
 CB_STATUS_REFRESH = "st:ref"
 
+# How much of a binding value may ride in a callback payload. Telegram caps
+# callback_data at 64 BYTES and the panel's longest prefix is `cm:cfm:restart:`
+# (15) — so 48 always fits. It is also the ceiling every binding value must
+# respect: the stale-panel guard compares the payload against the topic's
+# current binding, so a binding longer than this would be truncated into a
+# permanent mismatch and every panel button in that topic would answer
+# «панель устарела» (which is what a long sibling slug used to do).
+CALLBACK_WID_MAX = 48
+
 # Agent panel inline keyboard (cm: prefix). The panel has two tabs —
 # "nav" (raw key presses: arrows, Space, Tab, Esc, ^C, Enter, "/") and
 # "act" (session-level actions: Compact / Clear / Model / Mode / Restart
@@ -103,3 +112,13 @@ CB_WT_KEEP = "wt:keep:"  # wt:keep:<thread_id> — ↩ вернуть (reopen) �
 CB_WT_DEL = "wt:del:"  # wt:del:<window_id> — 🗑 удалить агента (panel button)
 CB_WT_DELOK = "wt:delok:"  # wt:delok:<thread_id> — confirm 🗑 delete
 CB_WT_DELNO = "wt:delno:"  # wt:delno:<window_id> — cancel 🗑 delete
+
+# Sibling agents (another agent beside this one, no worktree; handlers/siblings.py)
+CB_SIB_NEW = "sb:new:"  # sb:new:<window_id> — ➕ ещё агент рядом
+CB_SIB_CANCEL = "sb:abort:"  # sb:abort:<thread_id> — cancel that topic's name step
+
+# 🗑 delete agent + topic for a non-worktree topic (handlers/agent_delete.py;
+# worktree topics use the CB_WT_DEL* flow, which guards unmerged git work)
+CB_AGENT_DEL = "ad:del:"  # ad:del:<window_id> — 🗑 удалить агента
+CB_AGENT_DELOK = "ad:ok:"  # ad:ok:<thread_id> — confirm
+CB_AGENT_DELNO = "ad:no:"  # ad:no:<window_id> — cancel, restore the panel

@@ -54,7 +54,10 @@ from .callback_data import (
     CB_CMD_RESUME,
     CB_CMD_TAB,
     CB_CMD_WIPE_INPUT,
+    CALLBACK_WID_MAX,
+    CB_AGENT_DEL,
     CB_KEYS_PREFIX,
+    CB_SIB_NEW,
     CB_STATUS_REFRESH,
     CB_WT_DEL,
     CB_WT_NEW,
@@ -320,6 +323,21 @@ def menu_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=True,
     )
+
+
+def pending_menu_markup(
+    user_id: int, thread_id: int | None
+) -> ReplyKeyboardMarkup | None:
+    """The menu keyboard iff this topic hasn't been given it yet, else None.
+
+    Telegram scopes reply keyboards per forum topic and only a *message* can
+    carry one, so every path that may be the first thing ccbot posts into a
+    topic attaches this (agent replies, reaction-confirm notices). Callers
+    ``mark_menu_shown`` once the message is actually out.
+    """
+    if not thread_id or session_manager.is_menu_shown(user_id, thread_id):
+        return None
+    return menu_keyboard()
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -652,15 +670,21 @@ async def esc_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     keys = get_runtime(session_manager.window_runtime(wid)).interrupt_keys
     if session_manager._is_docker_binding(wid):
-        agent = config.get_docker_agent(wid[len("docker:") :])
-        if not agent or not await docker_driver.is_container_alive(agent.container):
+        target = session_manager.resolve_docker_target(wid)
+        if not target or not await docker_driver.is_container_alive(
+            target.agent.container
+        ):
             await safe_reply(update.message, tr("commands.container_not_running"))
             return
         for i, key in enumerate(keys):
             if i:
                 await asyncio.sleep(0.1)
             await docker_driver.send_keys(
-                agent.container, key, enter=False, literal=False
+                target.agent.container,
+                key,
+                enter=False,
+                literal=False,
+                session=target.tmux_session,
             )
     else:
         w = await tmux_manager.find_window_by_id(wid)
@@ -701,12 +725,15 @@ async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # For docker we kill the tmux session inside the container (Claude
         # dies with it). The container itself stays up — you'd use
         # `docker compose stop` for that. /restart re-spawns the session.
-        agent = config.get_docker_agent(wid[len("docker:") :])
-        if agent and await docker_driver.is_container_alive(agent.container):
-            await docker_driver.kill_session(agent.container)
+        target = session_manager.resolve_docker_target(wid)
+        if target and await docker_driver.is_container_alive(target.agent.container):
+            await docker_driver.kill_session(
+                target.agent.container, session=target.tmux_session
+            )
             logger.info(
-                "Kill command: killed tmux session in %s (user=%d, thread=%d)",
-                agent.container,
+                "Kill command: killed tmux session %s in %s (user=%d, thread=%d)",
+                target.tmux_session,
+                target.agent.container,
                 user.id,
                 thread_id,
             )
@@ -773,6 +800,34 @@ async def _build_status_text() -> str:
     return await asyncio.to_thread(_build_status_text_sync, windows)
 
 
+def _container_tmux_sessions(container: str) -> set[str]:
+    """tmux session names inside a container (empty set on any failure).
+
+    Sync sibling of ``docker_driver.list_sessions`` for the /status builder,
+    which already runs blocking `docker` calls in its worker thread.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                container,
+                "tmux",
+                "list-sessions",
+                "-F",
+                "#{session_name}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {line for line in result.stdout.split() if line}
+
+
 def _build_status_text_sync(windows: list) -> str:
     """Blocking body of /status — must be called via asyncio.to_thread."""
     warnings: list[str] = []
@@ -835,6 +890,32 @@ def _build_status_text_sync(windows: list) -> str:
                 (agent.name, st or tr("commands.status_not_started"))
             )
             warnings.append(f"агент {agent.name}")
+
+    # Sibling agents living inside those containers (docker:<agent>/<slug>):
+    # they exist as bound topics, not config entries, so the loop above can't
+    # see them. Alive = their own tmux session is up in the container — one
+    # `tmux ls` per container, not per agent. No warning when one is down:
+    # unlike a configured agent, a stopped sibling is usually the user's own
+    # «⏹ Завершить».
+    sessions_by_container: dict[str, set[str]] = {}
+    for binding in sorted(
+        {
+            value
+            for _, _, value in session_manager.iter_thread_bindings()
+            if session_manager.is_docker_sub_agent(value)
+        }
+    ):
+        target = session_manager.resolve_docker_target(binding)
+        if target is None:
+            continue
+        container = target.agent.container
+        if container not in sessions_by_container:
+            sessions_by_container[container] = _container_tmux_sessions(container)
+        name = session_manager.get_display_name(binding)
+        if target.tmux_session in sessions_by_container[container]:
+            alive_docker_agents.append(name)
+        else:
+            dead_docker_agents.append((name, tr("commands.status_stopped")))
 
     # Sort alive and dead independently — admin's spec is "живые α-сорт,
     # потом мёртвые α-сорт". Both groups mix tmux and docker entries; the
@@ -1173,7 +1254,9 @@ def _build_commands_keyboard(
     actions flip here first; confirm/cancel returns to the action's home
     tab (``_action_home_tab``).
     """
-    wid_short = window_id[:32]  # keep payload well under 64 bytes
+    # Truncated to the shared budget (callback_data caps at 64 bytes); the
+    # stale-panel guard truncates the same way, so a long binding still matches.
+    wid_short = window_id[:CALLBACK_WID_MAX]
 
     if confirming:
         # The full explanation of what each action does lives in the panel
@@ -1340,24 +1423,35 @@ def _build_commands_keyboard(
                 cmd_btn(tr("commands.btn_end"), CB_CMD_KILL),
             ]
         )
-        # 🌳 forks a sibling worktree agent — shown only when the runtime
-        # supports worktrees AND the topic can fork a repo (worktree topic, or
-        # cwd is a git repo). A plain non-repo folder / codex hides it rather
-        # than erroring on tap (session_manager.can_offer_worktree).
+        # Parallel-agent row. 🌳 forks a worktree agent (own branch+dir) —
+        # shown only when the runtime supports worktrees AND the topic can fork
+        # a repo (worktree topic, or cwd is a git repo). ➕ starts a sibling on
+        # the SAME files (same container / same directory) — no repo needed, so
+        # it also shows for docker agents and plain folders. Both hide rather
+        # than error on tap (session_manager.can_offer_*).
+        wt_row: list[InlineKeyboardButton] = []
         if session_manager.can_offer_worktree(window_id):
-            wt_row = [cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW)]
-            # Worktree topics also get an explicit instant delete (no waiting
-            # for the hard-delete probe) — on the SAME row as 🌳 to keep the tab
-            # within the row budget. The red confirm guards the adjacency.
-            if session_manager.is_worktree_window(window_id):
-                wt_row.append(
-                    cmd_btn(
-                        tr("commands.btn_delete_agent"),
-                        CB_WT_DEL,
-                        style=KeyboardButtonStyle.DANGER,
-                    )
-                )
+            wt_row.append(cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW))
+        if session_manager.can_offer_sibling(window_id):
+            wt_row.append(cmd_btn(tr("commands.btn_new_sibling"), CB_SIB_NEW))
+        if wt_row:
             body.append(wt_row)
+        # Explicit instant delete of agent + topic (no waiting for the
+        # hard-delete probe). Own row: the pair above already fills the width,
+        # and a red button crammed as a third label clips. Worktree topics use
+        # their own callback — that one weighs unmerged git work before it
+        # destroys anything; everything else goes through agent_delete.
+        body.append(
+            [
+                cmd_btn(
+                    tr("commands.btn_delete_agent"),
+                    CB_WT_DEL
+                    if session_manager.is_worktree_window(window_id)
+                    else CB_AGENT_DEL,
+                    style=KeyboardButtonStyle.DANGER,
+                )
+            ]
+        )
 
     return InlineKeyboardMarkup([tab_row, *body, refresh_row])
 
@@ -1524,16 +1618,22 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await safe_reply(update.message, tr("commands.restarting", name=agent_name))
 
     if session_manager._is_docker_binding(target_wid):
-        agent = config.get_docker_agent(target_wid[len("docker:") :])
-        if not agent or not await docker_driver.is_container_alive(agent.container):
+        target = session_manager.resolve_docker_target(target_wid)
+        if not target or not await docker_driver.is_container_alive(
+            target.agent.container
+        ):
             await safe_reply(update.message, tr("commands.container_not_running"))
             return
         # send_lock: no other writer may type into the pane mid-restart.
         async with session_manager.send_lock(target_wid):
-            await docker_driver.kill_session(agent.container)
+            await docker_driver.kill_session(
+                target.agent.container, session=target.tmux_session
+            )
             await asyncio.sleep(1)
-            started = await docker_driver.start_session(
-                agent.container, resume_session_id=session_id or None
+            started = await session_manager.start_docker_agent(
+                target_wid,
+                resume_session_id=session_id or None,
+                cwd=ws.cwd or "/workspace",
             )
         if not started:
             await safe_reply(
@@ -1542,7 +1642,9 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         await asyncio.sleep(5)
-        if await docker_driver.has_session(agent.container):
+        if await docker_driver.has_session(
+            target.agent.container, session=target.tmux_session
+        ):
             await safe_reply(update.message, tr("commands.restarted", name=agent_name))
         else:
             await safe_reply(
@@ -1616,6 +1718,12 @@ async def topic_closed_handler(
     wid = session_manager.get_window_for_thread(user.id, thread_id)
     if wid:
         display = session_manager.get_display_name(wid)
+        # A sibling agent inside a container has no host tmux window; its
+        # in-container session has to be killed explicitly or it survives its
+        # topic forever (nothing else can reach it).
+        from .siblings import teardown_sibling
+
+        await teardown_sibling(user.id, thread_id, wid)
         w = await tmux_manager.find_window_by_id(wid)
         if w:
             await tmux_manager.kill_window(w.window_id)

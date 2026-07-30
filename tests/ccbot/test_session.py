@@ -1,10 +1,11 @@
 """Tests for SessionManager pure dict operations."""
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
-from ccbot.session import SessionManager
+from ccbot.session import SessionManager, WindowState
 
 
 @pytest.fixture
@@ -1082,7 +1083,10 @@ class TestPerAgentSessionMapSpoof:
             json_mod.dumps(
                 {
                     "docker:assistant": {
-                        "session_id": "own-sid",
+                        # Long enough to pass is_valid_session_id — a malformed
+                        # id is dropped now (it would be interpolated into the
+                        # transcript path).
+                        "session_id": "own-sid-0001",
                         "cwd": "/workspace",
                         "window_name": "assistant",
                     },
@@ -1102,7 +1106,7 @@ class TestPerAgentSessionMapSpoof:
 
         await mgr.load_session_map()
 
-        assert mgr.window_states["docker:assistant"].session_id == "own-sid"
+        assert mgr.window_states["docker:assistant"].session_id == "own-sid-0001"
         assert "docker:admin" not in mgr.window_states
 
 
@@ -1287,3 +1291,386 @@ class TestSendComposerImage:
         tm.find_window_by_id = AsyncMock(return_value=None)
         monkeypatch.setattr(sess, "tmux_manager", tm)
         assert await mgr.send_composer_image("@9", "/tmp/x.png", "cap") is False
+
+
+class TestDockerSubAgents:
+    """Sub-agents: ``docker:<agent>/<slug>`` — a second Claude Code in the SAME
+    container. They share the parent's container, /workspace mount and
+    claude-home; only the in-container tmux session differs.
+    """
+
+    @pytest.fixture
+    def agent(self, monkeypatch):
+        from pathlib import Path
+
+        from ccbot import session as session_mod
+        from ccbot.config import DockerAgentConfig
+
+        cfg = DockerAgentConfig(
+            name="assistant",
+            container="assistant-ctn",
+            workspace_host_path=Path("/tmp/ws"),
+            claude_home_host_path=Path("/tmp/ch"),
+            ipc_dir=Path("/tmp/ipc"),
+            session_map_path=Path("/tmp/sm.json"),
+        )
+        monkeypatch.setattr(session_mod.config, "docker_agents_enabled", True)
+        monkeypatch.setattr(session_mod.config, "docker_agents", [cfg])
+        return cfg
+
+    def test_split_main_binding(self) -> None:
+        assert SessionManager.split_docker_binding("docker:assistant") == (
+            "assistant",
+            None,
+        )
+
+    def test_split_sub_binding(self) -> None:
+        assert SessionManager.split_docker_binding("docker:assistant/fitness") == (
+            "assistant",
+            "fitness",
+        )
+
+    def test_split_rejects_bad_slug(self) -> None:
+        # The slug lands in a tmux session name and a session_map key written
+        # from inside the container — anything off-shape is refused outright.
+        for bad in (
+            "docker:assistant/",
+            "docker:assistant/-x",
+            "docker:assistant/A B",
+            "docker:/x",
+        ):
+            assert SessionManager.split_docker_binding(bad) is None
+
+    def test_split_non_docker(self) -> None:
+        assert SessionManager.split_docker_binding("@12") is None
+
+    def test_is_sub_agent(self, mgr: SessionManager) -> None:
+        assert mgr.is_docker_sub_agent("docker:assistant/fitness") is True
+        assert mgr.is_docker_sub_agent("docker:assistant") is False
+        assert mgr.is_docker_sub_agent("@12") is False
+
+    def test_resolve_target_main(self, mgr: SessionManager, agent) -> None:
+        target = mgr.resolve_docker_target("docker:assistant")
+        assert target is not None
+        assert target.agent is agent and target.tmux_session == "claude"
+        assert target.sub is None
+
+    def test_resolve_target_sub_shares_agent(self, mgr: SessionManager, agent) -> None:
+        target = mgr.resolve_docker_target("docker:assistant/fitness")
+        assert target is not None
+        assert target.agent is agent  # same container, workspace, claude-home
+        assert target.tmux_session == "claude-fitness"
+        assert target.sub == "fitness"
+
+    def test_resolve_target_unknown_agent(self, mgr: SessionManager, agent) -> None:
+        assert mgr.resolve_docker_target("docker:nope/x") is None
+
+    async def test_send_routes_to_sub_session(
+        self, mgr: SessionManager, agent, monkeypatch
+    ) -> None:
+        from ccbot import session as session_mod
+
+        sends: list[dict] = []
+
+        async def fake_send(container, text, **kw):
+            sends.append({"container": container, "text": text, **kw})
+            return True
+
+        monkeypatch.setattr(session_mod.docker_driver, "send_keys", fake_send)
+        monkeypatch.setattr(
+            session_mod.docker_driver,
+            "is_container_alive",
+            AsyncMock(return_value=True),
+        )
+        ok, _ = await mgr.send_to_window("docker:assistant/fitness", "hi")
+        assert ok is True
+        assert sends[0]["container"] == "assistant-ctn"
+        assert sends[0]["session"] == "claude-fitness"
+
+    async def test_kill_targets_only_the_sub_session(
+        self, mgr: SessionManager, agent, monkeypatch
+    ) -> None:
+        from ccbot import session as session_mod
+
+        killed: list[dict] = []
+
+        async def fake_kill(container, session=None):
+            killed.append({"container": container, "session": session})
+            return True
+
+        monkeypatch.setattr(session_mod.docker_driver, "kill_session", fake_kill)
+        monkeypatch.setattr(
+            session_mod.docker_driver,
+            "is_container_alive",
+            AsyncMock(return_value=True),
+        )
+        assert await mgr.kill_agent("docker:assistant/fitness") is True
+        # NOT the container's main `claude` session — that would take the
+        # parent agent down with the sibling.
+        assert killed == [{"container": "assistant-ctn", "session": "claude-fitness"}]
+
+    def test_file_marker_maps_to_parent_workspace(
+        self, mgr: SessionManager, agent
+    ) -> None:
+        from pathlib import Path
+
+        got = mgr.resolve_agent_file_path(
+            "docker:assistant/fitness", "/workspace/a.txt"
+        )
+        assert got == Path("/tmp/ws/a.txt")
+        # The whitelist stays just as strict for a sub-agent.
+        assert (
+            mgr.resolve_agent_file_path("docker:assistant/fitness", "/auth/x") is None
+        )
+
+    def test_projects_root_is_the_parents(self, mgr: SessionManager, agent) -> None:
+        from pathlib import Path
+
+        assert mgr._projects_root_for_binding("docker:assistant/fitness") == Path(
+            "/tmp/ch/projects"
+        )
+
+    async def test_start_pins_session_and_names_the_agent(
+        self, mgr: SessionManager, agent, monkeypatch
+    ) -> None:
+        from ccbot import session as session_mod
+
+        started: list[dict] = []
+
+        async def fake_start(container, **kw):
+            started.append({"container": container, **kw})
+            return True
+
+        monkeypatch.setattr(session_mod.docker_driver, "start_session", fake_start)
+        monkeypatch.setattr(
+            session_mod.docker_driver,
+            "is_container_alive",
+            AsyncMock(return_value=True),
+        )
+        sid = "11111111-2222-3333-4444-555555555555"
+        ok = await mgr.start_docker_agent(
+            "docker:assistant/fitness", new_session_id=sid
+        )
+        assert ok is True
+        call = started[0]
+        assert call["session"] == "claude-fitness"
+        assert call["new_session_id"] == sid
+        # The per-session AGENT_NAME is what makes the container's hook write
+        # THIS binding's key instead of the parent's.
+        assert call["env"] == {"AGENT_NAME": "assistant/fitness"}
+        # Pinned id is recorded at once — no waiting on the hook.
+        assert mgr.window_states["docker:assistant/fitness"].session_id == sid
+
+    async def test_taken_slugs_merges_bindings_and_container(
+        self, mgr: SessionManager, agent, monkeypatch
+    ) -> None:
+        from ccbot import session as session_mod
+
+        mgr.bind_thread(100, 1, "docker:assistant/bound")
+        monkeypatch.setattr(
+            session_mod.docker_driver,
+            "list_sessions",
+            AsyncMock(return_value=["claude", "claude-live", "other"]),
+        )
+        taken = await mgr.taken_sub_slugs("assistant")
+        assert taken == {"bound", "live"}
+
+    def test_can_offer_sibling(self, mgr: SessionManager, agent) -> None:
+        from ccbot.session import WindowState
+
+        assert mgr.can_offer_sibling("docker:assistant") is True
+        mgr.window_states["@1"] = WindowState(cwd="/home/u/p")
+        assert mgr.can_offer_sibling("@1") is True
+        # A hookless runtime resolves its transcript by cwd — two of its
+        # windows on one directory would mirror each other.
+        mgr.window_states["@2"] = WindowState(cwd="/home/u/p", runtime="codex")
+        assert mgr.can_offer_sibling("@2") is False
+        # Nothing known about the window → nothing to clone.
+        assert mgr.can_offer_sibling("@3") is False
+
+    def test_forget_binding_drops_state(self, mgr: SessionManager) -> None:
+        from ccbot.session import WindowState
+
+        mgr.window_states["docker:assistant/fitness"] = WindowState(session_id="s")
+        mgr.window_display_names["docker:assistant/fitness"] = "assistant-fitness"
+        mgr.forget_binding("docker:assistant/fitness")
+        assert "docker:assistant/fitness" not in mgr.window_states
+        assert "docker:assistant/fitness" not in mgr.window_display_names
+
+    def test_docker_session_map_only_docker_rows(self, mgr: SessionManager) -> None:
+        from ccbot.session import WindowState
+
+        mgr.window_states["@1"] = WindowState(session_id="tmux-sid")
+        mgr.window_states["docker:assistant"] = WindowState(session_id="main-sid")
+        mgr.window_states["docker:assistant/fitness"] = WindowState(
+            session_id="sub-sid"
+        )
+        mgr.window_states["docker:assistant/empty"] = WindowState()
+        assert mgr.docker_session_map() == {
+            "docker:assistant": "main-sid",
+            "docker:assistant/fitness": "sub-sid",
+        }
+
+
+class TestSubAgentSessionMapIngestion:
+    """The per-agent map file is written INSIDE the container (untrusted) and
+    is typically rewritten whole with a single key. Both facts shape what
+    load_session_map accepts and what it is allowed to forget.
+    """
+
+    @pytest.fixture
+    def mgr_with_agent(self, mgr, tmp_path, monkeypatch):
+        from ccbot import session as session_mod
+        from ccbot.config import DockerAgentConfig
+
+        cfg = DockerAgentConfig(
+            name="assistant",
+            container="assistant-ctn",
+            workspace_host_path=tmp_path / "ws",
+            claude_home_host_path=tmp_path / "ch",
+            ipc_dir=tmp_path / "ipc",
+            session_map_path=tmp_path / "sm.json",
+        )
+        monkeypatch.setattr(session_mod.config, "docker_agents_enabled", True)
+        monkeypatch.setattr(session_mod.config, "docker_agents", [cfg])
+        monkeypatch.setattr(session_mod.config, "active_docker_agents", lambda: [cfg])
+        monkeypatch.setattr(
+            session_mod.config, "session_map_file", tmp_path / "main-map.json"
+        )
+        return mgr, cfg
+
+    async def test_sub_key_is_accepted_for_a_known_sibling(
+        self, mgr_with_agent
+    ) -> None:
+        mgr, cfg = mgr_with_agent
+        # ccbot created this sibling, so the row exists before the hook fires.
+        mgr.window_states["docker:assistant/fitness"] = WindowState(
+            session_id="sub-sid-0001", cwd="/workspace"
+        )
+        cfg.session_map_path.write_text(
+            json.dumps(
+                {
+                    "docker:assistant/fitness": {
+                        "session_id": "sub-sid-0002",
+                        "cwd": "/workspace",
+                    }
+                }
+            )
+        )
+        await mgr.load_session_map()
+        assert (
+            mgr.window_states["docker:assistant/fitness"].session_id == "sub-sid-0002"
+        )
+
+    async def test_unknown_sub_key_is_ignored(self, mgr_with_agent) -> None:
+        """Only ccbot creates siblings. A sub key it never heard of is a
+        container inventing rows — and docker rows are exempt from the stale
+        sweep, so they would accumulate (and keep dead sessions monitored)."""
+        mgr, cfg = mgr_with_agent
+        cfg.session_map_path.write_text(
+            json.dumps(
+                {
+                    f"docker:assistant/ghost{i}": {
+                        "session_id": f"ghost-sid-{i:04d}",
+                        "cwd": "/workspace",
+                    }
+                    for i in range(5)
+                }
+            )
+        )
+        await mgr.load_session_map()
+        assert not [k for k in mgr.window_states if k.startswith("docker:assistant/")]
+
+    async def test_malformed_session_id_is_ignored(self, mgr_with_agent) -> None:
+        """The id lands in `<projects>/<cwd>/<id>.jsonl` — a path-shaped value
+        would read a transcript outside the agent's own claude-home."""
+        mgr, cfg = mgr_with_agent
+        cfg.session_map_path.write_text(
+            json.dumps(
+                {
+                    "docker:assistant": {
+                        "session_id": "../../../elsewhere/00000000-1111-2222",
+                        "cwd": "/workspace",
+                    }
+                }
+            )
+        )
+        await mgr.load_session_map()
+        assert "docker:assistant" not in mgr.window_states
+
+    async def test_another_agents_key_is_rejected(self, mgr_with_agent) -> None:
+        mgr, cfg = mgr_with_agent
+        cfg.session_map_path.write_text(
+            json.dumps({"docker:other/x": {"session_id": "spoof", "cwd": "/workspace"}})
+        )
+        await mgr.load_session_map()
+        assert "docker:other/x" not in mgr.window_states
+
+    async def test_parent_key_cannot_steal_a_subs_session(self, mgr_with_agent) -> None:
+        """A container hook that hardcodes its agent name reports the SUB's
+        session under the PARENT's key — which would re-point the parent topic
+        at its child's transcript."""
+        mgr, cfg = mgr_with_agent
+        mgr.window_states["docker:assistant/fitness"] = WindowState(
+            session_id="sub-sid-0001", cwd="/workspace"
+        )
+        mgr.window_states["docker:assistant"] = WindowState(
+            session_id="main-sid-001", cwd="/workspace"
+        )
+        cfg.session_map_path.write_text(
+            json.dumps(
+                {"docker:assistant": {"session_id": "sub-sid", "cwd": "/workspace"}}
+            )
+        )
+        await mgr.load_session_map()
+        assert mgr.window_states["docker:assistant"].session_id == "main-sid-001"
+
+    async def test_docker_rows_survive_a_map_that_lost_them(
+        self, mgr_with_agent
+    ) -> None:
+        """Sibling started → the hook rewrote the file with only ITS key. The
+        parent must stay tracked; absence in that file proves nothing."""
+        mgr, cfg = mgr_with_agent
+        mgr.window_states["docker:assistant"] = WindowState(
+            session_id="main-sid-001", cwd="/workspace"
+        )
+        mgr.window_states["docker:assistant/fitness"] = WindowState(
+            session_id="sub-sid-0001", cwd="/workspace"
+        )
+        cfg.session_map_path.write_text(
+            json.dumps(
+                {
+                    "docker:assistant/fitness": {
+                        "session_id": "sub-sid-0002",
+                        "cwd": "/workspace",
+                    }
+                }
+            )
+        )
+        await mgr.load_session_map()
+        assert mgr.window_states["docker:assistant"].session_id == "main-sid-001"
+        assert (
+            mgr.window_states["docker:assistant/fitness"].session_id == "sub-sid-0002"
+        )
+
+    async def test_sub_display_name_is_not_overwritten_by_the_hook(
+        self, mgr_with_agent
+    ) -> None:
+        mgr, cfg = mgr_with_agent
+        mgr.window_states["docker:assistant/fitness"] = WindowState(cwd="/workspace")
+        mgr.window_display_names["docker:assistant/fitness"] = "assistant-fitness"
+        cfg.session_map_path.write_text(
+            json.dumps(
+                {
+                    "docker:assistant/fitness": {
+                        "session_id": "sub-sid-0003",
+                        "cwd": "/workspace",
+                        "window_name": "assistant/fitness",
+                    }
+                }
+            )
+        )
+        await mgr.load_session_map()
+        assert (
+            mgr.window_display_names["docker:assistant/fitness"] == "assistant-fitness"
+        )
