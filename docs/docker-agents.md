@@ -46,10 +46,19 @@ So the contract is small, but strict:
    (`docker exec -it <ctn> claude`) and the credentials persist in that mount.
 
 4. **A `SessionStart` hook inside the container writes the agent's
-   session map** to a bind-mounted host file, keyed by the binding value
-   (`docker:<agent>` — the key *is* the binding). Without it the monitor never
-   learns the session id and replies won't be delivered. Minimal example
-   (container-side, requires `jq`; `/ipc` bind-mounted from the host):
+   session map** into a bind-mounted host **directory**, keyed by the binding
+   value (`docker:<agent>` — the key *is* the binding). Without it the monitor
+   never learns the session id and replies won't be delivered.
+
+   ⚠ **Mount the directory, never the map file itself.** A file bind-mount is
+   pinned to the inode, so any host-side write that *replaces* the file
+   (atomic tmp+rename, an editor, a backup restore) leaves the container
+   writing into an orphaned inode while ccbot keeps reading a frozen copy.
+   Nothing looks broken — the container is healthy, the hook succeeds, the
+   agent just stops being heard from.
+
+   Minimal example (container-side, requires `jq`; `/ipc` bind-mounted from
+   the host as a directory):
 
    ```sh
    #!/bin/sh
@@ -88,8 +97,14 @@ Per-agent paths default to the layout below; override any of them with
 | container   | `<name>` (container name)                  | —                       |
 | workspace   | `~/agents/<name>`                          | `/workspace`            |
 | claude_home | `~/.local/share/<name>/claude-home`        | `~/.claude`             |
-| session_map | `~/.local/share/<name>/session-map.json`   | wherever your hook writes (e.g. `/ipc/session-map.json`) |
+| session_map | `~/.local/share/<name>/hostmap/session-map.json` | wherever your hook writes (e.g. `/ipc/session-map.json`) |
 | ipc         | `~/.local/share/<name>/ipc`                | `/ipc` (optional — live browser dashboard) |
+
+**Upgrading from before 2026-08-16:** the `session_map` default used to be
+`~/.local/share/<name>/session-map.json` (no `hostmap/`). Either move the file
+into `hostmap/` and switch the container to mounting that directory, or pin the
+old path with `DOCKER_AGENT_<NAME>_SESSION_MAP`. ccbot does **not** fall back to
+the old path — an unmigrated agent goes quiet without an error.
 
 A matching `docker run` skeleton:
 
@@ -97,12 +112,14 @@ A matching `docker run` skeleton:
 docker run -d --name assistant \
   -v ~/agents/assistant:/workspace \
   -v ~/.local/share/assistant/claude-home:/root/.claude \
+  -v ~/.local/share/assistant/hostmap:/host \
   -v ~/.local/share/assistant/ipc:/ipc \
   your-claude-image
 ```
 
-(with `session_map` pointed at the ipc mount:
-`DOCKER_AGENT_ASSISTANT_SESSION_MAP=~/.local/share/assistant/ipc/session-map.json`.)
+(that hook writes `/host/session-map.json`; point it at the ipc mount instead
+with `DOCKER_AGENT_ASSISTANT_SESSION_MAP=~/.local/share/assistant/ipc/session-map.json`
+if you'd rather keep one mount.)
 
 ## Binding a topic
 

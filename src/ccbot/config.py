@@ -140,7 +140,16 @@ def _parse_docker_agents(env: Mapping[str, str], home: Path) -> list[DockerAgent
       workspace    = ~/agents/<name>
       claude_home  = ~/.local/share/<name>/claude-home
       ipc          = ~/.local/share/<name>/ipc
-      session_map  = ~/.local/share/<name>/session-map.json
+      session_map  = ~/.local/share/<name>/hostmap/session-map.json
+
+    The session map sits in its own ``hostmap/`` directory so the container
+    can bind-mount that DIRECTORY rather than the file. A file bind-mount is
+    pinned to the inode: any host-side write that replaces the file (atomic
+    tmp+rename, an editor, a backup restore) leaves the container writing
+    into an orphaned inode while ccbot reads a frozen copy — a healthy-looking
+    container whose agent silently stops delivering. Was
+    ``~/.local/share/<name>/session-map.json`` before 2026-08-16; deployments
+    on the old layout must set ``DOCKER_AGENT_<NAME>_SESSION_MAP`` explicitly.
 
     Any of these can still be overridden per-agent via
     ``DOCKER_AGENT_<NAME>_{CONTAINER,WORKSPACE,CLAUDE_HOME,IPC,SESSION_MAP}``
@@ -174,7 +183,7 @@ def _parse_docker_agents(env: Mapping[str, str], home: Path) -> list[DockerAgent
             home / ".local" / "share" / name / "ipc"
         )
         session_map = env.get(f"DOCKER_AGENT_{key}_SESSION_MAP") or str(
-            home / ".local" / "share" / name / "session-map.json"
+            home / ".local" / "share" / name / "hostmap" / "session-map.json"
         )
         vnc_url = env.get(f"DOCKER_AGENT_{key}_VNC_URL", "").strip() or None
         agents.append(

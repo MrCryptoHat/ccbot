@@ -187,9 +187,12 @@ class TestParseDockerAgents:
             == home / ".local" / "share" / "assistant" / "claude-home"
         )
         assert a.ipc_dir == home / ".local" / "share" / "assistant" / "ipc"
+        # hostmap/ subdir, not the bare file: the container bind-mounts the
+        # DIRECTORY so a host-side file replacement can't orphan the inode
+        # the container writes to (see _parse_docker_agents docstring).
         assert (
             a.session_map_path
-            == home / ".local" / "share" / "assistant" / "session-map.json"
+            == home / ".local" / "share" / "assistant" / "hostmap" / "session-map.json"
         )
 
     def test_hyphenated_name_normalizes_env_key(self) -> None:
