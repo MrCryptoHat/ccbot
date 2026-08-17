@@ -1891,7 +1891,13 @@ def _find_matching_dir_for_topic(name: str) -> Path | None:
         # and the session lookup misses. Always bind to the name as it is
         # actually spelled on disk.
         case_fold_match: Path | None = None
-        for entry in sorted(parent_dir.iterdir()):
+        try:
+            entries = sorted(parent_dir.iterdir())
+        except OSError:
+            # Unreadable root (odd permissions, a stale network mount): skip
+            # it rather than propagate — the caller falls back to the browser.
+            continue
+        for entry in entries:
             ename = entry.name
             # Skip dotfiles and infra dirs (_docker, _tools, _plans).
             if ename.startswith(".") or ename.startswith("_"):

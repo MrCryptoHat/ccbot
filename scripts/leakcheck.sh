@@ -33,20 +33,35 @@ range="$base..HEAD"
 patterns="$(mktemp)"
 trap 'rm -f "$patterns"' EXIT
 
-# 1. Real home path.
+# 1. Real home path. Both spellings: $HOME is the truth (macOS homes are
+#    /Users/<user>, so the /home/<user> guess matched nothing there and this
+#    leg silently checked for a string that cannot occur), and the literal
+#    /home/<user> still covers a Linux path pasted in from elsewhere.
+printf '%s\n' "$HOME" >>"$patterns"
 printf '/home/%s\n' "$(id -un)" >>"$patterns"
 
 # 2. Deployment agent/project names (word-ish, >=4 chars to avoid noise),
 #    minus this repo's own name and names the public tree already uses.
+#    Roots follow CCBOT_TOPIC_DIR_ROOTS — a deployment that keeps its clones
+#    in ~/dev is exactly as identifying as one using the default ~/projects.
 self="$(basename "$(git rev-parse --show-toplevel)")"
-for d in "$HOME"/agents/*/ "$HOME"/projects/*/; do
-    [ -d "$d" ] || continue
-    n="$(basename "$d")"
-    case "$n" in "$self" | _* | mnt | node_modules) continue ;; esac
-    [ "${#n}" -ge 4 ] || continue
-    # Already in the public tree at base → evidently not treated as private.
-    git grep -qiF "$n" "$base" -- 2>/dev/null && continue
-    printf '%s\n' "$n" >>"$patterns"
+roots="projects agents"
+for env in ./.env "$HOME/.ccbot/.env"; do
+    [ -f "$env" ] || continue
+    extra="$(sed -n 's/^CCBOT_TOPIC_DIR_ROOTS[[:space:]]*=[[:space:]]*//p' "$env" |
+        tr ',' ' ' | tr -d '"'\''')"
+    [ -n "$extra" ] && roots="$roots $extra"
+done
+for root in $roots; do
+    for d in "$HOME/$root"/*/; do
+        [ -d "$d" ] || continue
+        n="$(basename "$d")"
+        case "$n" in "$self" | _* | mnt | node_modules) continue ;; esac
+        [ "${#n}" -ge 4 ] || continue
+        # Already in the public tree at base → evidently not treated as private.
+        git grep -qiF "$n" "$base" -- 2>/dev/null && continue
+        printf '%s\n' "$n" >>"$patterns"
+    done
 done
 
 # 2b. Docker-agent names from local .env. Their workspaces can live outside
@@ -64,11 +79,25 @@ for env in ./.env "$HOME/.ccbot/.env"; do
 done
 
 # 3. Secret/ID values from local .env files (never echoed anywhere).
+#    awk, not `sed -n 's/^[A-Za-z_]*\(TOKEN\|...\)=//p'`: that BRE needs the
+#    prefix star to give characters BACK so the alternation can match, which
+#    GNU sed does and BSD sed does not. On macOS it matched nothing, so THE
+#    SECRET LEG OF THIS GATE SILENTLY CHECKED NOTHING while still exiting 0.
 for env in ./.env "$HOME/.ccbot/.env"; do
     [ -f "$env" ] || continue
-    sed -n 's/^[A-Za-z_]*\(TOKEN\|KEY\|SECRET\|USERS\|CHAT_ID\|_ID\)[[:space:]]*=[[:space:]]*//p' "$env" |
-        tr ',' '\n' | sed 's/^["'\'' ]*//;s/["'\'' ]*$//' |
-        awk 'length($0)>=6' >>"$patterns"
+    awk -F= '
+        /^[A-Za-z_]+[[:space:]]*=/ {
+            key = $1
+            sub(/[[:space:]]+$/, "", key)
+            if (key !~ /(TOKEN|KEY|SECRET|USERS|CHAT_ID|_ID)$/) next
+            value = substr($0, index($0, "=") + 1)
+            n = split(value, parts, ",")
+            for (i = 1; i <= n; i++) {
+                gsub(/^[["'\''[:space:]]+|[]"'\''[:space:]]+$/, "", parts[i])
+                if (length(parts[i]) >= 6) print parts[i]
+            }
+        }
+    ' "$env" >>"$patterns"
 done
 
 [ -s "$patterns" ] || exit 0
