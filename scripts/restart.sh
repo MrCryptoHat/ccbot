@@ -54,10 +54,22 @@ bot_pids() {
     # restarting repo A must not SIGINT repo B's bot. Installs that can't be
     # attributed to any repo (pipx / uv tool / PATH) keep the legacy
     # match-everything behavior.
+    #
+    # Both facts come from /proc on Linux and from `ps` on macOS/BSD, which
+    # has no /proc: reading it unconditionally made this loop print an error
+    # per pid on macOS AND silently drop both guards — every match looked
+    # unattributable, i.e. fair game to SIGINT.
     local pid cmdline
     for pid in $(pgrep -f "$BOT_PATTERN" 2>/dev/null || true); do
-        grep -q docker "/proc/$pid/cgroup" 2>/dev/null && continue
-        cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+        if [ -r "/proc/$pid/cgroup" ]; then
+            grep -q docker "/proc/$pid/cgroup" 2>/dev/null && continue
+            cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+        else
+            # No /proc. Docker containers don't share a pid namespace with a
+            # macOS host at all (they live in the VM), so there is nothing to
+            # exclude here — only the checkout attribution matters.
+            cmdline="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+        fi
         case "$cmdline" in
             *"$PROJECT_DIR/.venv/bin/ccbot"*) ;;   # this repo's instance
             *"/.venv/bin/ccbot"*) continue ;;      # another checkout's — leave it alone
