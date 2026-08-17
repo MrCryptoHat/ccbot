@@ -1878,21 +1878,32 @@ def _find_matching_dir_for_topic(name: str) -> Path | None:
     lname = name.lower()
     for parent in _TOPIC_DIR_PARENTS:
         parent_dir = home / parent
-        # Exact match first (fast path, original behavior).
-        exact = parent_dir / name
-        if exact.is_dir():
-            return exact
-        # Case-insensitive fallback: topic names are often capitalized
-        # ("VPN", "Ccbot") while the folder is lowercase. Still skip infra
-        # dirs (dotfiles / underscore-prefixed).
         if not parent_dir.is_dir():
             continue
+        # One scan, exact match preferred over a case-folded one. Testing
+        # (parent_dir / name).is_dir() as a fast path instead looks harmless
+        # and is not: on a case-INSENSITIVE filesystem (APFS and HFS+ by
+        # default, i.e. most Macs) it answers True for "CCBOT" when the
+        # folder on disk is "ccbot", and hands back the caller's spelling.
+        # That path then becomes the pane's cwd, and Claude Code derives its
+        # project directory from the cwd STRING — so the same folder gets two
+        # different transcript homes depending on how the topic was spelled,
+        # and the session lookup misses. Always bind to the name as it is
+        # actually spelled on disk.
+        case_fold_match: Path | None = None
         for entry in sorted(parent_dir.iterdir()):
             ename = entry.name
+            # Skip dotfiles and infra dirs (_docker, _tools, _plans).
             if ename.startswith(".") or ename.startswith("_"):
                 continue
-            if ename.lower() == lname and entry.is_dir():
+            if not entry.is_dir():
+                continue
+            if ename == name:
                 return entry
+            if case_fold_match is None and ename.lower() == lname:
+                case_fold_match = entry
+        if case_fold_match is not None:
+            return case_fold_match
     return None
 
 

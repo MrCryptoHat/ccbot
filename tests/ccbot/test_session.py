@@ -984,7 +984,13 @@ class TestLoadSessionMapMergeNoop:
 
 
 class TestEncodeCwd:
-    def test_encoding_replaces_non_alnum(self) -> None:
+    def test_encoding_replaces_non_alnum(self, monkeypatch) -> None:
+        # Encoding only — symlink resolution is test_symlink_resolved's job.
+        # Letting the real _normalize_cwd run here made this assert the host's
+        # filesystem layout: on macOS /home is a firmlink, so the input came
+        # back as /System/Volumes/Data/home/... and the test failed for a
+        # reason that has nothing to do with encoding.
+        monkeypatch.setattr(SessionManager, "_normalize_cwd", staticmethod(lambda c: c))
         assert SessionManager._encode_cwd("/home/user/a_b.c") == "-home-user-a-b-c"
 
     def test_empty(self) -> None:
@@ -1417,7 +1423,9 @@ class TestDockerSubAgents:
         got = mgr.resolve_agent_file_path(
             "docker:assistant/fitness", "/workspace/a.txt"
         )
-        assert got == Path("/tmp/ws/a.txt")
+        # Compare resolved: the perimeter resolves the path to defeat `..`
+        # traversal, and on macOS /tmp is itself a symlink to /private/tmp.
+        assert got == Path("/tmp/ws/a.txt").resolve()
         # The whitelist stays just as strict for a sub-agent.
         assert (
             mgr.resolve_agent_file_path("docker:assistant/fitness", "/auth/x") is None

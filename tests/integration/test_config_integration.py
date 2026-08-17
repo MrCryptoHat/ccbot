@@ -8,12 +8,15 @@ pytestmark = pytest.mark.integration
 
 
 class TestConfigIntegration:
-    def test_reads_env_file_from_config_dir(self, tmp_path, monkeypatch):
+    def test_reads_env_file_from_config_dir(self, tmp_path, monkeypatch, real_dotenv):
         env_file = tmp_path / ".env"
         env_file.write_text(
             "TELEGRAM_BOT_TOKEN=from-dotenv-token\nALLOWED_USERS=99999\n"
         )
-        # chdir away from repo root so load_dotenv won't find the real .env
+        # This is the one test that WANTS real dotenv (hence real_dotenv); the
+        # root conftest disables it everywhere else so the operator's own .env
+        # can't reach the suite. chdir away from the repo root as well, so the
+        # re-enabled loader still can't pick that file up.
         workdir = tmp_path / "workdir"
         workdir.mkdir()
         monkeypatch.chdir(workdir)

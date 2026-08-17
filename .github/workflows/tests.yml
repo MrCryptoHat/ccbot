@@ -7,7 +7,17 @@ on:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    # Both, and not just for completeness: ccbot drives tmux and reads host
+    # state, and every Linux-only assumption in that layer (/proc, systemd,
+    # `free`, GNU flag spellings) is invisible until a macOS runner executes
+    # it. A Linux-only matrix is what let a version-symlinked claude get its
+    # windows reaped, the nested-claude guard sit silently disabled and the
+    # /status disk bar read the wrong volume — all on released code.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
