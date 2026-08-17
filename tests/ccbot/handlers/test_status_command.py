@@ -1,5 +1,6 @@
 """Tests for status_command — /status output composition."""
 
+import io
 import re
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from ccbot import i18n
+from ccbot.handlers import commands
 from ccbot.handlers.commands import _format_cron_groups
 
 
@@ -232,3 +234,115 @@ class TestStatusCommandUserServices:
             await status_command(update, context)
 
         assert "*Фоновые программы*" not in captured["text"]
+
+
+def _fake_open(mapping: dict[str, str]):
+    """Stub for the module's `open`: serve mapped paths, ENOENT otherwise."""
+
+    def _open(path, *args, **kwargs):
+        if str(path) in mapping:
+            return io.StringIO(mapping[str(path)])
+        raise FileNotFoundError(path)
+
+    return _open
+
+
+class TestHostMetricsPortability:
+    """/status read host metrics from Linux-only sources. On macOS the RAM row
+    and uptime silently vanished, cron showed a permanent false 🔴, and the
+    disk bar came from `df /` — the SEALED system volume, a flat ~1% however
+    full the Mac was. CI is Linux-only, so none of it was ever visible."""
+
+    MEMINFO = (
+        "MemTotal:       65536000 kB\n"
+        "MemFree:            1000 kB\n"
+        "MemAvailable:   16384000 kB\n"
+    )
+    VM_STAT = (
+        "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+        "Pages free:                        40515.\n"
+        "Pages active:                    1000000.\n"
+        "Pages inactive:                  1345315.\n"
+        "Pages wired down:                 500000.\n"
+        "Pages occupied by compressor:     100000.\n"
+    )
+
+    def test_linux_memory_counts_available_not_free(self):
+        # "used" is total - AVAILABLE: page cache is reclaimable, and counting
+        # it as used reports ~95% RAM on every healthy box.
+        with patch(
+            "ccbot.handlers.commands.open",
+            _fake_open({"/proc/meminfo": self.MEMINFO}),
+        ):
+            used, total = commands._read_memory_bytes()
+        assert total == 65536000 * 1024
+        assert used == (65536000 - 16384000) * 1024
+
+    def test_macos_memory_falls_back_to_sysctl_and_vm_stat(self):
+        # No /proc/meminfo and no `free` → the RAM row used to just disappear.
+        total_bytes = 64 * 1024**3
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            if cmd[0] == "sysctl":
+                result.stdout = f"{total_bytes}\n"
+            elif cmd[0] == "vm_stat":
+                result.stdout = self.VM_STAT
+            else:
+                raise FileNotFoundError(cmd[0])
+            return result
+
+        with (
+            patch("ccbot.handlers.commands.open", _fake_open({})),
+            patch("ccbot.handlers.commands.subprocess.run", side_effect=fake_run),
+        ):
+            used, total = commands._read_memory_bytes()
+        assert total == total_bytes
+        # active + wired + compressed, at the 16 KiB page size vm_stat reports
+        assert used == (1000000 + 500000 + 100000) * 16384
+
+    def test_memory_is_none_when_no_source_works(self):
+        with (
+            patch("ccbot.handlers.commands.open", _fake_open({})),
+            patch(
+                "ccbot.handlers.commands.subprocess.run", side_effect=FileNotFoundError
+            ),
+        ):
+            assert commands._read_memory_bytes() is None
+
+    def test_macos_uptime_from_boottime(self):
+        boot = 1784096081
+        result = MagicMock()
+        result.stdout = f"{{ sec = {boot}, usec = 702035 }} Wed Jul 15 14:14:41 2026\n"
+        with (
+            patch("ccbot.handlers.commands.open", _fake_open({})),
+            patch("ccbot.handlers.commands.subprocess.run", return_value=result),
+            patch("ccbot.handlers.commands.time.time", return_value=boot + 86400),
+        ):
+            assert commands._read_uptime_seconds() == pytest.approx(86400)
+
+    def test_linux_uptime_still_preferred(self):
+        with patch(
+            "ccbot.handlers.commands.open",
+            _fake_open({"/proc/uptime": "1234.5 99.9\n"}),
+        ):
+            assert commands._read_uptime_seconds() == pytest.approx(1234.5)
+
+    def test_cron_unknown_is_not_reported_as_stopped(self, monkeypatch):
+        # macOS runs cron as an on-demand launchd job, so systemctl is absent.
+        # Unknown must not render as stopped — a false alarm on every /status
+        # is worse than a missed one.
+        monkeypatch.setattr(commands.shutil, "which", lambda name: None)
+        assert commands._cron_daemon_active() is None
+
+    def test_cron_stopped_is_still_detected(self, monkeypatch):
+        monkeypatch.setattr(commands.shutil, "which", lambda name: "/usr/bin/systemctl")
+        result = MagicMock()
+        result.stdout = "inactive\n"
+        with patch("ccbot.handlers.commands.subprocess.run", return_value=result):
+            assert commands._cron_daemon_active() is False
+
+    def test_human_bytes_shape(self):
+        assert commands._human_bytes(0) == "0B"
+        assert commands._human_bytes(530 * 1024**3) == "530.0G"
+        assert commands._human_bytes(4 * 1024**4) == "4.0T"

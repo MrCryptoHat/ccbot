@@ -9,7 +9,9 @@ import io
 import logging
 import os
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from telegram import (
@@ -767,12 +769,129 @@ def _threshold_emoji(pct: float) -> str:
     return "🟢"
 
 
-def _read_uptime_human() -> str | None:
-    """Read /proc/uptime and format as '12 дн.' / '5 ч.' / '42 мин.'."""
+def _cron_daemon_active() -> bool | None:
+    """Is the cron daemon running? None when the host can't tell us.
+
+    Only systemd answers this cheaply, and only where it exists. macOS runs
+    cron as an on-demand launchd job, so `systemctl` is simply absent —
+    treating that failure as "stopped" put a permanent red 🔴 and a
+    "cron stopped" warning in /status on every Mac with a crontab.
+    """
+    if shutil.which("systemctl") is None:
+        return None
+    try:
+        return (
+            subprocess.run(
+                ["systemctl", "is-active", "cron"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+            == "active"
+        )
+    except Exception:
+        return None
+
+
+def _human_bytes(n: float) -> str:
+    """Byte count as a short human string ('477G', '3.6T') — `df -h` shape."""
+    for unit in ("B", "K", "M", "G"):
+        if abs(n) < 1024:
+            return f"{n:.0f}{unit}" if unit in ("B", "K") else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}T"
+
+
+def _read_memory_bytes() -> tuple[int, int] | None:
+    """``(used, total)`` RAM in bytes, or None where no source is readable.
+
+    Linux reads /proc/meminfo directly — `free -b` is a formatting layer over
+    the same file and its column positions have shifted between procps
+    releases. "Used" is total - available (available, not free: page cache is
+    reclaimable, and counting it as used reports ~95% on every healthy box).
+
+    macOS has neither /proc nor `free`, which is why the RAM row silently
+    vanished from /status there. Total comes from `sysctl hw.memsize`; used is
+    (active + wired + compressed) pages, the same three buckets Activity
+    Monitor adds up for "Memory Used".
+    """
+    try:
+        meminfo: dict[str, int] = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                parts = rest.split()
+                if parts:
+                    meminfo[key] = int(parts[0]) * 1024  # values are in kB
+        total = meminfo.get("MemTotal", 0)
+        available = meminfo.get("MemAvailable")
+        if total and available is not None:
+            return total - available, total
+    except Exception:
+        pass
+    try:
+        total = int(
+            subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+        )
+        vm = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, timeout=3
+        ).stdout
+        page_size = 4096
+        m = re.search(r"page size of (\d+) bytes", vm)
+        if m:
+            page_size = int(m.group(1))
+        pages = 0
+        for label in (
+            r"Pages active",
+            r"Pages wired down",
+            r"Pages occupied by compressor",
+        ):
+            m = re.search(rf"^{label}:\s+(\d+)\.", vm, re.M)
+            if m:
+                pages += int(m.group(1))
+        if total and pages:
+            return min(pages * page_size, total), total
+    except Exception:
+        pass
+    return None
+
+
+def _read_uptime_seconds() -> float | None:
+    """Host uptime in seconds, or None where neither source is readable.
+
+    /proc/uptime on Linux; on macOS/BSD there is no /proc, so derive it from
+    the boot timestamp (`sysctl -n kern.boottime` prints
+    ``{ sec = 1784096081, usec = … } <date>``).
+    """
     try:
         with open("/proc/uptime") as f:
-            seconds = float(f.read().split()[0])
+            return float(f.read().split()[0])
     except Exception:
+        pass
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "kern.boottime"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        m = re.search(r"sec\s*=\s*(\d+)", out.stdout)
+        if m:
+            return max(0.0, time.time() - int(m.group(1)))
+    except Exception:
+        pass
+    return None
+
+
+def _read_uptime_human() -> str | None:
+    """Format host uptime as '12 дн.' / '5 ч.' / '42 мин.'."""
+    seconds = _read_uptime_seconds()
+    if seconds is None:
         return None
     days = int(seconds // 86400)
     if days >= 1:
@@ -1009,34 +1128,28 @@ def _build_status_text_sync(windows: list) -> str:
     # Python str width gets us close enough in Telegram's body font.
     res_lines = [tr("commands.status_resources")]
     try:
-        result = subprocess.run(
-            ["df", "-h", "/"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        df_line = result.stdout.strip().splitlines()[-1].split()
-        total_d, used_d, pct_str = df_line[1], df_line[2], df_line[4]
-        pct = float(pct_str.rstrip("%"))
+        # $HOME's filesystem, NOT "/": on macOS "/" is the sealed read-only
+        # system volume, so `df /` reports a flat ~1% however full the Mac
+        # actually is — a green bar on a disk with no space left. $HOME lands
+        # on the Data volume, and on a Linux server it is normally "/" anyway,
+        # so the number there is unchanged. statvfs also drops the `df`
+        # subprocess and its column-index parsing.
+        usage = shutil.disk_usage(Path.home())
+        pct = usage.used / usage.total * 100 if usage.total else 0
         emoji = _threshold_emoji(pct)
         if pct >= 80:
             warnings.append(f"диск {int(pct)}%")
         res_lines.append(
             f" {emoji} {tr('commands.status_disk'):<6}`{_progress_bar(pct)}`  {int(pct):>3}%   "
-            f"{used_d} / {total_d}"
+            f"{_human_bytes(usage.used)} / {_human_bytes(usage.total)}"
         )
     except Exception:
         pass
     try:
-        result = subprocess.run(
-            ["free", "-b"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        mem_line = result.stdout.strip().splitlines()[1].split()
-        total_b = int(mem_line[1])
-        used_b = int(mem_line[2])
+        mem = _read_memory_bytes()
+        if mem is None:
+            raise ValueError("no memory source")
+        used_b, total_b = mem
         pct = used_b / total_b * 100 if total_b else 0
         emoji = _threshold_emoji(pct)
         if pct >= 80:
@@ -1075,20 +1188,14 @@ def _build_status_text_sync(windows: list) -> str:
         if crontab.returncode == 0:
             entries = _cron_parse_crontab(crontab.stdout)
         if entries:
-            try:
-                cron_active = (
-                    subprocess.run(
-                        ["systemctl", "is-active", "cron"],
-                        capture_output=True,
-                        text=True,
-                        timeout=3,
-                    ).stdout.strip()
-                    == "active"
-                )
-            except Exception:
-                cron_active = False
-            header_emoji = "🟢" if cron_active else "🔴"
-            if not cron_active:
+            cron_active = _cron_daemon_active()
+            # None = couldn't tell (no systemd — e.g. macOS, where cron is a
+            # launchd job started on demand). Treat unknown as fine: a red
+            # header and a "cron stopped" warning on a host whose cron is
+            # running perfectly is a false alarm, and a false alarm every
+            # /status is worse than a missed one.
+            header_emoji = "🔴" if cron_active is False else "🟢"
+            if cron_active is False:
                 warnings.append(tr("commands.cron_stopped"))
             grouped = _format_cron_groups(entries)
             grouped_text = "\n".join(grouped)
