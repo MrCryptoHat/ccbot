@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS autostart for ccbot. Copy to ~/Library/LaunchAgents/, replace
+  BOT_DIR_PLACEHOLDER with the absolute path of your checkout, then:
+
+      launchctl load ~/Library/LaunchAgents/com.ccbot.bot.plist
+
+  A LaunchAgent (not a LaunchDaemon): it runs as YOU, at login, with access
+  to your keychain and your claude credentials — which is what the agents in
+  the tmux panes need. RunAtLoad only; restart.sh is idempotent and creates
+  the tmux session itself, so there is nothing to keep alive here.
+
+  PATH is set explicitly because launchd does NOT read your shell profile:
+  a login shell finds uv/tmux/claude, launchd does not, and the bot would
+  come up unable to launch anything. Adjust if your tools live elsewhere
+  (Intel Macs use /usr/local/bin for Homebrew).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ccbot.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>BOT_DIR_PLACEHOLDER/scripts/restart.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>BOT_DIR_PLACEHOLDER</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ccbot-boot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/ccbot-boot.log</string>
+</dict>
+</plist>

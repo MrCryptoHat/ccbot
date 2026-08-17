@@ -184,8 +184,11 @@ The terminal stays the source of truth; ccbot is a thin control layer over it.
 ## Quick start
 
 Works on Linux and macOS. Prerequisites: **tmux** (Ubuntu:
-`sudo apt install tmux`), the **`claude`** CLI (and/or **`codex`**), and
-**[uv](https://docs.astral.sh/uv/)** (one-line installer on their site).
+`sudo apt install tmux`; macOS: `brew install tmux uv`), the **`claude`** CLI
+(and/or **`codex`**), and **[uv](https://docs.astral.sh/uv/)** (one-line
+installer on their site). On macOS also read the notes at the end of
+[SETUP.md](SETUP.md) — autostart is launchd, not cron, and a sleeping laptop
+is an unreachable bot.
 
 First time with Telegram bots? Get a token from
 [@BotFather](https://t.me/BotFather) and your numeric user ID from

@@ -7,6 +7,10 @@ all you need is a Linux/macOS host with tmux, the `claude` CLI, and `uv`.
 
 ## 1. Prerequisites
 
+On macOS all of these come from Homebrew in one line — `brew install tmux uv`
+(add `ffmpeg` for voice, `codex` for the Codex tab); the `claude` CLI has its
+own installer. Then read the macOS notes in step 8 before wiring autostart.
+
 - **tmux** — `tmux -V` should print a version.
 - **Claude Code** — the `claude` CLI on your `PATH`
   (install: https://claude.com/claude-code). Run `claude` once and complete
@@ -120,8 +124,8 @@ To run in the foreground instead: `uv run ccbot`.
 
 ## 8. Start on boot (optional)
 
-`restart.sh` is idempotent and self-healing, so the simplest autostart is a
-`@reboot` cron entry (run `crontab -e`):
+`restart.sh` is idempotent and self-healing, so on **Linux** the simplest
+autostart is a `@reboot` cron entry (run `crontab -e`):
 
 ```cron
 @reboot sleep 10 && /home/YOU/ccbot/scripts/restart.sh >> /tmp/ccbot-boot.log 2>&1
@@ -129,6 +133,38 @@ To run in the foreground instead: `uv run ccbot`.
 
 (The `sleep` gives the network a moment to come up.) Without this, the bot
 stays down after a server reboot until you run `restart.sh` by hand.
+
+On **macOS** use launchd instead — cron there is a compatibility shim that
+additionally needs Full Disk Access to run reliably. A ready plist ships in
+`scripts/com.ccbot.bot.plist`:
+
+```bash
+sed "s|BOT_DIR_PLACEHOLDER|$PWD|g" scripts/com.ccbot.bot.plist \
+  > ~/Library/LaunchAgents/com.ccbot.bot.plist
+launchctl load ~/Library/LaunchAgents/com.ccbot.bot.plist
+```
+
+It is a LaunchAgent, so it starts at **login**, not at boot, and runs as you
+with your keychain — which is what the agents in the panes need. It also sets
+`PATH` explicitly: launchd does not read your shell profile, so without that
+the bot starts but can't find `uv`, `tmux` or `claude`.
+
+### macOS notes
+
+- **A laptop that sleeps is a bot that stops.** Closing the lid suspends the
+  process and topics go unanswered until it wakes. `caffeinate -s` (or Energy
+  Saver settings) if you need it reachable around the clock.
+- **File-access prompts are inherited.** macOS attributes a process's access
+  to Documents/Desktop/Photos to whatever started it, and everything under
+  tmux inherits from whoever started the tmux server. Starting it from launchd
+  gives agents no inherited grants — the conservative default. Start the
+  server by hand from a terminal that already holds broad access and the
+  agents inherit that too.
+- **Anyone in the group reads everything the agents print**, on any platform;
+  `ALLOWED_USERS` gates who can *control* the bot, not who can see. On a
+  personal Mac that group is a live view of your home directory: keep it
+  private, and remember your Telegram account is now a key to this machine —
+  turn on its two-step verification.
 
 ## Troubleshooting
 

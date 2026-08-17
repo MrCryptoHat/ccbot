@@ -50,6 +50,10 @@ sleep 10 && tmux capture-pane -t probe -p          # idle
 tmux display -p -t probe '#{pane_current_command}' # → pane_alive_commands
 ```
 
+If that prints a version rather than a name, the CLI is a symlink into a
+per-version directory: declare the stable name and let `is_pane_alive()`
+resolve the moving one — a version pinned into the set rots at the next update.
+
 Capture idle, busy (ask it something long-running), any approval menu, and the
 sign-in screen. Two things bite here: `pane_current_command` is what the health
 check reaps windows by, and an idle `Ctrl-C` arms "quit" in some TUIs — check
