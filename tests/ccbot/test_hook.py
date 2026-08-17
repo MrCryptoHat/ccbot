@@ -333,8 +333,36 @@ def _fake_proc(tmp_path: Path, chain: list[tuple[int, str, int]]) -> Path:
 
 
 class TestCountClaudeAncestors:
-    def test_no_proc_returns_none(self, tmp_path: Path) -> None:
-        assert _count_claude_ancestors(tmp_path / "nope", start_pid=1) is None
+    def test_no_proc_falls_back_to_ps(self, tmp_path: Path, monkeypatch) -> None:
+        # macOS/BSD have no /proc. Before the fallback the guard returned None
+        # there — silently OFF on the one platform whose users can't tell.
+        chain = {300: ("ccbot", 299), 299: ("sh", 250), 250: ("claude", 1)}
+        monkeypatch.setattr(hook, "_ps_parent", lambda pid: chain.get(pid))
+        assert _count_claude_ancestors(tmp_path / "nope", start_pid=300) == 1
+
+    def test_no_proc_and_no_ps_returns_none(self, tmp_path: Path, monkeypatch) -> None:
+        # Nothing readable at all → "unknown", NOT 0: a 0 reads as "not
+        # nested" and would let a nested claude clobber the session map.
+        monkeypatch.setattr(hook, "_ps_parent", lambda pid: None)
+        assert _count_claude_ancestors(tmp_path / "nope", start_pid=300) is None
+
+    def test_version_named_binary_counts(self, tmp_path: Path, monkeypatch) -> None:
+        # Native installer: the process name is the RESOLVED binary, i.e. the
+        # version. Matching only "claude" counted 0 and disabled the guard.
+        monkeypatch.setattr(
+            hook, "_claude_process_names", lambda: {"claude", "2.1.233"}
+        )
+        root = _fake_proc(
+            tmp_path,
+            [
+                (100, "ccbot", 99),
+                (99, "sh", 50),
+                (50, "2.1.233", 40),
+                (40, "bash", 10),
+                (10, "tmux: server", 1),
+            ],
+        )
+        assert _count_claude_ancestors(root, start_pid=100) == 1
 
     def test_single_interactive_claude(self, tmp_path: Path) -> None:
         # ccbot-hook -> sh -> claude -> pane-shell -> tmux -> init

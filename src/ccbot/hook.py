@@ -14,6 +14,7 @@ Key functions: hook_main() (CLI entry), _install_hook().
 
 import argparse
 import fcntl
+import functools
 import json
 import logging
 import os
@@ -46,12 +47,82 @@ def _claude_settings_file() -> Path:
     return base / "settings.json"
 
 
+def _claude_process_names() -> set[str]:
+    """Kernel process names that mean "this is a Claude Code process".
+
+    ``claude`` covers a plain binary or an npm shim. Claude Code's NATIVE
+    installer, though, symlinks ``~/.local/bin/claude`` at
+    ``…/versions/<version>`` — and a kernel process name comes from the
+    RESOLVED executable, so those processes are called e.g. ``2.1.233``.
+    Matching only ``claude`` there counts 0 ancestors on every host with a
+    native install (Linux included) and silently disables the nested-claude
+    guard below. Resolve and add the real name.
+    """
+    names = {"claude"}
+    resolved = shutil.which("claude")
+    if resolved:
+        names.add(os.path.basename(os.path.realpath(resolved)))
+    return names
+
+
+def _proc_parent(proc_root: Path, pid: int) -> tuple[str, int] | None:
+    """``(process name, ppid)`` from ``/proc/<pid>/stat`` — Linux."""
+    try:
+        stat = (proc_root / str(pid) / "stat").read_bytes()
+    except OSError:
+        return None
+    # "<pid> (<comm>) <state> <ppid> …" — comm can contain ')' and spaces,
+    # so anchor on the LAST ')'.
+    lparen = stat.find(b"(")
+    rparen = stat.rfind(b")")
+    if lparen < 0 or rparen < lparen:
+        return None
+    fields = stat[rparen + 1 :].split()
+    if len(fields) < 2:
+        return None
+    try:
+        ppid = int(fields[1])
+    except ValueError:
+        return None
+    return stat[lparen + 1 : rparen].decode("utf-8", "replace"), ppid
+
+
+def _ps_parent(pid: int) -> tuple[str, int] | None:
+    """``(process name, ppid)`` from ``ps`` — macOS/BSD, which have no /proc.
+
+    ``ucomm``, not ``comm``: on macOS ``comm`` is the full command (Claude
+    Code's pty helper shows up as ``claude bg-pty-host``) while ``ucomm`` is
+    the kernel's process name — the same field Linux exposes as stat's comm
+    and tmux exposes as ``pane_current_command``. Truncated to MAXCOMLEN,
+    which is why the caller matches names, not paths.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=,ucomm=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    parts = result.stdout.strip().split(None, 1)
+    if len(parts) < 2:
+        return None
+    try:
+        return parts[1].strip(), int(parts[0])
+    except ValueError:
+        return None
+
+
 def _count_claude_ancestors(
     proc_root: Path = Path("/proc"), start_pid: int | None = None
 ) -> int | None:
-    """Number of ``claude`` processes in a process's ancestor chain (incl. itself).
+    """Number of Claude processes in a process's ancestor chain (incl. itself).
 
-    Returns ``None`` on platforms without ``/proc`` (the check is then skipped).
+    Returns ``None`` only when the chain can't be read at all (no ``/proc``
+    AND no working ``ps``) — the check is then skipped.
 
     A SessionStart hook fired by the tmux pane's *own* interactive Claude has
     exactly one such ancestor: ``ccbot hook → [sh -c] → claude → pane-shell →
@@ -60,36 +131,34 @@ def _count_claude_ancestors(
     inside an interactive session — has two or more. Those must not overwrite
     the window↔session map: the moment the nested invocation exits, the map
     still points at its (now dead) session, so the pane's real Claude session
-    goes unmonitored and the bound Telegram topic falls silent. (Relies on
-    Claude Code setting its process title to ``claude``; if that ever changes,
-    the count comes back 0 and we simply fall back to the old behaviour.)
+    goes unmonitored and the bound Telegram topic falls silent.
+
+    Two ways to walk the chain because ``/proc`` is Linux-only: reading it
+    kept the guard free on the server while macOS got ``None`` — the guard
+    silently OFF on the one platform whose users would never know to look.
     """
-    if not proc_root.is_dir():
-        return None
+    if proc_root.is_dir():
+        read_parent = functools.partial(_proc_parent, proc_root)
+    else:
+        read_parent = _ps_parent
+    names = _claude_process_names()
     count = 0
     pid = os.getpid() if start_pid is None else start_pid
     seen: set[int] = set()
+    first = True
     while pid > 1 and pid not in seen:
         seen.add(pid)
-        try:
-            stat = (proc_root / str(pid) / "stat").read_bytes()
-        except OSError:
-            break
-        # "<pid> (<comm>) <state> <ppid> …" — comm can contain ')' and spaces,
-        # so anchor on the LAST ')'.
-        lparen = stat.find(b"(")
-        rparen = stat.rfind(b")")
-        if lparen < 0 or rparen < lparen:
-            break
-        if stat[lparen + 1 : rparen] == b"claude":
+        entry = read_parent(pid)
+        if entry is None:
+            # Can't read even our OWN process — no usable mechanism here, so
+            # say "unknown" rather than claim a count of 0 (which reads as
+            # "not nested" and would let a nested claude clobber the map).
+            return None if first else count
+        name, ppid = entry
+        first = False
+        if name in names:
             count += 1
-        fields = stat[rparen + 1 :].split()
-        if len(fields) < 2:
-            break
-        try:
-            pid = int(fields[1])  # ppid
-        except ValueError:
-            break
+        pid = ppid
     return count
 
 
