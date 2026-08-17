@@ -1458,7 +1458,7 @@ async def _wait_agent_exited(window_id: str, runtime, *, timeout: float = 8.0) -
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         w = await tmux_manager.find_window_by_id(window_id)
-        if w and w.pane_current_command not in runtime.pane_alive_commands:
+        if w and not runtime.is_pane_alive(w.pane_current_command):
             return True
         await asyncio.sleep(0.3)
     return False

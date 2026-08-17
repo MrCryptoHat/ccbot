@@ -497,7 +497,7 @@ async def status_poll_loop(bot: Bot) -> None:
                 # Codex → codex). Keying on a hardcoded claude set reaped every
                 # codex window 30 s after launch (sign-in menu included).
                 runtime = get_runtime(session_manager.window_runtime(w.window_id))
-                is_alive = w.pane_current_command in runtime.pane_alive_commands
+                is_alive = runtime.is_pane_alive(w.pane_current_command)
                 if is_alive:
                     # Agent is running — clear any down timer
                     _agent_down_since.pop(w.window_id, None)

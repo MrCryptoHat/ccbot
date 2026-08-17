@@ -870,7 +870,7 @@ def _build_status_text_sync(windows: list) -> str:
         cmd = w.pane_current_command or "?"
         # Runtime-aware: a codex window's foreground is `codex`, not claude/node.
         runtime = get_runtime(session_manager.window_runtime(w.window_id))
-        if cmd in runtime.pane_alive_commands:
+        if runtime.is_pane_alive(cmd):
             alive_agents.append(w.window_name)
         else:
             dead_agents.append(w.window_name)
@@ -1682,7 +1682,7 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await asyncio.sleep(8)
     w = await tmux_manager.find_window_by_id(target_window.window_id)
-    if w and w.pane_current_command in runtime.pane_alive_commands:
+    if w and runtime.is_pane_alive(w.pane_current_command):
         await safe_reply(update.message, tr("commands.restarted", name=agent_name))
     else:
         await safe_reply(
