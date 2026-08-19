@@ -1002,3 +1002,199 @@ class TestGrokLogin:
             parse_login_url(pane)
             == "https://accounts.x.ai/oauth2/device?user_code=AAAA-0000"
         )
+
+
+# ── Resume-cost dialog (ResumePrompt) ────────────────────────────────────
+
+# Rebuilt from a live 2.1.235 capture (`claude --resume` on an old session),
+# with the welcome banner and every real path/identity dropped.
+_RESUME_PROMPT = (
+    "❯ reply with the single word: ok\n"
+    "\n"
+    "⏺ ok\n"
+    "\n"
+    "─────\n"
+    "  This session is 3h 20m old and 120k tokens.\n"
+    "\n"
+    "  Resuming the full session will consume a substantial portion of your "
+    "usage limits. We recommend\n"
+    "  resuming from a summary.\n"
+    "\n"
+    "  ❯ 1. Resume from summary (recommended)\n"
+    "    2. Resume full session as-is\n"
+    "    3. Don't ask me again\n"
+    "\n"
+    "  Enter to confirm · Esc to cancel\n"
+)
+
+
+class TestResumePrompt:
+    """`claude --resume <id>` on a long-idle session opens on a cost dialog
+    whose PRESELECTED option compacts the conversation. It must read as an
+    interactive widget so nothing types a blind Enter into it — that used to
+    happen on every resume, throwing away the context the user just chose to
+    continue."""
+
+    def test_dialog_detected(self):
+        res = extract_interactive_content(_RESUME_PROMPT)
+        assert res is not None
+        assert res.name == "ResumePrompt"
+        assert is_interactive_ui(_RESUME_PROMPT) is True
+
+    def test_all_options_and_footer_extracted(self):
+        res = extract_interactive_content(_RESUME_PROMPT)
+        assert res is not None
+        assert "Resume full session as-is" in res.content
+        assert "Don't ask me again" in res.content
+        assert "Enter to confirm" in res.content
+
+    def test_name_survives_cursor_move(self):
+        """The user taps ↓ → the cursor leaves option 1. Anchoring the
+        pattern on the label (not the ❯) keeps the widget's identity stable,
+        so the poll doesn't repaint the photo on every keypress."""
+        moved = _RESUME_PROMPT.replace(
+            "  ❯ 1. Resume from summary (recommended)\n"
+            "    2. Resume full session as-is\n",
+            "    1. Resume from summary (recommended)\n"
+            "  ❯ 2. Resume full session as-is\n",
+        )
+        res = extract_interactive_content(moved)
+        assert res is not None
+        assert res.name == "ResumePrompt"
+
+    def test_quoted_dialog_is_not_a_widget(self):
+        """An answer *about* the dialog — cursor glyph and all, which is how
+        one quotes a menu — has the input box drawn below it, so it can never
+        pin the topic in interactive mode. It did once: this very report,
+        typed into the topic it describes, bounced every following message
+        (operator report 2026-08-19)."""
+        pane = _pane(
+            "  При resume Claude Code показывает:",
+            "",
+            "  ❯ 1. Resume from summary (recommended)",
+            "    2. Resume full session as-is",
+            "",
+            "  Enter to confirm · Esc to cancel",
+            "",
+            "  — и Enter вслепую выбирал первый вариант.",
+        )
+        assert is_interactive_ui(pane) is False
+
+
+# ── Live widget vs. a transcript quoting one ─────────────────────────────
+
+# Folder-trust prompt, rebuilt from a live 2.1.235 capture (`claude` in a
+# fresh directory) with the real path dropped. Note what is NOT below it:
+# a live modal replaces the input box and the status bar entirely.
+_TRUST_PROMPT = (
+    "─────\n"
+    " Accessing workspace:\n"
+    "\n"
+    " /home/user/project\n"
+    "\n"
+    " Quick safety check: Is this a project you created or one you trust?\n"
+    "\n"
+    " ❯ 1. Yes, I trust this folder\n"
+    "   2. No, exit\n"
+    "\n"
+    " Enter to confirm · Esc to cancel\n"
+)
+
+_CODEX_MENU = (
+    "  Would you like to run the following command?\n"
+    "› 1. Yes, proceed (y)\n"
+    "  2. Yes, and don't ask again (p)\n"
+    "  3. No, and tell Codex what to do differently (esc)\n"
+    "  Press enter to confirm or esc to cancel\n"
+)
+
+
+# Tool-permission prompt as Claude Code 2.1.235 renders it (captured live,
+# file name replaced). Pinned because it is the highest-stakes widget in the
+# system — a miss here means something types into it and the trailing Enter
+# grants the permission — and because option 2 WRAPS, pushing the cursor row
+# further from the footer than a naive fixture would.
+_PERMISSION_PROMPT = (
+    " Do you want to create notes.txt?\n"
+    " ❯ 1. Yes\n"
+    "   2. Yes, and switch to accept edits (auto-approve file edits and common file"
+    " commands) for this\n"
+    "      session (shift+tab)\n"
+    "   3. No\n"
+    "\n"
+    " Esc to cancel · Tab to amend\n"
+)
+
+
+class TestQuotedMenuIsNotLive:
+    """A cursor glyph on a numbered option is exactly what an answer QUOTING a
+    menu contains — and this repo's topic is full of such answers. Each one
+    used to read as a live widget, pinning the topic in interactive mode and
+    bouncing every message the user sent until it scrolled off screen
+    (operator report 2026-08-19). The discriminator is the input box: Claude
+    Code draws it under a transcript and replaces it with a live modal."""
+
+    def test_live_trust_prompt_detected(self):
+        res = extract_interactive_content(_TRUST_PROMPT)
+        assert res is not None
+        assert res.name == "PermissionPrompt"
+
+    def test_quoted_permission_menu_is_not_a_widget(self):
+        pane = _pane(
+            "  Фикстура плана в тестах выглядит так:",
+            "",
+            "   ❯ 1. Yes, and use auto mode",
+            "     2. Yes, manually approve edits",
+            "",
+            "  Это ExitPlanMode, не PermissionPrompt.",
+        )
+        assert is_interactive_ui(pane) is False
+
+    def test_quoted_menu_right_above_the_input_box(self):
+        """The tightest case: the quote ends where the chrome begins, so only
+        the input box separates it from the pane's bottom."""
+        pane = _pane("  ❯ 1. Yes, proceed", "    2. No", "  Enter to confirm")
+        assert is_interactive_ui(pane) is False
+
+    def test_live_codex_menu_detected(self):
+        res = extract_interactive_content(_CODEX_MENU)
+        assert res is not None
+        assert res.name == "ChoiceMenu"
+
+    def test_live_menu_survives_cursor_on_the_last_option(self):
+        moved = _CODEX_MENU.replace("› 1.", "  1.").replace("  3.", "› 3.")
+        res = extract_interactive_content(moved)
+        assert res is not None
+        assert res.name == "ChoiceMenu"
+
+    def test_long_menu_still_reaches_its_cursor_row(self):
+        """A menu's cursor sits above every remaining option: the prose-sized
+        tail window (8) is already exhausted by Claude Code's own `/model`
+        picker, so menus get _MENU_TAIL_WINDOW."""
+        pane = (
+            "  Pick a model:\n"
+            "❯ 1. First\n"
+            + "".join(f"  {i}. Option {i}\n" for i in range(2, 13))
+            + "  Enter to confirm · Esc to cancel\n"
+        )
+        res = extract_interactive_content(pane)
+        assert res is not None
+        assert res.name == "ChoiceMenu"
+
+    def test_widget_below_a_quoted_prompt_row_still_live(self):
+        """The guard keys on the LAST input box, not the first thing that
+        looks like one — a transcript may quote a bare `>` prompt itself."""
+        pane = "⏺ Пустая строка приглашения выглядит так:\n>\n\n" + _CODEX_MENU
+        res = extract_interactive_content(pane)
+        assert res is not None
+        assert res.name == "ChoiceMenu"
+
+    def test_live_tool_permission_prompt_detected(self):
+        res = extract_interactive_content(_PERMISSION_PROMPT)
+        assert res is not None
+        assert res.name == "PermissionPrompt"
+        assert "3. No" in res.content
+
+    def test_quoted_tool_permission_prompt_is_not_a_widget(self):
+        pane = _pane(*_PERMISSION_PROMPT.rstrip("\n").split("\n"))
+        assert is_interactive_ui(pane) is False

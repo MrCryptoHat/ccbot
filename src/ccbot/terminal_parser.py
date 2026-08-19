@@ -54,6 +54,9 @@ class UIPattern:
     pane's last non-empty line (see :func:`_try_extract_tail`). Required for any
     pattern whose markers are short enough to occur in ordinary prose — a live
     modal owns the bottom of the screen, a quote of it never does.
+    ``tail_window`` caps how far above that line the top marker may sit
+    (default :data:`_TAIL_WINDOW`); a numbered menu needs a taller one than a
+    2-4 row prose widget.
 
     ``is_login`` marks a sign-in screen that carries an auth URL to surface as
     a clickable link. It is provider-agnostic: any CLI's login screen (Claude
@@ -67,6 +70,7 @@ class UIPattern:
     min_gap: int = 2  # minimum lines between top and bottom (inclusive)
     is_login: bool = False  # sign-in screen with an auth URL (see above)
     tail_only: bool = False  # region must end the pane (see above)
+    tail_window: int | None = None  # tail_only reach; None → _TAIL_WINDOW
     #: Keys a BLIND confirm (👍-to-confirm) presses on this widget, in order.
     #: Default = plain Enter (accept the highlighted option). A widget whose
     #: preselected option is NOT the plain "yes" declares the safe route as
@@ -75,6 +79,18 @@ class UIPattern:
     #: Enter. Modeled here, not in reaction_confirm, so a new hazardous menu
     #: is one field, not a new call-site branch.
     confirm_keys: tuple[str, ...] = ("Enter",)
+
+
+# How far above the pane's last line a ``tail_only`` widget's top marker may
+# sit. Such widgets are 2-4 rows; a generous-but-bounded window.
+_TAIL_WINDOW = 8
+
+# Same, for a numbered MENU: its top marker is the cursor row, which sits above
+# every remaining option plus the footer. Claude Code 2.1.235's `/model` picker
+# already spans 8 rows below the cursor (5 options + effort row + footer) —
+# i.e. the prose window is exactly at its limit — so menus get their own,
+# deliberately roomy one. The safety property is the bottom anchor, not this.
+_MENU_TAIL_WINDOW = 20
 
 
 # ── UI pattern definitions (order matters — first match wins) ────────────
@@ -127,11 +143,25 @@ UI_PATTERNS: list[UIPattern] = [
         bottom=(re.compile(r"^\s*Esc to cancel"),),
     ),
     UIPattern(
-        # Permission menu with numbered choices (no "Esc to cancel" line)
+        # Permission menu with numbered choices, incl. the folder-trust prompt
+        # a fresh window opens on ("❯ 1. Yes, I trust this folder").
+        #
+        # Bounded below by the footer or a sibling option, and tail_only: the
+        # old form (no `bottom` at all → region ran to the pane's end) matched
+        # a mere QUOTE of "❯ 1. Yes …" anywhere in the transcript, and this
+        # repo's own answers quote permission menus constantly. Each such quote
+        # pinned the topic in interactive mode and bounced every message the
+        # user sent until it scrolled off (operator report 2026-08-19).
         name="PermissionPrompt",
         top=(re.compile(r"^\s*❯\s*1\.\s*Yes"),),
-        bottom=(),
-        min_gap=2,
+        bottom=(
+            re.compile(r"Enter to confirm"),
+            re.compile(r"[Ee]sc to (cancel|exit)"),
+            re.compile(r"^\s*\d+\.\s"),  # a sibling option below the cursor row
+        ),
+        min_gap=1,
+        tail_only=True,
+        tail_window=_MENU_TAIL_WINDOW,
     ),
     UIPattern(
         # Bash command approval
@@ -146,6 +176,33 @@ UI_PATTERNS: list[UIPattern] = [
         name="RestoreCheckpoint",
         top=(re.compile(r"^\s*Restore the code"),),
         bottom=(re.compile(r"^\s*Enter to continue"),),
+    ),
+    UIPattern(
+        # Resume-cost dialog — `claude --resume <id>` on a session older than
+        # ~70 min AND above ~100k tokens opens on it INSTEAD of the prompt box
+        # (Claude Code 2.1.235, captured live):
+        #     This session is 3h 20m old and 120k tokens.
+        #     Resuming the full session will consume a substantial portion …
+        #     ❯ 1. Resume from summary (recommended)
+        #       2. Resume full session as-is
+        #       3. Don't ask me again
+        #     Enter to confirm · Esc to cancel
+        # The PRESELECTED option compacts the conversation, so any blind Enter
+        # throws away the very context the user asked to resume — which is what
+        # the pending first message's trailing Enter used to do on every resume
+        # (operator report, 2026-08-19). Named rather than left to the generic
+        # ChoiceMenu below so the guard is pinned by a test of the real render.
+        #
+        # Anchored on the option LABEL, not the `❯` cursor: the cursor moves
+        # when the user taps ↓, and a cursor-anchored top would flip the widget
+        # name mid-dialog (every flip repaints the photo). tail_only because
+        # both markers are plain prose — a transcript quoting this dialog (this
+        # repo's own tests do) must never pin a topic in interactive mode.
+        name="ResumePrompt",
+        top=(re.compile(r"^[\s❯›>]*\d+\.\s+Resume from summary"),),
+        bottom=(re.compile(r"Enter to confirm"),),
+        min_gap=1,
+        tail_only=True,
     ),
     UIPattern(
         name="Settings",
@@ -316,10 +373,17 @@ UI_PATTERNS: list[UIPattern] = [
         top=(re.compile(r"^\s*[›❯▸▶]\s*\d+\.\s"),),
         bottom=(
             re.compile(r"Press enter to (confirm|continue|select)"),
+            re.compile(r"Enter to confirm"),
             re.compile(r"[Ee]sc to (cancel|exit)"),
             re.compile(r"^\s*\d+\.\s"),  # a sibling option below the cursor row
         ),
         min_gap=1,
+        # tail_only for the same reason as PermissionPrompt above: a cursor
+        # glyph on a numbered option is exactly what an answer QUOTING a menu
+        # contains, and without the bottom anchor every such quote pinned the
+        # topic in interactive mode. A live menu always ends the pane.
+        tail_only=True,
+        tail_window=_MENU_TAIL_WINDOW,
     ),
 ]
 
@@ -388,19 +452,42 @@ def _shorten_separators(text: str) -> str:
 # ── Core extraction ──────────────────────────────────────────────────────
 
 
-# How far above the pane's last line a ``tail_only`` widget's top marker may
-# sit. Such widgets are 2-4 rows; a generous-but-bounded window.
-_TAIL_WINDOW = 8
+# The agent CLI's empty input box — a lone cursor glyph on its own row
+# (Claude Code draws `❯\xa0` between two rules, codex `›`). NBSP counts as
+# whitespace for `\s`, so the row reads as "cursor, nothing typed".
+_COMPOSER_ROW_RE = re.compile(r"^\s*[>❯›]\s*$")
+
+
+def _live_region_start(lines: list[str]) -> int:
+    """Index of the first line that can belong to a LIVE widget.
+
+    A drawn input box means everything above it is transcript, not a live
+    modal: Claude Code REPLACES the composer with the modal (verified live on
+    2.1.235 — the folder-trust prompt and the `/model` picker each end the
+    pane, no prompt row and no status bar below them), and codex/grok do the
+    same. So a widget's markers found above the last composer row are a
+    transcript *quoting* a widget.
+
+    That quote is not hypothetical: an answer of ours quoting the resume
+    dialog (cursor glyph included) pinned the topic in interactive mode and
+    bounced every message the user sent afterwards (operator report
+    2026-08-19). Returns 0 when no composer is drawn — i.e. a live modal owns
+    the screen and every line is fair game.
+    """
+    for i in range(len(lines) - 1, -1, -1):
+        if _COMPOSER_ROW_RE.match(lines[i]):
+            return i + 1
+    return 0
 
 
 def _try_extract_tail(
-    lines: list[str], pattern: UIPattern
+    lines: list[str], pattern: UIPattern, live_from: int = 0
 ) -> InteractiveUIContent | None:
     """Match a widget that OWNS the bottom of the screen.
 
     Anchored on the pane's LAST non-empty line: the bottom marker must be it,
-    with a top marker within ``_TAIL_WINDOW`` rows above (``min_gap=0`` lets one
-    line be both, i.e. a single-row widget).
+    with a top marker within ``pattern.tail_window`` rows above (``min_gap=0``
+    lets one line be both, i.e. a single-row widget).
 
     This is what makes short, prose-like wording usable as a marker. A live
     modal replaces the input box, so it really is the pane's tail; transcript
@@ -414,7 +501,8 @@ def _try_extract_tail(
     if end is None or not any(p.search(lines[end]) for p in pattern.bottom):
         return None
 
-    for i in range(end - pattern.min_gap, max(0, end - _TAIL_WINDOW) - 1, -1):
+    window = _TAIL_WINDOW if pattern.tail_window is None else pattern.tail_window
+    for i in range(end - pattern.min_gap, max(live_from, end - window) - 1, -1):
         if any(p.search(lines[i]) for p in pattern.top):
             content = "\n".join(lines[i : end + 1]).rstrip()
             return InteractiveUIContent(
@@ -426,20 +514,26 @@ def _try_extract_tail(
     return None
 
 
-def _try_extract(lines: list[str], pattern: UIPattern) -> InteractiveUIContent | None:
+def _try_extract(
+    lines: list[str], pattern: UIPattern, live_from: int = 0
+) -> InteractiveUIContent | None:
     """Try to extract content matching a single UI pattern.
 
     When ``pattern.bottom`` is empty, the region extends from the top marker
     to the last non-empty line (used for multi-tab AskUserQuestion where the
     bottom delimiter varies by tab).
+
+    ``live_from`` (see :func:`_live_region_start`) excludes the transcript
+    above a drawn input box, so a quoted widget can't be mistaken for one.
     """
     if pattern.tail_only:
-        return _try_extract_tail(lines, pattern)
+        return _try_extract_tail(lines, pattern, live_from)
 
     top_idx: int | None = None
     bottom_idx: int | None = None
 
-    for i, line in enumerate(lines):
+    for i in range(live_from, len(lines)):
+        line = lines[i]
         if top_idx is None:
             if any(p.search(line) for p in pattern.top):
                 top_idx = i
@@ -482,8 +576,9 @@ def extract_interactive_content(pane_text: str) -> InteractiveUIContent | None:
         return None
 
     lines = pane_text.strip().split("\n")
+    live_from = _live_region_start(lines)
     for pattern in UI_PATTERNS:
-        result = _try_extract(lines, pattern)
+        result = _try_extract(lines, pattern, live_from)
         if result:
             return result
     return None

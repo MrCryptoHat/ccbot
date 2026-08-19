@@ -302,6 +302,14 @@ STRINGS.update(
             "ru": "❌ Не удалось передать сообщение агенту: {err}",
             "en": "❌ Failed to forward your message to the agent: {err}",
         },
+        "bot.pending_deferred": {
+            "ru": "⏳ Агент сначала ждёт ответа в диалоге \\(фото выше\\)\\. Выбери вариант кнопками ↑↓⏎ — твоё сообщение уйдёт ему сразу после этого\\.",
+            "en": "⏳ The agent is waiting for an answer in the dialog first \\(photo above\\)\\. Pick an option with the ↑↓⏎ buttons — your message goes to it right after\\.",
+        },
+        "bot.pending_undelivered": {
+            "ru": "⚠️ Сообщение так и не ушло агенту — диалог всё ещё ждёт ответа\\. Ответь на него и отправь сообщение ещё раз\\.",
+            "en": "⚠️ Your message never reached the agent — the dialog is still waiting for an answer\\. Answer it, then send the message again\\.",
+        },
         "bot.hook_missing": {
             "ru": "⚠️ Хук отслеживания сессий не установлен — ответы агента не будут приходить в чат.\nВыполните на сервере: `uv run ccbot hook --install`, затем перезапустите агента.",
             "en": "⚠️ The session-tracking hook is not installed — the agent's replies will NOT reach this chat.\nOn the server run: `uv run ccbot hook --install`, then restart the agent.",

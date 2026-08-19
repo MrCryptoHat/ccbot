@@ -45,7 +45,7 @@ from .handlers import (
     not_authorized_text,
 )
 from .handlers.coalesce import coalesce_text
-from .handlers.delivery import deliver_user_text
+from .handlers.delivery import deliver_user_text, forward_pending_text
 from .handlers.callbacks import callback_handler
 from .handlers.commands import (
     _auto_bind_to_directory,
@@ -137,8 +137,6 @@ from .terminal_parser import extract_bash_output, is_interactive_ui
 from .tmux_manager import tmux_manager
 from .transcribe import close_client as close_transcribe_client
 from .voice import (
-    build_on_directive,
-    off_directive,
     check_runtime_dependencies as check_voice_dependencies,
     close_client as close_tts_client,
 )
@@ -186,20 +184,6 @@ def _topic_name_from_root(message: object) -> str | None:
         return None
     name = (getattr(ftc, "name", None) or "").strip()
     return name or None
-
-
-async def _forward_pending_after_autobind(
-    wid: str, user_id: int, thread_id: int, text: str
-) -> None:
-    """Send ``text`` to a freshly auto-bound window, applying any voice directive."""
-    directive = session_manager.consume_voice_directive(user_id, thread_id)
-    if directive == "on":
-        text = f"{build_on_directive()}\n\n---\n{text}"
-    elif directive == "off":
-        text = f"{off_directive()}\n\n---\n{text}"
-    ok, msg = await session_manager.send_to_window(wid, text)
-    if not ok:
-        logger.warning("Auto-bind: failed to forward pending text: %s", msg)
 
 
 async def text_handler(
@@ -305,7 +289,9 @@ async def text_handler(
             if new_wid is not None:
                 if context.user_data is not None:
                     context.user_data.pop("_pending_thread_text", None)
-                await _forward_pending_after_autobind(new_wid, user.id, thread_id, text)
+                await forward_pending_text(
+                    context.bot, user.id, thread_id, new_wid, text
+                )
             logger.info(
                 "Rebound pre-existing topic by memory → %s (user=%d, thread=%d)",
                 remembered,
@@ -336,8 +322,8 @@ async def text_handler(
                     # forwards on selection instead.
                     if context.user_data is not None:
                         context.user_data.pop("_pending_thread_text", None)
-                    await _forward_pending_after_autobind(
-                        new_wid, user.id, thread_id, text
+                    await forward_pending_text(
+                        context.bot, user.id, thread_id, new_wid, text
                     )
                 logger.info(
                     "Auto-bound pre-existing topic %r by name (user=%d, thread=%d)",
@@ -837,31 +823,23 @@ async def _create_and_bind_window(
                 if context.user_data is not None:
                     context.user_data.pop("_pending_thread_text", None)
                     context.user_data.pop("_pending_thread_id", None)
-                directive = session_manager.consume_voice_directive(
-                    user.id, pending_thread_id
-                )
-                if directive == "on":
-                    pending_text = f"{build_on_directive()}\n\n---\n{pending_text}"
-                elif directive == "off":
-                    pending_text = f"{off_directive()}\n\n---\n{pending_text}"
                 # Hookless runtimes that auto-forward declare their boot time
                 # (first_message_settle_sec) — keys typed into a still-booting
                 # TUI can be swallowed. Claude's is 0 (the hook wait above
                 # already spaced the forward).
                 if rt.first_message_settle_sec > 0:
                     await asyncio.sleep(rt.first_message_settle_sec)
-                send_ok, send_msg = await session_manager.send_to_window(
+                # Through the shared pipeline, never a bare send_to_window: a
+                # resumed window can open on Claude Code's resume-cost dialog
+                # and a blind Enter there picks «Resume from summary» — i.e.
+                # compacts the session the user just chose to continue.
+                await forward_pending_text(
+                    context.bot,
+                    user.id,
+                    pending_thread_id,
                     created_wid,
                     pending_text,
                 )
-                if not send_ok:
-                    logger.warning("Failed to forward pending text: %s", send_msg)
-                    await safe_send(
-                        context.bot,
-                        resolved_chat,
-                        i18n.tr("bot.pending_send_failed", err=send_msg),
-                        message_thread_id=pending_thread_id,
-                    )
             elif context.user_data is not None:
                 # No forward (no pending text, or a runtime we must not
                 # auto-type into) — drop both pending keys so they don't leak

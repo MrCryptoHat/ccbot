@@ -125,6 +125,7 @@ from .codex_status_parser import (
     parse_status_output as parse_codex_status,
 )
 from .context_parser import format_context_message, parse_context_output
+from .delivery import forward_pending_text
 from .history import send_history
 from .interactive_ui import (
     clear_interactive_msg,
@@ -763,17 +764,13 @@ async def _handle_win_bind(
         context.user_data.pop("_pending_thread_text", None)
         context.user_data.pop("_pending_thread_id", None)
     if pending_text:
-        send_ok, send_msg = await session_manager.send_to_window(
-            selected_wid, pending_text
+        # Shared pipeline (voice directive + widget guard): this window was
+        # already running when the user picked it, so its pane may well hold
+        # a permission prompt nobody has answered — typing into that would
+        # confirm the highlighted option instead of asking the question.
+        await forward_pending_text(
+            context.bot, user.id, thread_id, selected_wid, pending_text
         )
-        if not send_ok:
-            logger.warning("Failed to forward pending text: %s", send_msg)
-            await safe_send(
-                context.bot,
-                resolved_chat,
-                tr("bot.pending_send_failed", err=send_msg),
-                message_thread_id=thread_id,
-            )
     await query.answer(tr("cb.bound"))
 
 
