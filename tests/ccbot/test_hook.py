@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -496,3 +497,70 @@ class TestHookMainValidation:
             tmux_pane="%34",
         )
         assert not (tmp_path / "session_map.json").exists()
+
+
+class TestAgentBrief:
+    """SessionStart must hand the session ccbot's `(send file: …)` protocol.
+
+    Nothing in Claude Code hints at that marker, so without this the agent
+    says "I saved it to /tmp/x.pdf" and no attachment is ever sent.
+    """
+
+    @staticmethod
+    def _run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, session_name: str) -> str:
+        monkeypatch.setenv("CCBOT_DIR", str(tmp_path))
+        monkeypatch.setenv("TMUX_PANE", "%7")
+        monkeypatch.setattr("ccbot.hook._count_claude_ancestors", lambda: 1)
+        monkeypatch.setattr(
+            "ccbot.hook.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(
+                a[0], 0, stdout=f"{session_name}:@3:project\n", stderr=""
+            ),
+        )
+        monkeypatch.setattr(sys, "argv", ["ccbot", "hook"])
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "cwd": "/home/user/project",
+                        "hook_event_name": "SessionStart",
+                    }
+                )
+            ),
+        )
+        out = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", out)
+        hook_main()
+        return out.getvalue()
+
+    def test_brief_emitted_for_ccbot_window(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        payload = json.loads(self._run(monkeypatch, tmp_path, "ccbot"))
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        assert "(send file: <absolute path>)" in ctx
+        # The map write must still have happened — stdout is the extra, not
+        # a replacement for what makes replies arrive at all.
+        assert (tmp_path / "session_map.json").exists()
+
+    def test_foreign_tmux_session_gets_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The operator's own tmux: briefing it would make that Claude emit
+        # markers nobody relays.
+        assert self._run(monkeypatch, tmp_path, "work") == ""
+
+    def test_custom_session_name_honoured(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("TMUX_SESSION_NAME", "agents")
+        assert "send file" in self._run(monkeypatch, tmp_path, "agents")
+
+    def test_opt_out_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("CCBOT_AGENT_BRIEF", "0")
+        assert self._run(monkeypatch, tmp_path, "ccbot") == ""
+        assert (tmp_path / "session_map.json").exists()

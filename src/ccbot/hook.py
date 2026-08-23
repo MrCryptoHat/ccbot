@@ -1,9 +1,10 @@
 """Hook subcommand for Claude Code session tracking.
 
 Called by Claude Code's SessionStart hook to maintain a window↔session
-mapping in <CCBOT_DIR>/session_map.json. Also provides `--install` to
-auto-configure the hook in Claude Code's settings.json (honours
-CLAUDE_CONFIG_DIR, default ~/.claude).
+mapping in <CCBOT_DIR>/session_map.json, and to hand the starting session
+ccbot's agent briefing (the `(send file: …)` protocol) as SessionStart
+context. Also provides `--install` to auto-configure the hook in Claude
+Code's settings.json (honours CLAUDE_CONFIG_DIR, default ~/.claude).
 
 This module must NOT import config.py (which requires TELEGRAM_BOT_TOKEN),
 since hooks run inside tmux panes where bot env vars are not set.
@@ -32,6 +33,68 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 # The hook command suffix for legacy (unquoted) entry detection
 _HOOK_COMMAND_SUFFIX = "ccbot hook"
+
+# Agent-directed briefing injected into every ccbot-owned Claude session as
+# SessionStart context. It exists because the `(send file: …)` marker is
+# ccbot's OWN protocol: nothing in Claude Code hints at it, so an agent asked
+# for a file writes "I saved it to /tmp/report.html" and the user gets a
+# sentence instead of a file — a failure that is silent on both ends. English
+# and NOT run through i18n.py: agent-directed text, like the voice protocol.
+_AGENT_BRIEF = """\
+[ccbot] Your replies are relayed to a Telegram topic; the person reading them \
+is on a phone.
+
+To DELIVER A FILE to that chat, put the marker `(send file: <absolute path>)` \
+in your reply text. ccbot uploads that file as a Telegram document and strips \
+the marker before showing the message, so write it on its own line and \
+describe the file in normal prose around it. Several markers in one reply \
+send several files. Naming a path without the marker ("saved it to \
+/tmp/out.pdf") sends nothing.
+
+What breaks it:
+- A relative path, a `~` shortcut, or backticks/quotes around the path — the \
+path is taken verbatim and must be absolute and readable by the ccbot process.
+- A file deleted before the reply lands (write it somewhere durable, not a \
+temp file you clean up in the same turn).
+- Over 50 MB: that is Telegram's cap on a bot upload.
+
+Everything, images included, arrives as an uncompressed document."""
+
+
+def _ccbot_tmux_session_name() -> str:
+    """The tmux session name whose windows ccbot actually monitors.
+
+    Mirrors ``config.tmux_session_name`` (``TMUX_SESSION_NAME``, default
+    ``ccbot``) without importing config.py — see the module docstring. The
+    session_map read side filters on exactly this prefix, so it is also the
+    right gate for the briefing: a hook firing in the operator's own tmux
+    must not tell that Claude it can send files to Telegram.
+    """
+    return os.environ.get("TMUX_SESSION_NAME", "") or "ccbot"
+
+
+def _emit_agent_brief() -> None:
+    """Print the SessionStart context payload that carries `_AGENT_BRIEF`.
+
+    Claude Code merges ``hookSpecificOutput.additionalContext`` into the
+    session's context; a version that fails to parse the JSON falls back to
+    treating SessionStart stdout as context, so the briefing lands either
+    way. Opt out with ``CCBOT_AGENT_BRIEF=0`` (an operator who already
+    documents the protocol in their own CLAUDE.md).
+    """
+    if os.environ.get("CCBOT_AGENT_BRIEF", "").strip().lower() in ("0", "false", "no"):
+        return
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": _AGENT_BRIEF,
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def _claude_settings_file() -> Path:
@@ -606,3 +669,12 @@ def hook_main() -> None:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
     except OSError as e:
         logger.error("Failed to write session_map: %s", e)
+
+    # Teach this session ccbot's own protocol (see _AGENT_BRIEF). Gated on the
+    # tmux session name for the same reason the read side is: only windows
+    # under ccbot's session are relayed to Telegram, and briefing the
+    # operator's personal Claude would make it emit markers nobody reads.
+    # Runs last on purpose — printing to stdout must not preempt the
+    # session_map write, which is what makes replies arrive at all.
+    if tmux_session_name == _ccbot_tmux_session_name():
+        _emit_agent_brief()

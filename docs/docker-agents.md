@@ -74,6 +74,22 @@ So the contract is small, but strict:
      > /ipc/session-map.json.tmp && mv /ipc/session-map.json.tmp /ipc/session-map.json
    ```
 
+   The host-side hook (`ccbot hook`) also briefs the starting session on the
+   `(send file: …)` protocol — nothing in Claude Code hints at that marker, so
+   an agent that was never told about it answers "I saved it to /tmp/report.pdf"
+   and no attachment is ever sent. A container hook is your own script, so add
+   the same briefing to it — print it on stdout as SessionStart context (mind
+   the `/workspace` whitelist, which is stricter than the host's):
+
+   ```sh
+   jq -n --arg ctx 'Your replies are relayed to a Telegram topic. To deliver a
+   file, put the marker `(send file: /workspace/<path>)` in your reply text —
+   absolute, under /workspace, under 50 MB, and the file must still exist.
+   ccbot uploads it as a document and strips the marker. Naming a path without
+   the marker sends nothing.' \
+     '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+   ```
+
    registered in the container's `~/.claude/settings.json`:
 
    ```json
