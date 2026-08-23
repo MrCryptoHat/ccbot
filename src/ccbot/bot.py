@@ -1074,6 +1074,13 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                 send_kwargs = {}
                 if thread_id is not None:
                     send_kwargs["message_thread_id"] = thread_id
+                # A marker that resolves to nothing must NOT fail silently:
+                # the agent's own text already claims the file was sent, so a
+                # quiet `continue` leaves the user waiting for an attachment
+                # that will never come (and the agent unaware it must retry).
+                # Both dead ends — whitelist rejection and a path that isn't a
+                # file (typo, backticks, relative path, temp file already
+                # cleaned up) — are logged AND reported in-topic.
                 for fpath in file_matches:
                     raw = fpath.strip()
                     resolved = session_manager.resolve_agent_file_path(wid, raw)
@@ -1084,9 +1091,28 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                             wid,
                             raw,
                         )
+                        await safe_send(
+                            bot,
+                            chat_id,
+                            i18n.tr("bot.send_file_rejected", path=raw),
+                            **send_kwargs,
+                        )
                         continue
                     if resolved.is_file():
                         await send_document(bot, chat_id, str(resolved), **send_kwargs)
+                    else:
+                        logger.warning(
+                            "send-file missing (binding=%s, path=%r, resolved=%s)",
+                            wid,
+                            raw,
+                            resolved,
+                        )
+                        await safe_send(
+                            bot,
+                            chat_id,
+                            i18n.tr("bot.send_file_missing", path=raw),
+                            **send_kwargs,
+                        )
                 msg.text = re.sub(r"\(send file: [^)]+\)\s*", "", msg.text).strip()
                 if not msg.text:
                     continue

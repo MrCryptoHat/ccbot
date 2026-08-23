@@ -314,6 +314,17 @@ STRINGS.update(
             "ru": "⚠️ Хук отслеживания сессий не установлен — ответы агента не будут приходить в чат.\nВыполните на сервере: `uv run ccbot hook --install`, затем перезапустите агента.",
             "en": "⚠️ The session-tracking hook is not installed — the agent's replies will NOT reach this chat.\nOn the server run: `uv run ccbot hook --install`, then restart the agent.",
         },
+        # A (send file: …) marker that resolved to nothing. The agent's own
+        # reply already says the file was sent, so silence here reads as "the
+        # bot ate my attachment" — name the path so the user can just ask again.
+        "bot.send_file_missing": {
+            "ru": "📎 Агент хотел прислать файл, но по пути `{path}` файла нет — вложение не ушло. Попросите сохранить файл заново и прислать ещё раз.",
+            "en": "📎 The agent meant to send a file, but there is nothing at `{path}` — no attachment was sent. Ask it to save the file again and resend.",
+        },
+        "bot.send_file_rejected": {
+            "ru": "📎 Агент попытался прислать файл не из своей рабочей папки (`{path}`) — вложение не ушло. Разрешена только папка /workspace.",
+            "en": "📎 The agent tried to send a file from outside its workspace (`{path}`) — no attachment was sent. Only /workspace is allowed.",
+        },
         "bot.start_welcome": {
             "ru": "🤖 *Терминальные агенты в Telegram*\n\nКаждый топик — отдельный агент (Claude Code, Codex, …). Создайте новый топик, чтобы начать.",
             "en": "🤖 *Your terminal agents in Telegram*\n\nEach topic is one agent (Claude Code, Codex, …). Create a new topic to start.",
