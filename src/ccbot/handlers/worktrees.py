@@ -54,6 +54,7 @@ from .callback_data import (
 from .cleanup import clear_topic_state
 from .directory_browser import STATE_KEY
 from .message_sender import safe_send
+from .provisioning import claim_topic
 
 logger = logging.getLogger(__name__)
 
@@ -193,44 +194,47 @@ async def provision_worktree_agent(
         return False, tr("wt.err_topic_not_created", error=e)
     new_thread = ft.message_thread_id
 
-    ok, msg = await wtc.add_worktree(base_repo, wt_path, branch, base)
-    if not ok:
-        await _rollback_topic(bot, chat_id, new_thread)
-        return False, f"worktree add: {msg[:120]}"
+    with claim_topic(user_id, new_thread):
+        ok, msg = await wtc.add_worktree(base_repo, wt_path, branch, base)
+        if not ok:
+            await _rollback_topic(bot, chat_id, new_thread)
+            return False, f"worktree add: {msg[:120]}"
 
-    await wtc.seed_worktree(base_repo, wt_path)
+        await wtc.seed_worktree(base_repo, wt_path)
 
-    session_manager.set_group_chat_id(user_id, new_thread, chat_id)
-    # Directory only — no runtime. The picker the first message opens is where
-    # the agent gets chosen, and recording one here would pre-answer it.
-    session_manager.record_thread_directory(user_id, new_thread, str(wt_path))
-    session_manager.set_worktree_meta(
-        user_id,
-        new_thread,
-        WorktreeMeta(
-            repo=str(base_repo),
-            repo_name=repo_name,
-            branch=branch,
-            base_branch=base,
-            path=str(wt_path),
-            task_title=task_title,
-        ),
-    )
-    await safe_send(
-        bot,
-        chat_id,
-        _welcome_text(repo_name, branch),
-        message_thread_id=new_thread,
-        reply_markup=_welcome_keyboard(str(wt_path), branch),
-    )
-    logger.info(
-        "Provisioned worktree %s on %s (thread=%d, path=%s) — awaiting agent pick",
-        branch,
-        repo_name,
-        new_thread,
-        wt_path,
-    )
-    return True, tr("wt.provision_ok", repo=repo_name, title=task_title, branch=branch)
+        session_manager.set_group_chat_id(user_id, new_thread, chat_id)
+        # Directory only — no runtime. The picker the first message opens is where
+        # the agent gets chosen, and recording one here would pre-answer it.
+        session_manager.record_thread_directory(user_id, new_thread, str(wt_path))
+        session_manager.set_worktree_meta(
+            user_id,
+            new_thread,
+            WorktreeMeta(
+                repo=str(base_repo),
+                repo_name=repo_name,
+                branch=branch,
+                base_branch=base,
+                path=str(wt_path),
+                task_title=task_title,
+            ),
+        )
+        await safe_send(
+            bot,
+            chat_id,
+            _welcome_text(repo_name, branch),
+            message_thread_id=new_thread,
+            reply_markup=_welcome_keyboard(str(wt_path), branch),
+        )
+        logger.info(
+            "Provisioned worktree %s on %s (thread=%d, path=%s) — awaiting agent pick",
+            branch,
+            repo_name,
+            new_thread,
+            wt_path,
+        )
+        return True, tr(
+            "wt.provision_ok", repo=repo_name, title=task_title, branch=branch
+        )
 
 
 # --- create flow (➕ button → name capture) ---------------------------------

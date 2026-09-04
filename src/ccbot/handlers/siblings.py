@@ -41,6 +41,7 @@ from ..worktrees import dedup_slug, slugify
 from . import effective_user, get_thread_id
 from .callback_data import CALLBACK_WID_MAX, CB_SIB_CANCEL, CB_SIB_NEW
 from .message_sender import safe_send
+from .provisioning import claim_topic
 
 logger = logging.getLogger(__name__)
 
@@ -197,57 +198,58 @@ async def _provision_docker_sibling(
         return False, tr("wt.err_topic_not_created", error=e)
     new_thread = ft.message_thread_id
 
-    # The parent's cwd is the container path Claude reported (/workspace);
-    # a sibling starts in the same place — that's the whole point.
-    parent_cwd = session_manager.get_window_state(parent_wid).cwd or "/workspace"
-    session_id = str(uuid.uuid4())
-    started = await session_manager.start_docker_agent(
-        binding, new_session_id=session_id, cwd=parent_cwd
-    )
-    if not started:
-        await _rollback_topic(bot, chat_id, new_thread)
-        return False, tr("sib.err_start")
-
-    named = await _hook_names_the_sibling(
-        target.agent.session_map_path, binding, f"docker:{agent_name}", session_id
-    )
-    if named is False:
-        # This container's hook can't tell its agents apart, so the sibling's
-        # next session would be reported as the PARENT's. Undo everything
-        # rather than leave a trap that fires on the sibling's first /clear.
-        await session_manager.kill_agent(binding)
-        session_manager.forget_binding(binding)
-        await _rollback_topic(bot, chat_id, new_thread)
-        logger.warning(
-            "Sibling refused: %s's hook wrote the parent key for session %s "
-            "(it must key off AGENT_NAME)",
-            agent_name,
-            session_id,
+    with claim_topic(user_id, new_thread):
+        # The parent's cwd is the container path Claude reported (/workspace);
+        # a sibling starts in the same place — that's the whole point.
+        parent_cwd = session_manager.get_window_state(parent_wid).cwd or "/workspace"
+        session_id = str(uuid.uuid4())
+        started = await session_manager.start_docker_agent(
+            binding, new_session_id=session_id, cwd=parent_cwd
         )
-        return False, tr("sib.err_hook", name=agent_name)
-    if named is None:
-        logger.warning(
-            "Sibling %s: the container's hook never reported it; tracking "
-            "relies on the pinned session id alone",
+        if not started:
+            await _rollback_topic(bot, chat_id, new_thread)
+            return False, tr("sib.err_start")
+
+        named = await _hook_names_the_sibling(
+            target.agent.session_map_path, binding, f"docker:{agent_name}", session_id
+        )
+        if named is False:
+            # This container's hook can't tell its agents apart, so the sibling's
+            # next session would be reported as the PARENT's. Undo everything
+            # rather than leave a trap that fires on the sibling's first /clear.
+            await session_manager.kill_agent(binding)
+            session_manager.forget_binding(binding)
+            await _rollback_topic(bot, chat_id, new_thread)
+            logger.warning(
+                "Sibling refused: %s's hook wrote the parent key for session %s "
+                "(it must key off AGENT_NAME)",
+                agent_name,
+                session_id,
+            )
+            return False, tr("sib.err_hook", name=agent_name)
+        if named is None:
+            logger.warning(
+                "Sibling %s: the container's hook never reported it; tracking "
+                "relies on the pinned session id alone",
+                binding,
+            )
+
+        session_manager.bind_thread(user_id, new_thread, binding, window_name=display)
+        session_manager.set_group_chat_id(user_id, new_thread, chat_id)
+        await safe_send(
+            bot,
+            chat_id,
+            tr("sib.welcome_docker", parent=agent_name),
+            message_thread_id=new_thread,
+        )
+        logger.info(
+            "Provisioned sibling docker agent %s (thread=%d, container=%s, session=%s)",
             binding,
+            new_thread,
+            target.agent.container,
+            target.tmux_session,
         )
-
-    session_manager.bind_thread(user_id, new_thread, binding, window_name=display)
-    session_manager.set_group_chat_id(user_id, new_thread, chat_id)
-    await safe_send(
-        bot,
-        chat_id,
-        tr("sib.welcome_docker", parent=agent_name),
-        message_thread_id=new_thread,
-    )
-    logger.info(
-        "Provisioned sibling docker agent %s (thread=%d, container=%s, session=%s)",
-        binding,
-        new_thread,
-        target.agent.container,
-        target.tmux_session,
-    )
-    return True, tr("sib.provision_ok", name=display)
+        return True, tr("sib.provision_ok", name=display)
 
 
 async def _provision_tmux_sibling(
@@ -279,24 +281,25 @@ async def _provision_tmux_sibling(
         return False, tr("wt.err_topic_not_created", error=e)
     new_thread = ft.message_thread_id
 
-    session_manager.set_group_chat_id(user_id, new_thread, chat_id)
-    # Directory only — no runtime: recording one would pre-answer the picker.
-    session_manager.record_thread_directory(user_id, new_thread, cwd)
-    # Flags this topic as an EXTRA agent, which is what makes the panel offer
-    # 🗑 here (a main topic has no delete button — see can_delete_agent).
-    session_manager.mark_sub_agent_topic(user_id, new_thread)
-    await safe_send(
-        bot,
-        chat_id,
-        tr("sib.welcome_tmux", path=cwd),
-        message_thread_id=new_thread,
-    )
-    logger.info(
-        "Provisioned sibling topic on %s (thread=%d) — awaiting agent pick",
-        cwd,
-        new_thread,
-    )
-    return True, tr("sib.provision_ok", name=display)
+    with claim_topic(user_id, new_thread):
+        session_manager.set_group_chat_id(user_id, new_thread, chat_id)
+        # Directory only — no runtime: recording one would pre-answer the picker.
+        session_manager.record_thread_directory(user_id, new_thread, cwd)
+        # Flags this topic as an EXTRA agent, which is what makes the panel offer
+        # 🗑 here (a main topic has no delete button — see can_delete_agent).
+        session_manager.mark_sub_agent_topic(user_id, new_thread)
+        await safe_send(
+            bot,
+            chat_id,
+            tr("sib.welcome_tmux", path=cwd),
+            message_thread_id=new_thread,
+        )
+        logger.info(
+            "Provisioned sibling topic on %s (thread=%d) — awaiting agent pick",
+            cwd,
+            new_thread,
+        )
+        return True, tr("sib.provision_ok", name=display)
 
 
 async def provision_sibling_agent(

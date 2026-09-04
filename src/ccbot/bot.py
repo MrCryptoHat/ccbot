@@ -121,6 +121,7 @@ from .handlers.message_sender import (
 )
 from .handlers.diff_view import capture_and_send as capture_and_send_diffs
 from .runtimes import get_runtime
+from .handlers.provisioning import wait_for_topic
 from .handlers.reaction_confirm import handle_message_reaction
 from .handlers.task_pin import (
     pin_task_message,
@@ -272,6 +273,13 @@ async def text_handler(
         return
 
     wid = session_manager.get_window_for_thread(user.id, thread_id)
+    if wid is None and await wait_for_topic(user.id, thread_id):
+        # The topic exists but ccbot is still building what's behind it (a
+        # docker sibling starting in its container, a worktree being checked
+        # out). Waiting it out is what keeps the first message from falling
+        # into the unbound-topic fallback and drawing a HOST directory browser
+        # in a topic whose agent lives in a container.
+        wid = session_manager.get_window_for_thread(user.id, thread_id)
     if wid is None:
         # 1. Learned memory (most reliable, name-independent): this topic was
         #    bound to a directory before — its window since died / tmux

@@ -20,6 +20,7 @@ from . import effective_user, get_thread_id, is_user_allowed, not_authorized_tex
 from .delivery import deliver_user_text
 from .siblings import cancel_pending_naming
 from .message_sender import safe_reply, send_photo
+from .provisioning import wait_for_topic
 from .task_pin import pin_task_message, should_pin_task
 from ..config import config
 from ..i18n import tr
@@ -147,6 +148,11 @@ async def _validate_media_context(
         return None, "no_topic"
 
     wid = session_manager.get_window_for_thread(user_id, thread_id)
+    if wid is None and await wait_for_topic(user_id, thread_id):
+        # Mid-provision (docker sibling still starting, worktree still being
+        # checked out) — the binding is seconds away, so hold rather than
+        # answer "this topic has no agent".
+        wid = session_manager.get_window_for_thread(user_id, thread_id)
     if wid is None:
         if update.message:
             await safe_reply(
