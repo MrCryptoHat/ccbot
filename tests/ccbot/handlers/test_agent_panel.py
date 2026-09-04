@@ -192,3 +192,35 @@ class TestKeyboardGating:
         flat = [b.callback_data for row in kb.inline_keyboard for b in row]
         assert any(str(d).startswith("cm:mcyc:") for d in flat)  # Mode present
         assert not any(str(d).startswith("cm:effort:") for d in flat)  # Effort gone
+
+
+class TestDeleteButtonGating:
+    """🗑 is offered only for agents created as EXTRAS beside another one.
+
+    A main topic carries the project's whole history; a stray tap there used
+    to delete the agent AND the topic, which is exactly what this gate stops.
+    """
+
+    def test_main_topic_has_no_delete(self, panel_window):
+        wid = panel_window("@20", "claude")
+        assert not _has(_prefixes(wid), "ad:del:")
+        assert not _has(_prefixes(wid), "wt:del:")
+
+    def test_flagged_sibling_topic_gets_delete(self, panel_window):
+        wid = panel_window("@21", "claude")
+        session_manager.thread_bindings[999] = {77: wid}
+        session_manager.sub_agent_topics.add("999:77")
+        try:
+            assert _has(_prefixes(wid), "ad:del:")
+        finally:
+            session_manager.thread_bindings.pop(999, None)
+            session_manager.sub_agent_topics.discard("999:77")
+
+    def test_docker_sub_agent_gets_delete(self, panel_window):
+        # A docker sub-agent is self-identifying from its binding shape.
+        wid = panel_window("docker:assistant/notes", "claude")
+        assert _has(_prefixes(wid), "ad:del:")
+
+    def test_docker_main_agent_has_no_delete(self, panel_window):
+        wid = panel_window("docker:assistant", "claude")
+        assert not _has(_prefixes(wid), "ad:del:")

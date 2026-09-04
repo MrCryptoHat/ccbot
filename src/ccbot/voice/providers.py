@@ -306,7 +306,7 @@ async def synthesize_speech(text: str) -> bytes:
         Exception: from the last attempt if every configured provider fails.
     """
     if len(text) > TTS_MAX_INPUT_LENGTH:
-        text = text[: TTS_MAX_INPUT_LENGTH - 20] + "... (обрезано)"
+        text = text[: TTS_MAX_INPUT_LENGTH - 20] + "... (truncated)"
 
     configured = _resolve_chain()
     if not configured:

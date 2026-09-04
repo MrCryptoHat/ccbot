@@ -1,15 +1,20 @@
-"""🗑 Delete agent + topic, for any bound topic (the non-worktree half).
+"""🗑 Delete agent + topic — for EXTRA agents only (the non-worktree half).
 
-Worktree topics keep their own 🗑 (`handlers/worktrees`) because deleting one
-can destroy unmerged git work and needs the dirty/unmerged guard. Everything
-else — a plain tmux topic, a sibling agent, a container's own agent — is torn
-down here: one red confirm, then the same teardown a hard-deleted topic gets
-(`cleanup.purge_deleted_topic`), followed by deleting the topic itself.
+Scope is the safety property here: only an agent ccbot created beside an
+existing one can be deleted from the panel — a ➕ sibling (docker sub-agent
+binding, or a tmux sibling flagged in ``sub_agent_topics``). A main topic
+holds the project's whole history, so it gets no 🗑 at all
+(`session_manager.can_delete_agent`, re-checked on both taps here because an
+old panel scrolled back to still carries the button). Worktree topics keep
+their own 🗑 (`handlers/worktrees`): deleting one can destroy unmerged git
+work and needs the dirty/unmerged guard.
 
-What "delete" means per kind is spelled out in the confirm text, because it
-differs where it matters:
-  - tmux topic  → its window (and the agent in it) is killed;
-  - sibling     → its in-container session is killed;
+The flow is one red confirm, then the same teardown a hard-deleted topic gets
+(`cleanup.purge_deleted_topic`), followed by deleting the topic itself. What
+"delete" means is spelled out in the confirm text, because it differs where
+it matters:
+  - tmux sibling → its window (and the agent in it) is killed;
+  - docker sub-agent → its in-container session is killed;
   - docker agent → the container's own agent keeps running (its lifecycle is
     the container's, not the topic's) — only the topic and the binding go.
 """
@@ -58,7 +63,7 @@ async def _handle_agent_del(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """🗑 Удалить агента — show the red confirm on the panel."""
+    """🗑 Delete agent — show the red confirm on the panel."""
     thread_id = get_thread_id(update)
     if thread_id is None:
         await query.answer(tr("wt.not_in_topic"), show_alert=True)
@@ -70,6 +75,11 @@ async def _handle_agent_del(
         session_manager.get_window_for_thread(user.id, thread_id)
         or data[len(CB_AGENT_DEL) :]
     )
+    # A panel scrolled back to from before this rule existed still carries the
+    # button, so the refusal lives here too — not only in the keyboard builder.
+    if not session_manager.can_delete_agent(wid):
+        await query.answer(tr("agentdel.main_topic"), show_alert=True)
+        return
     display = session_manager.get_display_name(wid)
     if context.user_data is not None:
         context.user_data[_TARGET_KEY] = (thread_id, wid)
@@ -110,6 +120,11 @@ async def _handle_agent_delok(
     wid = session_manager.get_window_for_thread(user.id, thread_id)
     if not wid:
         await query.answer(tr("wt.agent_gone"), show_alert=True)
+        return
+    # Re-checked on the destructive tap: the topic may have been rebound to a
+    # main agent between the two taps.
+    if not session_manager.can_delete_agent(wid):
+        await query.answer(tr("agentdel.main_topic"), show_alert=True)
         return
     # The confirm caption named a specific agent; this payload only carries the
     # topic. A topic can rebind between the two taps (tmux-server restart
@@ -158,7 +173,7 @@ async def _handle_agent_delno(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """↩ Отмена — restore the agent panel caption + keyboard."""
+    """↩ Cancel — restore the agent panel caption + keyboard."""
     from telegram.helpers import escape_markdown
 
     from .commands import _build_commands_keyboard

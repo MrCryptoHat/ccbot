@@ -145,64 +145,8 @@ OLDER = "00000000-1111-2222-3333-444444444444"
 
 
 @pytest.mark.asyncio
-async def test_auto_resume_agents_resumes_newest_without_picker(tmp_path: Path):
-    """Flag ON + existing sessions → resume the newest, no picker (admin fix).
-
-    list_sessions_for_directory is newest-first, so sessions[0] is resumed and
-    window_state is pinned to it (the --resume transcript-tracking override).
-    """
-    d = tmp_path / "editor"
-    d.mkdir()
-    sessions = [SimpleNamespace(session_id=NEWEST), SimpleNamespace(session_id=OLDER)]
-    sm, tm = _autobind_mocks(sessions)
-    ws = sm.get_window_state.return_value
-    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
-    with (
-        patch.object(cmd, "session_manager", sm),
-        patch.object(cmd, "tmux_manager", tm),
-        patch.object(cmd.config, "auto_resume_agents", True),
-        patch.object(cmd, "safe_reply", new=AsyncMock()),
-    ):
-        result = await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
-
-    assert result is True
-    tm.create_window.assert_awaited_once()
-    assert tm.create_window.call_args.kwargs["resume_session_id"] == NEWEST
-    sm.bind_thread.assert_called_once()
-    assert ws.session_id == NEWEST  # window_state pinned to the resumed id
-    # No picker state was armed.
-    assert ctx.user_data.get(cmd.STATE_KEY) != cmd.STATE_SELECTING_SESSION
-
-
-@pytest.mark.asyncio
-async def test_auto_resume_pins_state_when_hook_times_out(tmp_path: Path):
-    """The in-container hook this flag targets is flaky, so a session-map
-    timeout is the expected path — window_state must still be fully pinned
-    (session_id + cwd + window_name) so the monitor tracks the resumed JSONL."""
-    d = tmp_path / "editor"
-    d.mkdir()
-    sessions = [SimpleNamespace(session_id=NEWEST)]
-    sm, tm = _autobind_mocks(sessions)
-    sm.wait_for_session_map_entry = AsyncMock(return_value=False)  # hook timed out
-    ws = sm.get_window_state.return_value
-    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
-    with (
-        patch.object(cmd, "session_manager", sm),
-        patch.object(cmd, "tmux_manager", tm),
-        patch.object(cmd.config, "auto_resume_agents", True),
-        patch.object(cmd, "safe_reply", new=AsyncMock()),
-    ):
-        await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
-
-    assert ws.session_id == NEWEST
-    assert ws.cwd == str(d)
-    assert ws.window_name == "editor"
-    sm._save_state.assert_called()
-
-
-@pytest.mark.asyncio
-async def test_auto_resume_off_shows_picker(tmp_path: Path):
-    """Flag OFF (default) → the interactive session picker, no window created."""
+async def test_existing_sessions_show_picker(tmp_path: Path):
+    """Resumable history in the folder → the picker, no window created."""
     d = tmp_path / "editor"
     d.mkdir()
     sessions = [SimpleNamespace(session_id=NEWEST)]
@@ -211,7 +155,6 @@ async def test_auto_resume_off_shows_picker(tmp_path: Path):
     with (
         patch.object(cmd, "session_manager", sm),
         patch.object(cmd, "tmux_manager", tm),
-        patch.object(cmd.config, "auto_resume_agents", False),
         patch.object(cmd, "safe_reply", new=AsyncMock()),
         patch.object(cmd, "build_session_picker", return_value=("pick", None)),
     ):
@@ -235,7 +178,6 @@ async def test_never_bound_topic_no_sessions_shows_picker(tmp_path: Path):
     with (
         patch.object(cmd, "session_manager", sm),
         patch.object(cmd, "tmux_manager", tm),
-        patch.object(cmd.config, "auto_resume_agents", False),
         patch.object(cmd, "safe_reply", new=AsyncMock()),
         patch.object(cmd, "build_session_picker", return_value=("pick", None)),
     ):
@@ -247,22 +189,74 @@ async def test_never_bound_topic_no_sessions_shows_picker(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_remembered_runtime_rebinds_silently_without_sessions(tmp_path: Path):
-    """A topic that already chose its runtime (remembered) rebinds silently —
-    the picker is only for topics whose agent was never chosen."""
+async def test_remembered_runtime_still_gets_the_picker(tmp_path: Path):
+    """Resolving the FOLDER is automatic; starting a session is not. Even a
+    topic that already ran a runtime, and has nothing to resume, gets the
+    picker — it used to relaunch that CLI silently, forever."""
     d = tmp_path / "editor"
     d.mkdir()
     sm, tm = _autobind_mocks([])
-    sm.get_remembered_runtime = MagicMock(return_value="claude")
+    sm.get_remembered_runtime = MagicMock(return_value="codex")
     sm.has_live_agent_on_cwd = AsyncMock(return_value=False)
     ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
     with (
         patch.object(cmd, "session_manager", sm),
         patch.object(cmd, "tmux_manager", tm),
-        patch.object(cmd.config, "auto_resume_agents", False),
         patch.object(cmd, "safe_reply", new=AsyncMock()),
-        patch.object(cmd, "safe_send", new=AsyncMock(), create=True),
+        patch.object(cmd, "build_session_picker", return_value=("pick", None)),
+    ):
+        result = await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
+
+    assert result is True
+    tm.create_window.assert_not_awaited()  # nothing starts without a tap
+    assert ctx.user_data[cmd.STATE_KEY] == cmd.STATE_SELECTING_SESSION
+    # The picker opens on the runtime the topic last ran, so its resume list
+    # is that CLI's.
+    assert ctx.user_data[cmd.PICKER_RUNTIME_KEY] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_picker_path_does_not_record_runtime(tmp_path: Path):
+    """Showing the picker must NOT arm the topic's runtime memory.
+
+    Recording the guessed runtime before the user picked would make the very
+    next message in the topic take the silent-rebind branch — the picker would
+    appear once and never again."""
+    d = tmp_path / "editor"
+    d.mkdir()
+    sm, tm = _autobind_mocks([])
+    sm.get_remembered_runtime = MagicMock(return_value=None)
+    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+    with (
+        patch.object(cmd, "session_manager", sm),
+        patch.object(cmd, "tmux_manager", tm),
+        patch.object(cmd, "safe_reply", new=AsyncMock()),
+        patch.object(cmd, "build_session_picker", return_value=("pick", None)),
     ):
         await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
 
-    tm.create_window.assert_awaited_once()  # silent rebind — no picker
+    sm.record_thread_directory.assert_called_once_with(1, 42, str(d))
+
+
+@pytest.mark.asyncio
+async def test_picker_offers_change_folder_and_agent(tmp_path: Path):
+    """Auto-bind resolves the folder, never the session: whatever it matched,
+    the user can still switch agent or pick a different directory before
+    anything starts."""
+    d = tmp_path / "editor"
+    d.mkdir()
+    sm, tm = _autobind_mocks([])
+    sm.get_remembered_runtime = MagicMock(return_value=None)
+    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+    with (
+        patch.object(cmd, "session_manager", sm),
+        patch.object(cmd, "tmux_manager", tm),
+        patch.object(cmd, "safe_reply", new=AsyncMock()) as reply,
+    ):
+        await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
+
+    tm.create_window.assert_not_awaited()
+    keyboard = reply.await_args.kwargs["reply_markup"]
+    data = {b.callback_data for row in keyboard.inline_keyboard for b in row}
+    assert "rs:browse" in data  # 📂 Change folder
+    assert any(d_.startswith("rt:") for d_ in data)  # ➕ New session / 🤖 Agent

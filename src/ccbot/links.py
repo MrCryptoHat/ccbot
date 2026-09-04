@@ -2,7 +2,7 @@
 
 Used to surface links *separately* in Telegram so they are easy to tap even
 when the inline copy is word-wrapped or cropped:
-  - every agent text reply (message_queue) — a compact "🔗 Ссылки" list;
+  - every agent text reply (message_queue) — a compact "🔗 Links" list;
   - the Claude Code `/login` screen (interactive_ui) — the full OAuth URL,
     via the dedicated reconstruction in terminal_parser.parse_login_url.
 

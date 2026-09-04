@@ -8,25 +8,6 @@ import time
 
 import pytest
 
-from ccbot import i18n
-
-# ── UI language ──────────────────────────────────────────────────────────
-
-
-@pytest.fixture(autouse=True)
-def _pin_ui_language():
-    """Pin the global UI language to Russian for deterministic assertions.
-
-    Most of the suite asserts the ru catalog values. The shipped default is
-    ``en`` (config.default_lang), and importing session.py sets the global
-    language from it — so without pinning, the ambient language would depend
-    on import order. Setting ru before every test makes i18n-rendered
-    assertions deterministic; tests that exercise a specific language
-    (test_i18n) set it themselves in-body.
-    """
-    i18n.set_language("ru")
-    yield
-
 
 # ── JSONL entry factories ────────────────────────────────────────────────
 

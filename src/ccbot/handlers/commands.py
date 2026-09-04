@@ -77,8 +77,7 @@ from .message_sender import PARSE_MODE, safe_reply
 from ..screenshot import text_to_image
 from ..config import config
 from ..docker_driver import docker_driver
-from ..hook import hook_installed_in_settings
-from .. import i18n, plugins
+from .. import plugins
 from ..i18n import tr
 from ..runtimes import default_runtime, get_runtime
 from ..session import session_manager
@@ -312,13 +311,12 @@ def _format_cron_groups(
 
 
 def menu_keyboard() -> ReplyKeyboardMarkup:
-    """Build the persistent menu ReplyKeyboard in the active UI language.
+    """Build the persistent menu ReplyKeyboard.
 
-    A function (not a module constant) so it picks up the current language
-    on every send — labels switch the moment /lang flips i18n. One row —
-    compact, everything under the thumb. «👾 Agent» opens the panel with
-    Nav/Actions tabs inside. /voice, /lang etc. stay slash-only (too rare
-    for the main keyboard).
+    A function (not a module constant) so a catalog edit takes effect on the
+    next send. One row — compact, everything under the thumb. «👾 Agent»
+    opens the panel with Nav/Actions tabs inside. /voice and friends stay
+    slash-only (too rare for the main keyboard).
     """
     return ReplyKeyboardMarkup(
         [[KeyboardButton(tr("menu.server")), KeyboardButton(tr("menu.agent"))]],
@@ -523,10 +521,11 @@ async def tables_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 def build_bot_commands() -> list[BotCommand]:
-    """The /command menu, described in the active UI language.
+    """The /command menu published to Telegram.
 
-    Rebuilt (not cached) so /lang can re-publish it in the new language —
-    keep this in sync with the CommandHandler registrations in bot.py.
+    Descriptions come from the catalog (`cmd.*`), so a label change is a
+    catalog edit — keep this list in sync with the CommandHandler
+    registrations in bot.py.
     """
     # /screenshot (alias of /commands) still works but is deliberately NOT
     # published — an alias row is noise in the menu new users read as a
@@ -544,7 +543,6 @@ def build_bot_commands() -> list[BotCommand]:
         BotCommand("tables", tr("cmd.tables")),
         BotCommand("diff", tr("cmd.diff")),
         BotCommand("pin", tr("cmd.pin")),
-        BotCommand("lang", tr("cmd.lang")),
         BotCommand("menu", tr("cmd.menu")),
         *plugins.bot_commands(),
     ]
@@ -556,26 +554,6 @@ async def apply_bot_commands(bot: Bot) -> None:
     cmds = build_bot_commands()
     await bot.set_my_commands(cmds, scope=BotCommandScopeDefault())
     await bot.set_my_commands(cmds, scope=BotCommandScopeAllGroupChats())
-
-
-async def lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Switch ccbot's UI language. `/lang ru` / `/lang en` set explicitly;
-    bare `/lang` toggles ru↔en. Re-publishes the localized command menu and
-    re-pins the menu keyboard so its labels relabel immediately."""
-    user = effective_user(update)
-    if not user or not is_user_allowed(user.id):
-        return
-    if not update.message:
-        return
-
-    arg = context.args[0].strip().lower() if context.args else ""
-    if arg in i18n.LANGUAGES:
-        session_manager.set_ui_language(arg)
-    else:
-        session_manager.toggle_ui_language()
-
-    await apply_bot_commands(update.get_bot())
-    await safe_reply(update.message, tr("lang.changed"), reply_markup=menu_keyboard())
 
 
 async def diff_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -750,6 +728,10 @@ async def kill_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 thread_id,
             )
     session_manager.unbind_thread(user.id, thread_id)
+    # Ending the session on purpose also forgets which CLI ran here, so the
+    # next launch in this topic offers the agent picker instead of silently
+    # relaunching the same runtime (the folder memory stays).
+    session_manager.forget_thread_runtime(user.id, thread_id)
     await clear_topic_state(user.id, thread_id, context.bot, context.user_data)
     await safe_reply(update.message, tr("commands.agent_killed", name=display))
 
@@ -889,7 +871,7 @@ def _read_uptime_seconds() -> float | None:
 
 
 def _read_uptime_human() -> str | None:
-    """Format host uptime as '12 дн.' / '5 ч.' / '42 мин.'."""
+    """Format host uptime as '12d' / '5h' / '42m'."""
     seconds = _read_uptime_seconds()
     if seconds is None:
         return None
@@ -954,7 +936,7 @@ def _build_status_text_sync(windows: list) -> str:
 
     # --- Docker container snapshot (consumed by Agents + Docker sections) -
     # Isolated docker-agents (config.active_docker_agents()) are
-    # rendered in the Агенты section, not in Docker — they're agents
+    # rendered in the Agents section, not in Docker — they're agents
     # conceptually, just sandboxed. Pull `docker ps` once and feed both
     # sections from the same map so we don't hit the docker socket twice.
     docker_status: dict[str, str] = {}
@@ -1008,14 +990,14 @@ def _build_status_text_sync(windows: list) -> str:
             dead_docker_agents.append(
                 (agent.name, st or tr("commands.status_not_started"))
             )
-            warnings.append(f"агент {agent.name}")
+            warnings.append(tr("commands.status_warn_agent", name=agent.name))
 
     # Sibling agents living inside those containers (docker:<agent>/<slug>):
     # they exist as bound topics, not config entries, so the loop above can't
     # see them. Alive = their own tmux session is up in the container — one
     # `tmux ls` per container, not per agent. No warning when one is down:
     # unlike a configured agent, a stopped sibling is usually the user's own
-    # «⏹ Завершить».
+    # «⏹ End session».
     sessions_by_container: dict[str, set[str]] = {}
     for binding in sorted(
         {
@@ -1036,8 +1018,8 @@ def _build_status_text_sync(windows: list) -> str:
         else:
             dead_docker_agents.append((name, tr("commands.status_stopped")))
 
-    # Sort alive and dead independently — admin's spec is "живые α-сорт,
-    # потом мёртвые α-сорт". Both groups mix tmux and docker entries; the
+    # Sort alive and dead independently: alive α-sorted, then dead α-sorted.
+    # Both groups mix tmux and docker entries; the
     # ` · 🐳` suffix tells them apart visually.
     alive_combined: list[tuple[str, bool]] = sorted(
         [(n, False) for n in alive_agents] + [(n, True) for n in alive_docker_agents],
@@ -1124,7 +1106,7 @@ def _build_status_text_sync(windows: list) -> str:
 
     # --- Resources (disk + RAM with bars) --------------------------------
     # Label widths chosen to keep the bar column aligned across both rows
-    # ("Диск" is 4 chars cyr, "RAM" is 3 chars latin) — padding to 5 in
+    # ("Disk" is 4 chars, "RAM" is 3) — padding to 5 in
     # Python str width gets us close enough in Telegram's body font.
     res_lines = [tr("commands.status_resources")]
     try:
@@ -1138,7 +1120,7 @@ def _build_status_text_sync(windows: list) -> str:
         pct = usage.used / usage.total * 100 if usage.total else 0
         emoji = _threshold_emoji(pct)
         if pct >= 80:
-            warnings.append(f"диск {int(pct)}%")
+            warnings.append(tr("commands.status_warn_disk", pct=int(pct)))
         res_lines.append(
             f" {emoji} {tr('commands.status_disk'):<6}`{_progress_bar(pct)}`  {int(pct):>3}%   "
             f"{_human_bytes(usage.used)} / {_human_bytes(usage.total)}"
@@ -1153,7 +1135,7 @@ def _build_status_text_sync(windows: list) -> str:
         pct = used_b / total_b * 100 if total_b else 0
         emoji = _threshold_emoji(pct)
         if pct >= 80:
-            warnings.append(f"память {int(pct)}%")
+            warnings.append(tr("commands.status_warn_ram", pct=int(pct)))
         used_gb = used_b / (1024**3)
         total_gb = total_b / (1024**3)
         res_lines.append(
@@ -1272,7 +1254,7 @@ def _action_home_tab(action: str) -> Tab:
 
     Post-action repaints and confirm-cancel return here, so the user lands
     back on the buttons they tapped from. Lifecycle + configuration actions
-    live on «Сессия»; everyday actions on «Действия».
+    live on «Session»; everyday actions on «Actions».
     """
     return "ses" if action in ("kill", "restart", "fresh") else "act"
 
@@ -1285,8 +1267,9 @@ def _action_home_tab(action: str) -> Tab:
 # escapes them for MarkdownV2 before sending.
 #
 # A `.get(key, default)`-compatible object (not a plain dict) so the copy is
-# resolved through `tr` at access time — /lang then switches it live — while
-# callbacks.py keeps consuming it as `CONFIRM_COPY.get(action, ("", ""))`.
+# resolved through `tr` at access time (a catalog edit takes effect without a
+# reload), while callbacks.py keeps consuming it as
+# `CONFIRM_COPY.get(action, ("", ""))`.
 class _ConfirmCopy:
     def get(self, key: str, default: tuple[str, str] = ("", "")) -> tuple[str, str]:
         table: dict[str, tuple[str, str]] = {
@@ -1320,9 +1303,9 @@ class _ConfirmCopy:
 CONFIRM_COPY = _ConfirmCopy()
 
 # Confirm-button colour grammar (from the design panel):
-#   red   = «да, уничтожить» — irreversible loss (clear / kill / delete agent)
-#   green = «да, вперёд к свежему состоянию» — restart / new session (recoverable)
-#   blue  = «да, продолжить» — a reversible op (compact); the default
+#   red   = «yes, destroy it» — irreversible loss (clear / kill / delete agent)
+#   green = «yes, on to a fresh state» — restart / new session (recoverable)
+#   blue  = «yes, go on» — a reversible op (compact); the default
 # Cancel always stays neutral so the coloured commit button draws the eye.
 _DESTRUCTIVE_CONFIRMS = {"clear", "kill"}
 _FORWARD_CONFIRMS = {"restart", "fresh"}
@@ -1334,19 +1317,19 @@ def _build_commands_keyboard(
     tab: Tab = "nav",
     confirming: str | None = None,
 ) -> InlineKeyboardMarkup:
-    """Agent panel keyboard with three tabs (Клавиши / Действия / Сессия).
+    """Agent panel keyboard with three tabs (Keys / Actions / Session).
 
-    Nav tab («Клавиши») — raw key presses for driving Claude's TUI:
-    arrows, Esc, ^C, ^B, Enter, "/", plus «Стереть ввод» (an input-line
+    Nav tab («Keys») — raw key presses for driving Claude's TUI:
+    arrows, Esc, ^C, ^B, Enter, "/", plus «Wipe input» (an input-line
     op, so it lives with the keys). Key presses route through the
     screenshot-keys handler (CB_KEYS_PREFIX:kb), which knows how to send
     a key and refresh the photo while preserving the active tab.
 
-    Act tab («Действия») — the everyday on-the-fly toggles: Mode / Effort /
+    Act tab («Actions») — the everyday on-the-fly toggles: Mode / Effort /
     Compact / Clear. Kept to two rows so the pane photo — the actual
     content — stays on screen instead of being pushed off by the keyboard.
 
-    Ses tab («Сессия») — session config & diagnostics (Model / Context /
+    Ses tab («Session») — session config & diagnostics (Model / Context /
     MCP) and lifecycle (Resume / New / Restart / End / worktree
     fork+delete).
 
@@ -1370,7 +1353,7 @@ def _build_commands_keyboard(
         # caption above the button (set by callbacks._show_confirm from
         # CONFIRM_COPY), not in the button label — Telegram clips long
         # labels, so a description-in-button got truncated. The button is
-        # just a short «Да, …» confirmation.
+        # just a short «Yes, …» confirmation.
         yes_label = CONFIRM_COPY.get(
             confirming, ("", tr("commands.confirm_default_btn"))
         )[1]
@@ -1440,7 +1423,7 @@ def _build_commands_keyboard(
 
     # Refresh button repeats the active tab so the rendered photo comes back
     # with the same keyboard layout the user was looking at. Full-width on both
-    # tabs — «Стереть ввод» now lives in the act-tab body grid.
+    # tabs — «Wipe input» now lives in the act-tab body grid.
     refresh_row = [
         InlineKeyboardButton(
             tr("commands.refresh"),
@@ -1459,17 +1442,17 @@ def _build_commands_keyboard(
         return session_manager.agent_supports(window_id, action)
 
     if tab == "nav":
-        # Сверху Ctrl-комбо: ⎋ ^C — «упс, отмена/прервать», ^B — отправить
-        # запущенный субагент / долгую bash-команду в фон и продолжить
-        # общаться (только у агентов с фоновыми задачами — «background»). Снизу
-        # рабочий ряд / ← → ↑ ↓ ⏎ — открыть slash-меню агента, походить по нему
-        # (←/→ ходят по табам диалогов, например в permission-промптах) и
-        # подтвердить. Стрелки в порядке чтения: лево, право, верх, низ.
-        # Раздельно потому, что у этих двух групп противоположное настроение и
-        # смешивать их в одну строку — глаз каждый раз ищет нужное. «Стереть
-        # ввод» — тоже операция со строкой ввода, поэтому живёт здесь.
-        # (Пробовали растащить ⏎ от ↓ по совету дизайн-ревью — юзер вернул:
-        # единый ряд навигации удобнее, промахов на практике нет.)
+        # Top row, the Ctrl combos: ⎋ ^C — «oops, cancel/interrupt»; ^B —
+        # push a running subagent / long bash command into the background and
+        # keep talking (only for runtimes with background tasks). Bottom, the
+        # working row / ← → ↑ ↓ ⏎ — open the agent's slash menu, walk it
+        # (←/→ move across dialog tabs, e.g. in permission prompts) and
+        # confirm. Arrows in reading order: left, right, up, down. Split in
+        # two because the groups have opposite moods, and mixing them into one
+        # row makes the eye hunt for the right key every time. «Wipe input»
+        # belongs here too — it also operates on the input line.
+        # (A design review suggested separating ⏎ from ↓; the user reverted it
+        # — one navigation row is handier, and misses don't happen in practice.)
         ctrl_row = [key_btn("⎋ Esc", "esc"), key_btn("Ctrl + C", "cc")]
         if supports("background"):
             ctrl_row.append(key_btn("Ctrl + B", "cb"))
@@ -1486,10 +1469,10 @@ def _build_commands_keyboard(
             [cmd_btn(tr("commands.btn_wipe_input"), CB_CMD_WIPE_INPUT)],
         ]
     elif tab == "act":
-        # Только ежедневное. Режим и Усилие — переключатели «на ходу» (пара по
-        # духу); Сжать/Очистить — операции с контекстом. Кнопки, которых у
-        # рантайма нет (у codex Режим/Усилие свёрнуты в /model), выпадают, и
-        # оставшиеся пакуются по двое — фото панели остаётся на экране.
+        # Everyday actions only. Mode and Effort are on-the-fly toggles (a
+        # pair in spirit); Compact/Clear operate on the context. Buttons the
+        # runtime doesn't have (codex folds Mode/Effort into /model) drop out
+        # and the rest pack two per row — the panel photo stays on screen.
         act_btns: list[InlineKeyboardButton] = []
         if supports("mode"):
             act_btns.append(cmd_btn(tr("commands.btn_mode"), CB_CMD_MODE_CYCLE))
@@ -1503,9 +1486,9 @@ def _build_commands_keyboard(
             act_btns.append(cmd_btn(tr("commands.btn_clear"), CB_CMD_CLEAR))
         body = [act_btns[i : i + 2] for i in range(0, len(act_btns), 2)]
     else:
-        # «Сессия»: конфиг/диагностика + жизненный цикл. Модель/Контекст/MCP —
-        # подписи короткие, влезают в один ряд; кнопки без поддержки рантайма
-        # (у codex нет /context) выпадают. Жизненный цикл универсален.
+        # «Session»: config/diagnostics + lifecycle. Model/Context/MCP have
+        # short labels and fit one row; buttons the runtime lacks (codex has
+        # no /context) drop out. The lifecycle row is universal.
         config_row: list[InlineKeyboardButton] = []
         if supports("model"):
             config_row.append(cmd_btn(tr("commands.btn_model"), CB_CMD_MODEL))
@@ -1545,20 +1528,28 @@ def _build_commands_keyboard(
             body.append(wt_row)
         # Explicit instant delete of agent + topic (no waiting for the
         # hard-delete probe). Own row: the pair above already fills the width,
-        # and a red button crammed as a third label clips. Worktree topics use
-        # their own callback — that one weighs unmerged git work before it
-        # destroys anything; everything else goes through agent_delete.
-        body.append(
-            [
-                cmd_btn(
-                    tr("commands.btn_delete_agent"),
-                    CB_WT_DEL
-                    if session_manager.is_worktree_window(window_id)
-                    else CB_AGENT_DEL,
-                    style=KeyboardButtonStyle.DANGER,
-                )
-            ]
-        )
+        # and a red button crammed as a third label clips. Shown ONLY for
+        # agents created as extras beside another one — a 🌳 worktree agent
+        # (own callback: it weighs unmerged git work first) or a ➕ sibling
+        # (session_manager.can_delete_agent). A main topic holds the project's
+        # whole history, so it deliberately has no delete button at all —
+        # there is nothing to mis-tap.
+        if session_manager.is_worktree_window(window_id):
+            delete_cb = CB_WT_DEL
+        elif session_manager.can_delete_agent(window_id):
+            delete_cb = CB_AGENT_DEL
+        else:
+            delete_cb = None
+        if delete_cb:
+            body.append(
+                [
+                    cmd_btn(
+                        tr("commands.btn_delete_agent"),
+                        delete_cb,
+                        style=KeyboardButtonStyle.DANGER,
+                    )
+                ]
+            )
 
     return InlineKeyboardMarkup([tab_row, *body, refresh_row])
 
@@ -1642,6 +1633,25 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         session_manager.mark_menu_shown(user.id, thread_id)
 
 
+async def _revive_and_report(msg: Message, user_id: int, thread_id: int) -> bool:
+    """Rebuild this topic's agent (same folder/CLI/session) and say so.
+
+    Returns False when the topic has nothing to rebuild from, so the caller can
+    fall back to its own «no session here» reply.
+    """
+    from .agent_restart import ReviveError, revive_topic_agent
+
+    try:
+        _, display = await revive_topic_agent(user_id, thread_id)
+    except ReviveError as e:
+        if e.key == "restart.nothing_to_revive":
+            return False
+        await safe_reply(msg, tr(e.key, **e.fmt))
+        return True
+    await safe_reply(msg, tr("restart.revived", name=display))
+    return True
+
+
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Restart a Claude agent. Topic binding first, then optional /restart <name>.
 
@@ -1701,8 +1711,15 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await safe_reply(
                 update.message, tr("commands.agent_not_found", name=agent_name)
             )
-        else:
-            await safe_reply(update.message, tr("commands.no_session_in_topic"))
+            return
+        # No binding: the window died and was reaped, taking the binding with
+        # it. /restart still means "bring this agent back" — rebuild it from
+        # what the topic remembers (folder + CLI + newest session).
+        if thread_id is not None and await _revive_and_report(
+            update.message, user.id, thread_id
+        ):
+            return
+        await safe_reply(update.message, tr("commands.no_session_in_topic"))
         return
 
     ws = session_manager.get_window_state(target_wid)
@@ -1763,6 +1780,10 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Tmux path — original behavior.
     target_window = await tmux_manager.find_window_by_id(target_wid)
     if not target_window:
+        if thread_id is not None and await _revive_and_report(
+            update.message, user.id, thread_id
+        ):
+            return
         await safe_reply(update.message, tr("commands.window_gone", name=agent_name))
         return
 
@@ -1848,6 +1869,7 @@ async def topic_closed_handler(
                 thread_id,
             )
         session_manager.unbind_thread(user.id, thread_id)
+        session_manager.forget_thread_runtime(user.id, thread_id)
         await clear_topic_state(user.id, thread_id, context.bot, context.user_data)
     else:
         logger.debug(
@@ -2001,10 +2023,10 @@ async def _auto_bind_to_directory(
     stays internal). Records the directory in memory up front so the topic
     re-resolves here next time regardless of its current name.
     """
-    # Rebind on the runtime this topic last ran (a codex topic must come back
-    # as codex, not silently as Claude); never-bound topics take the default.
-    # A remembered runtime whose CLI is gone degrades to the default rather
-    # than typing a missing command into the fresh pane.
+    # The picker opens on the runtime this topic last ran (a codex topic comes
+    # back with codex's sessions listed, not Claude's); never-bound topics take
+    # the default. A remembered runtime whose CLI is gone degrades to the
+    # default rather than listing sessions of something that can't start.
     remembered_rt = session_manager.get_remembered_runtime(user_id, thread_id)
     rt = get_runtime(remembered_rt) if remembered_rt else default_runtime()
     if not rt.is_available():
@@ -2014,163 +2036,37 @@ async def _auto_bind_to_directory(
             thread_id,
         )
         rt = default_runtime()
-    session_manager.record_thread_directory(
-        user_id, thread_id, str(matching_dir), runtime=rt.name
-    )
+    # Only the FOLDER is remembered here. The runtime is recorded when a window
+    # actually starts (bot._create_and_bind_window) — writing it now would
+    # re-arm the memory of a topic that hasn't chosen yet.
+    session_manager.record_thread_directory(user_id, thread_id, str(matching_dir))
     shown = _display_home_path(matching_dir)
     sessions = await rt.list_sessions(session_manager, str(matching_dir))
 
-    resume_id: str | None = None
-    if sessions and config.auto_resume_agents:
-        # Transparent resume (no picker): a non-technical user in an agent topic
-        # won't tap a session picker, so on rebind — e.g. after a container/tmux
-        # restart dropped the window — silently continue the most recent session
-        # for this folder. Opt-in via CCBOT_AUTO_RESUME_AGENTS (default off). The
-        # session_id is validated at list_sessions_for_directory (JSONL stem) and
-        # again in create_window before it can reach the shell.
-        resume_id = sessions[0].session_id
-        logger.info(
-            "Auto-bind: resuming newest session %s for %s (user=%d, thread=%d)",
-            resume_id,
-            shown,
-            user_id,
-            thread_id,
-        )
-    elif sessions or (remembered_rt is None and not config.auto_resume_agents):
-        # Existing history in this folder — let the user pick. State below is
-        # the same shape _handle_session_{select,new,cancel} already consume,
-        # so the picker callbacks Just Work without changes. The active tab is
-        # the topic's remembered/default runtime.
-        #
-        # A NEVER-bound topic (no remembered runtime) gets the picker even
-        # with zero sessions: its empty state is «➕ Новая сессия — <agent>» +
-        # the agent-switcher row, i.e. exactly the "which CLI do I want here"
-        # choice. Silently launching the default CLI was wrong the moment a
-        # second runtime existed — the user prepares a folder, names a topic
-        # after it, and must still get to pick the agent (operator request,
-        # 2026-07-23). Rebinds (remembered runtime) and CCBOT_AUTO_RESUME_AGENTS
-        # deployments (non-technical users, no-UI philosophy) stay silent.
-        if context.user_data is not None:
-            context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
-            context.user_data[SESSIONS_KEY] = sessions
-            context.user_data[PICKER_RUNTIME_KEY] = rt.name
-            context.user_data["_selected_path"] = str(matching_dir)
-            context.user_data["_pending_thread_id"] = thread_id
-        text, keyboard = build_session_picker(sessions, str(matching_dir), rt.name)
-        try:
-            await safe_reply(msg, text, reply_markup=keyboard)
-        except Exception as e:
-            logger.debug("auto-bind session picker reply failed: %s", e)
-        logger.info(
-            "Auto-bind: showed session picker for %s (%d sessions, user=%d, thread=%d)",
-            shown,
-            len(sessions),
-            user_id,
-            thread_id,
-        )
-        return True
-
-    # Silent create-and-bind: a rebind on the topic's remembered runtime, or
-    # an auto-resume deployment (with or without sessions to resume).
-    # Same-cwd guard for hookless runtimes: their transcript resolves by cwd
-    # ("newest wins"), so a second live window on this directory would make
-    # both topics mirror the same session.
-    if not rt.uses_session_map and await session_manager.has_live_agent_on_cwd(
-        rt.name, str(matching_dir)
-    ):
-        try:
-            await safe_reply(
-                msg,
-                tr("bot.same_dir_conflict", agent=rt.display_name, dir=matching_dir),
-            )
-        except Exception as e:
-            logger.debug("same-dir conflict reply failed: %s", e)
-        return True
-    success, message, created_wname, created_wid = await tmux_manager.create_window(
-        str(matching_dir), resume_session_id=resume_id, runtime=rt.name
-    )
-    if not success:
-        logger.warning(
-            "Auto-bind create_window failed for %s: %s", matching_dir, message
-        )
-        try:
-            escaped = message.replace("\\", "\\\\").replace("`", "\\`")
-            await safe_reply(
-                msg,
-                tr("commands.autobind_window_failed", dir=matching_dir, err=escaped),
-            )
-        except Exception:
-            pass
-        return True
-
-    session_manager.tag_window_runtime(created_wid, rt.name, str(matching_dir))
-    hook_ok = False
-    if rt.uses_session_map:
-        hook_ok = await session_manager.wait_for_session_map_entry(
-            created_wid, timeout=15.0 if resume_id else 5.0
-        )
-    session_manager.bind_thread(
-        user_id, thread_id, created_wid, window_name=created_wname
-    )
-    if resume_id and rt.uses_session_map:
-        # `--resume` makes the SessionStart hook report a NEW session_id while
-        # messages keep writing to the ORIGINAL JSONL — pin window_state to the
-        # resumed id so the monitor tracks the right transcript. Mirrors the
-        # resume override in bot._create_and_bind_window, INCLUDING the hook-
-        # timeout branch: the in-container SessionStart hook is exactly what's
-        # flaky in the deployment this flag targets, so a timeout here is the
-        # expected path, not an edge case.
-        ws = session_manager.get_window_state(created_wid)
-        if not hook_ok:
-            logger.warning(
-                "Hook timed out for resume window %s — pinning session_id=%s cwd=%s",
-                created_wid,
-                resume_id,
-                matching_dir,
-            )
-            ws.session_id = resume_id
-            ws.cwd = str(matching_dir)
-            ws.window_name = created_wname
-            session_manager._save_state()
-        elif ws.session_id != resume_id:
-            ws.session_id = resume_id
-            session_manager._save_state()
-    logger.info(
-        "Auto-bound thread %d to tmux window %s at %s (user=%d)",
-        thread_id,
-        created_wid,
-        matching_dir,
-        user_id,
-    )
-
-    # A create_window dedup (existing `demo-api` window → `demo-api-2`) stays
-    # INTERNAL: the topic keeps the user's name. The old behavior renamed the
-    # topic to the dedup'd window name, clobbering the user's label — routing
-    # never depends on the topic name (rebinds go through
-    # thread_directory_memory), so there is nothing to keep in sync.
-
+    # ALWAYS the picker — resolving the FOLDER is automatic, starting a session
+    # in it never is. Even with nothing to resume the picker is the choice that
+    # matters: «➕ New session — <agent>», the «🤖 Agent ▾» switcher, and
+    # «📂 Change folder» for when the name resolved to the wrong directory.
+    # State below is the shape _handle_session_{select,new,cancel} already
+    # consume, so the picker callbacks work unchanged.
+    if context.user_data is not None:
+        context.user_data[STATE_KEY] = STATE_SELECTING_SESSION
+        context.user_data[SESSIONS_KEY] = sessions
+        context.user_data[PICKER_RUNTIME_KEY] = rt.name
+        context.user_data["_selected_path"] = str(matching_dir)
+        context.user_data["_pending_thread_id"] = thread_id
+    text, keyboard = build_session_picker(sessions, str(matching_dir), rt.name)
     try:
-        await safe_reply(
-            msg,
-            tr(
-                "commands.autobind_resumed"
-                if resume_id
-                else "commands.autobind_new_session",
-                dir=_display_home_path(matching_dir),
-            ),
-            reply_markup=menu_keyboard(),
-        )
-        session_manager.mark_menu_shown(user_id, thread_id)
+        await safe_reply(msg, text, reply_markup=keyboard)
     except Exception as e:
-        logger.debug("auto-bind reply failed: %s", e)
-
-    # First-run trap: hook definitively absent → agent replies will never be
-    # delivered for this fresh session. Warn in-topic (see bot.hook_missing).
-    if not hook_ok and not resume_id and not hook_installed_in_settings():
-        try:
-            await safe_reply(msg, tr("bot.hook_missing"))
-        except Exception as e:
-            logger.debug("hook-missing warning failed: %s", e)
+        logger.debug("auto-bind session picker reply failed: %s", e)
+    logger.info(
+        "Auto-bind: showed session picker for %s (%d sessions, user=%d, thread=%d)",
+        shown,
+        len(sessions),
+        user_id,
+        thread_id,
+    )
     return True
 
 
@@ -2315,17 +2211,14 @@ async def menu_button_dispatcher(
 ) -> None:
     """Route taps on the persistent ReplyKeyboard buttons to slash commands.
 
-    Buttons send their visible label as plain text (e.g. "🖥️ Сервер").
+    Buttons send their visible label as plain text (e.g. "🖥️ Server").
     Target commands must be resilient to plain text — restart_command
     ignores text that doesn't start with a slash, the rest don't parse it.
     """
     if not update.message or not update.message.text:
         return
     text = update.message.text
-    # Match against every language's label, not just the active one — the
-    # persistent keyboard a client still shows may carry the previous
-    # language's label after a /lang switch.
-    if text in i18n.all_variants("menu.server"):
+    if text == tr("menu.server"):
         await status_command(update, context)
-    elif text in i18n.all_variants("menu.agent"):
+    elif text == tr("menu.agent"):
         await commands_command(update, context)

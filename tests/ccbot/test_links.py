@@ -58,7 +58,7 @@ class TestFormatLinksBlock:
 
     def test_single(self):
         block = format_links_block(["https://example.com/x"])
-        assert block == "🔗 Ссылки:\n• [example.com/x](https://example.com/x)"
+        assert block == "🔗 Links:\n• [example.com/x](https://example.com/x)"
 
     def test_caps_and_counts_overflow(self):
         urls = [f"https://example.com/{i}" for i in range(MAX_LINKS + 5)]
@@ -66,4 +66,4 @@ class TestFormatLinksBlock:
         lines = block.split("\n")
         # header + MAX_LINKS bullets + overflow line
         assert len(lines) == 1 + MAX_LINKS + 1
-        assert lines[-1] == "… и ещё 5"
+        assert lines[-1] == "… and 5 more"

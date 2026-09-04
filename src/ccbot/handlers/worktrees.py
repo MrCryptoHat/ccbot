@@ -3,10 +3,10 @@
 Wraps the pure git/disk core in ``..worktrees`` with the bot lifecycle:
   - provision_worktree_agent: transactional create (topic → worktree → seed →
     window → bind → meta → welcome), rolls back the topic on any later failure.
-  - _handle_wt_new + consume_worktree_name: the ➕ "новый агент" flow (resolve
+  - _handle_wt_new + consume_worktree_name: the ➕ "new agent" flow (resolve
     project from the current topic → ask for a task name → provision).
   - handle_worktree_topic_close: the close-topic guard — ⚪ auto-teardown,
-    🟢/🟡 keep the agent alive and offer [🧨 Удалить] / [↩ Вернуть топик].
+    🟢/🟡 keep the agent alive and offer [🧨 Delete] / [↩ Bring the topic back].
   - teardown_worktree: preview down → kill window → unbind → worktree remove →
     branch -D → delete topic → drop meta. Destructive; interactive paths only.
   - handle_deleted_worktree_topic: headless cleanup for a hard-deleted topic —
@@ -298,7 +298,7 @@ async def _handle_wt_new(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """➕ Новый агент в проекте — resolve project, then ask which runtime."""
+    """➕ New agent in the project — resolve project, then ask which runtime."""
     wid = data[len(CB_WT_NEW) :]
     thread_id = get_thread_id(update)
     base_repo = _resolve_base_repo(user.id, thread_id, wid)
@@ -382,7 +382,7 @@ async def _handle_wt_cancel(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """↩ Отмена on the "name the task" prompt — drop the naming state."""
+    """↩ Cancel on the "name the task" prompt — drop the naming state."""
     _clear_wt_naming(context.user_data)
     await query.answer(tr("cb.cancelled"))
     try:
@@ -510,7 +510,7 @@ async def handle_worktree_topic_close(
     """Close-topic guard for a worktree topic (replaces the default teardown).
 
     ⚪ clean+merged → full auto-teardown. 🟢/🟡 → keep the agent alive and post
-    a [🧨 Всё равно удалить] / [↩ Вернуть топик] choice (never silently destroy).
+    a [🧨 Delete anyway] / [↩ Bring the topic back] choice (never silently destroy).
     """
     status = await wtc.worktree_status(
         Path(meta.repo), Path(meta.path), meta.base_branch, meta.branch
@@ -602,7 +602,7 @@ async def _handle_wt_keep(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """↩ Оставить агента — dismiss the choice; the topic is already reopened
+    """↩ Keep the agent — dismiss the choice; the topic is already reopened
     and the agent is still alive and bound."""
     thread_id = int(data[len(CB_WT_KEEP) :])
     chat_id = session_manager.resolve_chat_id(user.id, thread_id)
@@ -630,7 +630,7 @@ async def _handle_wt_del(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """🗑 Удалить агента — compute the guard and show a confirm on the panel."""
+    """🗑 Delete agent — compute the guard and show a confirm on the panel."""
     wid = data[len(CB_WT_DEL) :]
     thread_id = get_thread_id(update)
     if thread_id is None:
@@ -713,7 +713,7 @@ async def _handle_wt_delno(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """↩ Отмена — restore the agent panel caption + keyboard."""
+    """↩ Cancel — restore the agent panel caption + keyboard."""
     from telegram.helpers import escape_markdown
 
     from .commands import _build_commands_keyboard

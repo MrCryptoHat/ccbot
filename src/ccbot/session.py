@@ -35,7 +35,6 @@ from typing import Any, Literal, TypeAlias
 
 import aiofiles
 
-from . import i18n
 from .agent_session import AgentSession
 from .config import DockerAgentConfig, config
 from .docker_driver import (
@@ -180,6 +179,13 @@ class SessionManager:
     # reply (message_queue backstop) attach the keyboard only when the
     # topic isn't marked yet. /menu re-attaches unconditionally.
     menu_shown_topics: set[str] = field(default_factory=set)
+    # Topics whose agent ccbot created as an EXTRA beside an existing one —
+    # the ➕ sibling flow ("user_id:thread_id" keys). Only these (and worktree
+    # topics, tracked by worktree_meta) may be torn down from the panel's 🗑:
+    # a main topic carries the project's whole history, and one stray tap must
+    # not be able to destroy it. A docker sub-agent (docker:<agent>/<slug>) is
+    # self-identifying from its binding and needs no entry here.
+    sub_agent_topics: set[str] = field(default_factory=set)
     # Global toggle (/react): bot puts a 👀 reaction on a user message the
     # moment the agent takes it into context. Default from CCBOT_REACTION_ACK
     # (on); /react overrides at runtime (persisted in state.json).
@@ -191,11 +197,6 @@ class SessionManager:
     # screenshots. Default from CCBOT_TABLE_STYLE; /tables flips at runtime
     # (persisted in state.json).
     table_style: str = field(default_factory=lambda: config.table_style_default)
-    # Global UI language (/lang): "ru" or "en". Single-user bot → one global
-    # setting, not per-topic. Synced into i18n._current_lang on load and on
-    # set_ui_language so call sites just call i18n.tr(). Defaults from
-    # config.default_lang (CCBOT_DEFAULT_LANG).
-    ui_language: str = "ru"
     # Sessions (session_id) that have already received the voice-mode ON
     # directive in their context. Persisted so that after a bot restart
     # we still know a given Claude session has the voice-style tags in
@@ -261,11 +262,6 @@ class SessionManager:
     worktree_meta: dict[int, dict[int, WorktreeMeta]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Seed the UI language from config before state loads, so a fresh
-        # install (no state.json) still honors CCBOT_DEFAULT_LANG. _load_state
-        # overrides from the persisted value when present.
-        self.ui_language = config.default_lang
-        i18n.set_language(self.ui_language)
         self._load_state()
 
     # --- Generation state (drives Telegram typing indicator) ---
@@ -341,9 +337,9 @@ class SessionManager:
             "diff_mode_topics": sorted(self.diff_mode_topics),
             "pin_topic_overrides": dict(sorted(self.pin_topic_overrides.items())),
             "menu_shown_topics": sorted(self.menu_shown_topics),
+            "sub_agent_topics": sorted(self.sub_agent_topics),
             "reaction_ack_enabled": self.reaction_ack_enabled,
             "table_style": self.table_style,
-            "ui_language": self.ui_language,
             "voice_announced_sessions": sorted(self.voice_announced_sessions),
             "voice_budget": self.voice_budget.to_dict(),
             "live_dashboard_message_ids": dict(self.live_dashboard_message_ids),
@@ -525,6 +521,7 @@ class SessionManager:
                 for key in state.get("pin_mode_topics", []):
                     self.pin_topic_overrides.setdefault(str(key), True)
                 self.menu_shown_topics = set(state.get("menu_shown_topics", []))
+                self.sub_agent_topics = set(state.get("sub_agent_topics", []))
                 self.reaction_ack_enabled = bool(
                     state.get("reaction_ack_enabled", config.reaction_ack_default)
                 )
@@ -532,8 +529,6 @@ class SessionManager:
                 self.table_style = (
                     _ts if _ts in ("rich", "image") else config.table_style_default
                 )
-                self.ui_language = state.get("ui_language") or config.default_lang
-                i18n.set_language(self.ui_language)
                 self.voice_announced_sessions = set(
                     state.get("voice_announced_sessions", [])
                 )
@@ -599,10 +594,9 @@ class SessionManager:
                 self.diff_mode_topics = set()
                 self.pin_topic_overrides = {}
                 self.menu_shown_topics = set()
+                self.sub_agent_topics = set()
                 self.reaction_ack_enabled = config.reaction_ack_default
                 self.table_style = config.table_style_default
-                self.ui_language = config.default_lang
-                i18n.set_language(self.ui_language)
                 self.voice_announced_sessions = set()
                 self.voice_budget = VoiceBudget()
                 self.live_dashboard_message_ids = {}
@@ -978,6 +972,44 @@ class SessionManager:
             self.menu_shown_topics.discard(key)
             self._save_state()
 
+    def mark_sub_agent_topic(self, user_id: int, thread_id: int) -> None:
+        """Record that this topic's agent was created as an extra (➕ sibling)."""
+        key = f"{user_id}:{thread_id}"
+        if key not in self.sub_agent_topics:
+            self.sub_agent_topics.add(key)
+            self._save_state()
+
+    def clear_sub_agent_topic(self, user_id: int, thread_id: int) -> None:
+        """Forget the extra-agent flag (topic closed/deleted)."""
+        key = f"{user_id}:{thread_id}"
+        if key in self.sub_agent_topics:
+            self.sub_agent_topics.discard(key)
+            self._save_state()
+
+    def is_sub_agent_topic(self, user_id: int, thread_id: int | None) -> bool:
+        """Was this topic's agent created as an extra beside another one?"""
+        if thread_id is None:
+            return False
+        return f"{user_id}:{thread_id}" in self.sub_agent_topics
+
+    def can_delete_agent(self, binding_value: str) -> bool:
+        """True iff the panel may offer 🗑 (delete agent + its topic).
+
+        Deletion is for agents ccbot itself created as EXTRAS beside an
+        existing one — a ➕ sibling (docker sub-agent binding, or a tmux
+        sibling flagged in ``sub_agent_topics``). A MAIN topic never gets the
+        button: it holds the project's whole history, and one stray tap there
+        would destroy both the session and the topic. Worktree topics are
+        deletable too but through their own callback (`is_worktree_window` →
+        CB_WT_DEL), which weighs unmerged git work first.
+        """
+        if self.is_docker_sub_agent(binding_value):
+            return True
+        for user_id, thread_id, wid in self.iter_thread_bindings():
+            if wid == binding_value and self.is_sub_agent_topic(user_id, thread_id):
+                return True
+        return False
+
     def is_reaction_ack_enabled(self) -> bool:
         """Global: does the bot mark ingested user messages with 👀? (/react)."""
         return self.reaction_ack_enabled
@@ -996,21 +1028,6 @@ class SessionManager:
         self.table_style = "image" if self.table_style == "rich" else "rich"
         self._save_state()
         return self.table_style
-
-    def set_ui_language(self, lang: str) -> str:
-        """Set the global UI language ("ru"/"en"); persist and sync i18n.
-
-        Unknown codes fall back to the default. Returns the effective
-        language so the caller can confirm it.
-        """
-        self.ui_language = lang if lang in i18n.LANGUAGES else i18n.DEFAULT_LANGUAGE
-        i18n.set_language(self.ui_language)
-        self._save_state()
-        return self.ui_language
-
-    def toggle_ui_language(self) -> str:
-        """Flip ru↔en (single-user, two languages). Returns the new code."""
-        return self.set_ui_language("en" if self.ui_language == "ru" else "ru")
 
     def is_session_voice_aware(self, user_id: int, thread_id: int | None) -> bool:
         """True if voice is currently enabled for the topic OR this
@@ -1799,7 +1816,7 @@ class SessionManager:
             return session
 
         # No JSONL yet. This is NOT necessarily stale: a freshly-launched
-        # session (after «Новая»/restart) has no transcript file until its
+        # session (after «New»/restart) has no transcript file until its
         # first turn, yet the SessionStart hook already reported the id into
         # session_map. So this read path must stay pure — it returns None
         # (nothing to deliver yet) WITHOUT clearing session_id. Clearing here
@@ -1912,6 +1929,31 @@ class SessionManager:
     def get_remembered_directory(self, user_id: int, thread_id: int) -> str | None:
         """Return the last directory this topic was bound to, or None."""
         return self.thread_directory_memory.get(user_id, {}).get(thread_id)
+
+    def forget_thread_runtime(self, user_id: int, thread_id: int) -> None:
+        """Drop the topic's remembered runtime (the directory stays).
+
+        Called when the user ENDS the session on purpose (/kill, the panel's
+        «End session», closing the topic) — the next launch in that topic
+        is a new session, so it must offer the agent picker again instead of
+        silently relaunching the CLI that just ended. Never called on an
+        involuntary unbind (window died, stale binding, deleted topic): a
+        rebind after a tmux/container restart must still come back on the same
+        runtime. See ``thread_runtime_memory`` / ``record_thread_directory``.
+        """
+        runtimes = self.thread_runtime_memory.get(user_id)
+        if not runtimes or thread_id not in runtimes:
+            return
+        previous = runtimes.pop(thread_id)
+        if not runtimes:
+            del self.thread_runtime_memory[user_id]
+        self._save_state()
+        logger.info(
+            "Forgot topic runtime: thread %d (was %s, user %d)",
+            thread_id,
+            previous,
+            user_id,
+        )
 
     def get_remembered_runtime(self, user_id: int, thread_id: int) -> str | None:
         """Runtime the topic last ran, or None if never recorded (pre-runtime

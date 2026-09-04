@@ -240,7 +240,7 @@ def build_directory_browser(
 
 
 def _relative_time_short(file_path: str) -> str:
-    """Compact age for a resume-button label («7д» / "7d") — a full-width
+    """Compact age for a resume-button label ("7d") — a full-width
     button fits ~30 chars, so the session title gets the room."""
     try:
         mtime = os.path.getmtime(file_path)
@@ -284,8 +284,8 @@ def build_session_picker(
 
     The active runtime's resumable sessions are FULL-WIDTH resume buttons
     (title + short age — the info lives on the button, no numbered list in
-    the message text), then «➕ Новая сессия — <agent>», then ONE
-    «🤖 Агент: <agent> ▾» switcher row that opens the agent list
+    the message text), then «➕ New session — <agent>», then ONE
+    «🤖 Agent: <agent> ▾» switcher row that opens the agent list
     (:func:`build_runtime_menu`). The switcher replaces the old wrapping tab
     row: it stays one row tall for ANY number of runtimes, and is hidden
     entirely when only one CLI is installed. Chosen over flat tabs / an
@@ -362,14 +362,14 @@ def build_runtime_menu(
     active_runtime: str = "claude",
     session_count: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """The agent list behind the picker's «🤖 Агент: … ▾» switcher row.
+    """The agent list behind the picker's «🤖 Agent: … ▾» switcher row.
 
     One full-width row per installed runtime — vertical, so any number of
     CLIs fits without the wrapping-tab problem. The active runtime is marked
     ``●`` and shows its session count for the folder (counts for the OTHER
     runtimes would cost a full list_sessions scan each — deliberately not
     fetched). Every row routes through CB_RUNTIME_TAB, which re-enumerates
-    that runtime's sessions and re-renders the picker, and «← Назад» is just
+    that runtime's sessions and re-renders the picker, and «← Back» is just
     CB_RUNTIME_TAB for the active runtime — the menu holds no state of its
     own.
     """

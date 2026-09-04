@@ -1198,3 +1198,55 @@ class TestQuotedMenuIsNotLive:
     def test_quoted_tool_permission_prompt_is_not_a_widget(self):
         pane = _pane(*_PERMISSION_PROMPT.rstrip("\n").split("\n"))
         assert is_interactive_ui(pane) is False
+
+
+# The same gate as _TRUST_PROMPT, but as Claude Code 2.1.259 draws it:
+# unnumbered rows and «No, exit» PRESELECTED (captured live 2026-09-04, real
+# path dropped). Kept beside the numbered form — a version bump changed the
+# render, not the meaning, and both must match.
+_CLAUDE_TRUST_UNNUMBERED = (
+    " Accessing workspace:\n"
+    "\n"
+    " /home/user/project\n"
+    "\n"
+    " Quick safety check: Is this a project you created or one you trust? (Like your\n"
+    " own code, a well-known open source project, or work from your team). If not,\n"
+    " take a moment to review what's in this folder first.\n"
+    "\n"
+    " Claude Code'll be able to read, edit, and execute files here.\n"
+    "\n"
+    " Security guide\n"
+    "\n"
+    " ❯ No, exit\n"
+    "   Yes, I trust this folder\n"
+    "\n"
+    " Enter to confirm · Esc to cancel\n"
+)
+
+
+class TestClaudeTrustUnnumbered:
+    """The gate precedes any session, so no hook fires and the pane is the only
+    signal — unmatched, the pending first message was typed into it and its
+    Enter took the preselected «No, exit», killing the agent on sight."""
+
+    def test_trust_screen_detected(self):
+        res = extract_interactive_content(_CLAUDE_TRUST_UNNUMBERED)
+        assert res is not None
+        assert res.name == "ClaudeTrust"
+        assert is_interactive_ui(_CLAUDE_TRUST_UNNUMBERED) is True
+
+    def test_blind_confirm_takes_the_trust_row_not_exit(self):
+        # A plain Enter would hit «No, exit» — 👍 must step down first.
+        res = extract_interactive_content(_CLAUDE_TRUST_UNNUMBERED)
+        assert res is not None
+        assert res.confirm_keys == ("Down", "Enter")
+
+    def test_ordinary_pane_is_not_a_trust_screen(self):
+        pane = (
+            "  Reading the workspace files\n"
+            "  Accessing workspace data in src/\n"
+            "──────────────────────────────────────\n"
+            "❯ \n"
+            "──────────────────────────────────────\n"
+        )
+        assert is_interactive_ui(pane) is False

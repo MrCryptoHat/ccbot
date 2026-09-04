@@ -139,3 +139,39 @@ class TestStartCommandGroupHints:
     async def test_private_chat_gets_dm_walkthrough(self):
         update, context = self._update(chat_type="private")
         assert await self._run(update, context) == tr("bot.private_start")
+
+
+class TestKillForgetsRuntime:
+    """/kill is a DELIBERATE end of the session: the topic must also forget
+    which CLI ran in it, so the next launch offers the agent picker instead of
+    silently relaunching the same runtime (a topic stuck on a broken CLI could
+    otherwise never be moved off it)."""
+
+    @pytest.mark.asyncio
+    async def test_kill_forgets_thread_runtime(self):
+        from ccbot.handlers.commands import kill_command
+
+        update = MagicMock()
+        update.effective_user.id = 1
+        update.message = MagicMock()
+        context = MagicMock()
+
+        with (
+            patch("ccbot.handlers.commands.is_user_allowed", return_value=True),
+            patch("ccbot.handlers.commands.get_thread_id", return_value=42),
+            patch("ccbot.handlers.commands.session_manager") as mock_sm,
+            patch("ccbot.handlers.commands.tmux_manager") as mock_tm,
+            patch("ccbot.handlers.commands.clear_topic_state", new=AsyncMock()),
+            patch("ccbot.handlers.commands.safe_reply", new=AsyncMock()),
+        ):
+            mock_sm.get_window_for_thread.return_value = "@7"
+            mock_sm._is_docker_binding.return_value = False
+            mock_tm.find_window_by_id = AsyncMock(
+                return_value=MagicMock(window_id="@7")
+            )
+            mock_tm.kill_window = AsyncMock()
+
+            await kill_command(update, context)
+
+            mock_sm.unbind_thread.assert_called_once_with(1, 42)
+            mock_sm.forget_thread_runtime.assert_called_once_with(1, 42)

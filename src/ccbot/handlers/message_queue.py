@@ -597,7 +597,7 @@ async def _send_task_images(bot: Bot, chat_id: int, task: MessageTask) -> None:
 
     For a tool_result task the image is something the agent is *looking at*
     (a screenshot it Read, a browser capture, a Bash-generated plot), so it
-    gets a «👀 Агент смотрит» caption to set it apart from images the agent
+    gets a «👀 The agent is looking» caption to set it apart from images the agent
     produced as its own reply. text-task images (rare) go uncaptioned.
     """
     if not task.image_data:
@@ -890,7 +890,7 @@ async def _emit_links(
     tid: int,
 ) -> None:
     """Surface the http(s) links in an agent text reply as a separate, silent
-    «🔗 Ссылки» list, so they're easy to tap even when the inline copy is
+    «🔗 Links» list, so they're easy to tap even when the inline copy is
     word-wrapped or cropped.
 
     Best-effort: every failure (including a flood ``RetryAfter``) is swallowed.

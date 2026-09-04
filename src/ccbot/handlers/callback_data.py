@@ -51,12 +51,12 @@ CB_SESSION_BROWSE = "rs:browse"  # open directory browser (wrong auto-bound fold
 
 # Session-picker runtime plumbing. CB_RUNTIME_MENU opens the agent list under
 # the picker's switcher row; CB_RUNTIME_TAB re-renders the picker with the
-# chosen runtime's sessions (also serves as the menu's «← Назад»);
-# CB_RUNTIME_SELECT starts a FRESH window on that runtime («➕ Новая сессия»).
+# chosen runtime's sessions (also serves as the menu's «← Back»);
+# CB_RUNTIME_SELECT starts a FRESH window on that runtime («➕ New session»).
 # TAB/SELECT carry the runtime id; the handler creates+binds with it.
 CB_RUNTIME_TAB = "rt:tab:"  # rt:tab:<runtime>  (show picker with runtime's sessions)
 CB_RUNTIME_SELECT = "rt:sel:"  # rt:sel:<runtime>  (new window on runtime)
-CB_RUNTIME_MENU = "rt:menu"  # open the agent list («🤖 Агент: … ▾» switcher row)
+CB_RUNTIME_MENU = "rt:menu"  # open the agent list («🤖 Agent: … ▾» switcher row)
 
 # Screenshot control keys
 CB_KEYS_PREFIX = "kb:"  # kb:<key_id>:<window>
@@ -70,7 +70,7 @@ CB_STATUS_REFRESH = "st:ref"
 # respect: the stale-panel guard compares the payload against the topic's
 # current binding, so a binding longer than this would be truncated into a
 # permanent mismatch and every panel button in that topic would answer
-# «панель устарела» (which is what a long sibling slug used to do).
+# a «stale panel» refusal (which is what a long sibling slug used to do).
 CALLBACK_WID_MAX = 48
 
 # Agent panel inline keyboard (cm: prefix). The panel has two tabs —
@@ -92,7 +92,7 @@ CB_CMD_RESUME = "cm:resume:"
 CB_CMD_CONTEXT = "cm:ctx:"
 CB_CMD_MODE_CYCLE = "cm:mcyc:"  # Shift+Tab — cycles normal/auto-accept/plan
 CB_CMD_EFFORT = "cm:effort:"
-CB_CMD_WIPE_INPUT = "cm:wipe:"  # Ctrl+U ×N — стереть набранный в инпуте текст
+CB_CMD_WIPE_INPUT = "cm:wipe:"  # Ctrl+U ×N — wipe the text typed in the input
 CB_CMD_RESTART = "cm:restart:"
 CB_CMD_FRESH = (
     "cm:fresh:"  # restart Claude with a brand-new session_id (old one stays in /resume)
@@ -104,21 +104,21 @@ CB_CMD_CONFIRM = "cm:cfm:"  # cm:cfm:<action>:<window_id>
 CB_CMD_CANCEL = "cm:can:"  # cm:can:<window_id>
 
 # Worktree agents (parallel agents on one project; see handlers/worktrees.py)
-CB_WT_NEW = "wt:new:"  # wt:new:<window_id> — ➕ новый агент в проекте
+CB_WT_NEW = "wt:new:"  # wt:new:<window_id> — ➕ new agent in the project
 CB_WT_RUNTIME = "wt:rt:"  # wt:rt:<runtime> — pick the new worktree agent's runtime
 CB_WT_CANCEL = "wt:abort"  # cancel the "name the task" prompt (exact match)
 CB_WT_DROP = "wt:drop:"  # wt:drop:<thread_id> — 🧨 force-delete on close guard
-CB_WT_KEEP = "wt:keep:"  # wt:keep:<thread_id> — ↩ вернуть (reopen) топик
-CB_WT_DEL = "wt:del:"  # wt:del:<window_id> — 🗑 удалить агента (panel button)
+CB_WT_KEEP = "wt:keep:"  # wt:keep:<thread_id> — ↩ bring the topic back (reopen)
+CB_WT_DEL = "wt:del:"  # wt:del:<window_id> — 🗑 delete the agent (panel button)
 CB_WT_DELOK = "wt:delok:"  # wt:delok:<thread_id> — confirm 🗑 delete
 CB_WT_DELNO = "wt:delno:"  # wt:delno:<window_id> — cancel 🗑 delete
 
 # Sibling agents (another agent beside this one, no worktree; handlers/siblings.py)
-CB_SIB_NEW = "sb:new:"  # sb:new:<window_id> — ➕ ещё агент рядом
+CB_SIB_NEW = "sb:new:"  # sb:new:<window_id> — ➕ one more agent beside this one
 CB_SIB_CANCEL = "sb:abort:"  # sb:abort:<thread_id> — cancel that topic's name step
 
 # 🗑 delete agent + topic for a non-worktree topic (handlers/agent_delete.py;
 # worktree topics use the CB_WT_DEL* flow, which guards unmerged git work)
-CB_AGENT_DEL = "ad:del:"  # ad:del:<window_id> — 🗑 удалить агента
+CB_AGENT_DEL = "ad:del:"  # ad:del:<window_id> — 🗑 delete the agent
 CB_AGENT_DELOK = "ad:ok:"  # ad:ok:<thread_id> — confirm
 CB_AGENT_DELNO = "ad:no:"  # ad:no:<window_id> — cancel, restore the panel

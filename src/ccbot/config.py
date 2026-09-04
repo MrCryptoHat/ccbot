@@ -409,12 +409,6 @@ class Config:
                     _browse_root,
                 )
 
-        # Default UI language (ru/en) for ccbot's own chrome. A global
-        # setting persisted in state.json overrides this; this is just the
-        # boot default before state loads / on a fresh install.
-        _lang = os.getenv("CCBOT_DEFAULT_LANG", "en").strip().lower()
-        self.default_lang = _lang if _lang in ("ru", "en") else "en"
-
         # Deepgram API for voice message transcription (preferred)
         self.deepgram_api_key: str = os.getenv("DEEPGRAM_API_KEY", "")
         # Transcription language: empty = auto-detect (Deepgram detect_language,
@@ -490,7 +484,7 @@ class Config:
             self.notifications_chat_id = None
 
         # Reaction-to-confirm: 👍 on an agent-originated topic message means
-        # "yes, go ahead" — press Enter on an interactive prompt, or type «да»
+        # "yes, go ahead" — press Enter on an interactive prompt, or type «yes»
         # to an idle agent (busy agent → ignored). A short debounce lets an
         # accidental tap be taken back. Adds "message_reaction" to the polled
         # update types when enabled. See handlers/reaction_confirm.py.
@@ -521,7 +515,7 @@ class Config:
 
         # Task-pin mode: auto-pin a user message that reads as a NEW TASK —
         # at least pin_tasks_min_chars characters AND sent to an idle agent
-        # (a short "да, делай" or a mid-turn follow-up never pins). ON by
+        # (a short "yes, do it" or a mid-turn follow-up never pins). ON by
         # default in every topic; /pin toggles it per topic. The threshold is
         # the only other knob; the idle check is hard-wired because without
         # it every long clarification mid-conversation would pin too.
@@ -535,17 +529,6 @@ class Config:
                 f"CCBOT_PIN_MIN_CHARS must be an integer "
                 f"(got {os.getenv('CCBOT_PIN_MIN_CHARS')!r})"
             ) from e
-
-        # Transparent session resume on auto-bind/rebind. OFF by default (the
-        # interactive session picker is the norm). When ON, a topic auto-binding
-        # to a folder that already has Claude history silently continues the most
-        # recent session instead of showing a picker — for non-technical users
-        # in agent topics (e.g. an in-container ccbot driving agents as tmux
-        # windows) whose sessions would otherwise restart fresh after a
-        # container/tmux restart dropped the window. See _auto_bind_to_directory.
-        self.auto_resume_agents: bool = (
-            os.getenv("CCBOT_AUTO_RESUME_AGENTS", "false").lower() == "true"
-        )
 
         # --- Server-layout knobs (portability) -------------------------------
         # These default to this server's layout but every one is overridable

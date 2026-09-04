@@ -164,6 +164,30 @@ UI_PATTERNS: list[UIPattern] = [
         tail_window=_MENU_TAIL_WINDOW,
     ),
     UIPattern(
+        # The SAME folder-trust gate as the numbered PermissionPrompt above,
+        # but as 2.1.259 draws it: unnumbered rows, «No, exit» PRESELECTED.
+        # Order matters — this must stay BELOW that pattern, or it would also
+        # claim the numbered render, whose preselected row is «Yes» and whose
+        # blind confirm is therefore a plain Enter. Shown whenever
+        # ~/.claude.json has no accepted trust for the cwd, i.e. BEFORE any
+        # session exists — no hook has fired, so the pane is all ccbot sees.
+        # Unmatched, the screen killed the agent on sight: the pending first
+        # message was typed into it and its Enter took «No, exit» (2026-09-04).
+        name="ClaudeTrust",
+        top=(
+            re.compile(r"^\s*Quick safety check"),
+            re.compile(r"^\s*Accessing workspace"),
+        ),
+        bottom=(
+            re.compile(r"^\s*Yes, I trust this folder"),
+            re.compile(r"^\s*Enter to confirm"),
+        ),
+        min_gap=1,
+        # Preselected option is «No, exit» — a blind ⏎ would quit the agent.
+        # 👍 means "yes, I trust it": Down to the trust row, then Enter.
+        confirm_keys=("Down", "Enter"),
+    ),
+    UIPattern(
         # Bash command approval
         name="BashApproval",
         top=(

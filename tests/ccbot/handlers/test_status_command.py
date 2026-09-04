@@ -7,15 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ccbot import i18n
 from ccbot.handlers import commands
 from ccbot.handlers.commands import _format_cron_groups
 
 
-class TestCronGroupsLocalization:
+class TestCronGroups:
     """The cron block is part of /status — one of the two persistent menu
-    buttons — so a Russian label leaking into the English UI is the most
-    visible i18n regression there is."""
+    buttons — so its labels are the most visible chrome the bot renders."""
 
     ENTRIES = [
         ("*/5 * * * *", "/x/health.sh", "healthcheck"),
@@ -25,23 +23,13 @@ class TestCronGroupsLocalization:
         ("@reboot", "/x/boot.sh", "boot"),
     ]
 
-    def test_en_output_has_no_cyrillic(self):
-        i18n.set_language("en")
-        try:
-            out = "\n".join(_format_cron_groups(self.ENTRIES))
-        finally:
-            i18n.set_language("ru")
+    def test_output_has_no_cyrillic(self):
+        out = "\n".join(_format_cron_groups(self.ENTRIES))
         assert not re.search(r"[а-яА-Я]", out), out
 
-    def test_weekday_groups_follow_language(self):
-        i18n.set_language("en")
-        try:
-            out_en = "\n".join(_format_cron_groups(self.ENTRIES))
-        finally:
-            i18n.set_language("ru")
-        out_ru = "\n".join(_format_cron_groups(self.ENTRIES))
-        assert "(Sun)" in out_en and "5m" in out_en and "every 4h" in out_en
-        assert "(вс)" in out_ru and "5м" in out_ru and "каждые 4ч" in out_ru
+    def test_weekday_and_interval_labels(self):
+        out = "\n".join(_format_cron_groups(self.ENTRIES))
+        assert "(Sun)" in out and "5m" in out and "every 4h" in out
 
 
 def _make_update(user_id: int = 1) -> MagicMock:
@@ -89,8 +77,8 @@ def _run_stub(systemd_stdout: str, systemd_rc: int = 0):
 class TestStatusCommandUserServices:
     @pytest.mark.asyncio
     async def test_user_services_block_lists_whitelisted_unit(self):
-        """systemctl reports a whitelisted unit → "⚙️ Фоновые" block lists it,
-        non-whitelisted units and the .service suffix dropped."""
+        """systemctl reports a whitelisted unit → the background block lists
+        it, non-whitelisted units and the .service suffix dropped."""
         update = _make_update()
         context = _make_context()
         captured: dict[str, str] = {}
@@ -127,14 +115,14 @@ class TestStatusCommandUserServices:
             await status_command(update, context)
 
         text = captured["text"]
-        assert "⚙️ Фоновые" in text
+        assert "⚙️ Background" in text
         assert "demo-bot" in text
         assert "dbus" not in text
         assert ".service" not in text
-        # The "Фоновые" block renders before the resource block. We don't
+        # The background block renders before the resource block. We don't
         # anchor on the Docker section because the stub returns no containers
         # and that section is conditionally omitted.
-        assert text.index("⚙️ Фоновые") < text.index("💾 Ресурсы")
+        assert text.index("⚙️ Background") < text.index("💾 Resources")
 
     @pytest.mark.asyncio
     async def test_system_only_output_drops_header(self):

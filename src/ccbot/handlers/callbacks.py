@@ -540,7 +540,7 @@ async def _handle_runtime_menu(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Open the agent list under the picker's «🤖 Агент: … ▾» switcher row.
+    """Open the agent list under the picker's «🤖 Agent: … ▾» switcher row.
 
     Pure re-render from cached picker state (active runtime + its session
     count) — picking an agent routes through CB_RUNTIME_TAB, which owns the
@@ -1187,8 +1187,8 @@ _CMD_DESTRUCTIVE_ACTIONS: dict[str, str] = {
     CB_CMD_KILL: "kill",
 }
 
-# Slash-buttons living on the «Сессия» tab — their post-action repaint
-# returns there instead of «Действия» (see commands._action_home_tab for
+# Slash-buttons living on the «Session» tab — their post-action repaint
+# returns there instead of «Actions» (see commands._action_home_tab for
 # the confirm-flow counterpart).
 _SES_TAB_PREFIXES = {CB_CMD_MODEL, CB_CMD_MCP, CB_CMD_RESUME, CB_CMD_CONTEXT}
 
@@ -1285,7 +1285,7 @@ async def _handle_cmd_slash(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Entry point for the slash-commands and Убить buttons.
+    """Entry point for the slash-commands and End-session buttons.
 
     For destructive actions (clear, kill) shows a confirmation keyboard
     first — actual work happens in _handle_cmd_confirm. For safe
@@ -1319,7 +1319,7 @@ async def _handle_cmd_slash(
     if post:
         await post(query, update, context, user, window_id)
     # Repaint on the tab the button lives on (Model/MCP/Resume/Effort are on
-    # «Сессия»; Context/Compact on «Действия»).
+    # «Session»; Context/Compact on «Actions»).
     home = "ses" if prefix in _SES_TAB_PREFIXES else "act"
     await _cmd_refresh_photo(query, window_id, tab=home)
 
@@ -1479,7 +1479,30 @@ async def _wait_pane_ready(window_id: str, *, timeout: float = 20.0) -> None:
         await asyncio.sleep(0.5)
 
 
-async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -> None:
+async def _revive_from_panel(
+    query: CallbackQuery, update: Update, *, fresh: bool
+) -> None:
+    """🔄 on a topic whose window is gone — recreate it (see agent_restart)."""
+    from .agent_restart import ReviveError, revive_topic_agent
+
+    user = effective_user(update)
+    thread_id = get_thread_id(update)
+    if user is None or thread_id is None:
+        await query.answer(tr("cb.window_gone"), show_alert=True)
+        return
+    await query.answer(tr("cb.reviving_toast"))
+    try:
+        new_wid, _ = await revive_topic_agent(user.id, thread_id, fresh=fresh)
+    except ReviveError as e:
+        await query.answer(tr(e.key, **e.fmt), show_alert=True)
+        return
+    await _wait_pane_ready(new_wid)
+    await _cmd_refresh_photo(query, new_wid, tab="ses")
+
+
+async def _restart_agent(
+    query: CallbackQuery, window_id: str, *, fresh: bool, update: Update | None = None
+) -> None:
     """Relaunch the agent's Claude process. ``fresh=False`` resumes the
     current session_id; ``fresh=True`` starts a brand-new one (the old
     session's JSONL is untouched, so it stays in `/resume`).
@@ -1519,7 +1542,13 @@ async def _restart_agent(query: CallbackQuery, window_id: str, *, fresh: bool) -
 
     w = await tmux_manager.find_window_by_id(window_id)
     if not w:
-        await query.answer(tr("cb.window_gone"), show_alert=True)
+        # The window is already gone (agent crashed, dead-window reaper took
+        # it). 🔄 still means "bring this agent back", so rebuild it from what
+        # the topic remembers — same folder, same CLI, same session.
+        if update is None:
+            await query.answer(tr("cb.window_gone"), show_alert=True)
+            return
+        await _revive_from_panel(query, update, fresh=fresh)
         return
     # /exit + relaunch are typed into the pane — on a busy agent they'd
     # land in the agent's prompt as text and it would keep running. Runtime-
@@ -1563,7 +1592,7 @@ async def _show_confirm(query: CallbackQuery, window_id: str, action: str) -> No
     The explanation of what the action does goes into the panel photo's
     *caption* (above the button), not into the button label — Telegram clips
     long labels, so a description-in-button got truncated. The button stays a
-    short «Да, …». The panel photo always carries a caption (👾 Агент: …), so
+    short «Yes, …». The panel photo always carries a caption (👾 Agent: …), so
     editMessageCaption is reliable here. Actual work runs in
     _handle_cmd_confirm after the user confirms; _handle_cmd_cancel restores
     the base caption.
@@ -1604,8 +1633,8 @@ async def _handle_cmd_restart(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """Confirm, then restart the agent (resume same session). «Рестарт» and
-    «Новая» both relaunch Claude and read identically from the panel, so each
+    """Confirm, then restart the agent (resume same session). «Restart» and
+    «New» both relaunch Claude and read identically from the panel, so each
     routes through a confirm step whose label explains what it does."""
     window_id = _parse_cmd_payload(data, CB_CMD_RESTART)
     await _show_confirm(query, window_id, "restart")
@@ -1631,7 +1660,7 @@ async def _handle_cmd_kill_confirmed(
     user: User,
     window_id: str,
 ) -> None:
-    """Stop the agent and confirm in chat after the user pressed «⚠️ Да».
+    """Stop the agent and confirm in chat after the user pressed «⚠️ Yes».
 
     Confirmation flow: clear the inline keyboard so the stale Action panel
     can't be tapped again, then post a fresh text message into the topic
@@ -1654,6 +1683,10 @@ async def _handle_cmd_kill_confirmed(
             for tid, bound_wid in list(bindings.items()):
                 if bound_wid == window_id:
                     session_manager.unbind_thread(uid, tid)
+                    # Deliberate end → forget the runtime too, so the topic's
+                    # next launch asks which agent to run (see
+                    # SessionManager.forget_thread_runtime).
+                    session_manager.forget_thread_runtime(uid, tid)
 
     # Drop the panel keyboard so the user can't tap stale buttons. Ignore
     # failure — the chat message below is the load-bearing feedback.
@@ -1710,7 +1743,7 @@ async def _handle_cmd_confirm(
         return
 
     if action in ("restart", "fresh"):
-        await _restart_agent(query, window_id, fresh=action == "fresh")
+        await _restart_agent(query, window_id, fresh=action == "fresh", update=update)
         return
 
     if action in ("clear", "compact"):
@@ -1739,8 +1772,8 @@ async def _handle_cmd_cancel(
 
     Cancel returns to the tab the confirmation was triggered from (carried
     in the payload: cm:can:<tab>:<wid>; a legacy payload without the tab
-    falls back to «Действия»), so the user lands back on the same buttons.
-    Also restores the base caption (👾 Агент: …), undoing the action
+    falls back to «Actions»), so the user lands back on the same buttons.
+    Also restores the base caption (👾 Agent: …), undoing the action
     description _show_confirm wrote above the button.
     """
     from telegram.helpers import escape_markdown

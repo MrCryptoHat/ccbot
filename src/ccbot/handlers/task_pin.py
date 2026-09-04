@@ -3,7 +3,7 @@
 ON by default in every topic (``config.pin_tasks_default``; /pin opts a
 topic out): a user message is pinned in its topic iff it reads as a NEW
 TASK — at least ``config.pin_tasks_min_chars`` characters AND delivered to
-an *idle* agent (no running turn, no queued input). Short "да, делай"
+an *idle* agent (no running turn, no queued input). A short "yes, do it"
 nudges and mid-turn clarifications never pin, so the topic's pinned list
 stays a scannable task history instead of a second transcript.
 

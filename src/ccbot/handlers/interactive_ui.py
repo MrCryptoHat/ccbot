@@ -405,12 +405,12 @@ def get_interactive_msg_id(user_id: int, thread_id: int | None = None) -> int | 
 
 
 def _build_interactive_keyboard(window_id: str) -> InlineKeyboardMarkup:
-    """Compact nav keyboard attached to the Claude-ждёт-ответа photo.
+    """Compact nav keyboard attached to the photo of Claude awaiting an answer.
 
     Row 1 is the navigation in reading order — ← → ↑ ↓ (left, right, up, down) —
-    with ⏎ on the right; row 2 is ⎋ Esc / ␣ / 🔄 Обновить. The user reads the
+    with ⏎ on the right; row 2 is ⎋ Esc / ␣ / 🔄 Refresh. The user reads the
     captured pane image to see the options and navigates via these keys. ←/→
-    switch between an AskUserQuestion's question tabs (the `← N Вопрос …`
+    switch between an AskUserQuestion's question tabs (the `← N Question …`
     columns), which ↑/↓ alone can't reach; ␣ toggles checkboxes in
     multi-select questions (without it a phone user literally cannot pick
     options — whitespace can't be sent as a text message). Replaces the old

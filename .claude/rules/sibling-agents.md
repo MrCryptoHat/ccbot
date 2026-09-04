@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/ccbot/handlers/siblings.py"
+  - "src/ccbot/handlers/agent_delete.py"
   - "src/ccbot/docker_driver.py"
   - "tests/**siblings**"
 ---
@@ -70,7 +71,7 @@ and panes as `=name:` (a pane target rejects a bare `=name`).
 A configured docker agent outlives its topic (its lifecycle is the
 container's); a sibling is ccbot-created and dies with its topic —
 `teardown_sibling` kills `claude-<slug>` on close/delete, since nothing else
-could ever reach that session again. `⏹ Завершить` still only kills, keeping
+could ever reach that session again. `⏹ End session` still only kills, keeping
 the binding so 🔄 can revive it. Sub display names are ccbot's (the hook
 reports the raw binding as `window_name`, a routing key, not a label).
 
@@ -78,8 +79,16 @@ reports the raw binding as `window_name`, a routing key, not a label).
 removes the directory, which would strand a sibling running inside it — bound,
 so the orphan janitor never reaps it. Fork another worktree with 🌳 instead.
 
-The panel's 🗑 (`handlers/agent_delete.py`) deletes agent **and** topic for any
-non-worktree topic — it reuses `purge_deleted_topic`, so each kind loses
+The panel's 🗑 (`handlers/agent_delete.py`) deletes agent **and** topic, and is
+offered **only for extras** — `session_manager.can_delete_agent`: a docker
+sub-agent (self-identifying from `docker:<agent>/<slug>`) or a tmux sibling,
+flagged at provision time in `sub_agent_topics` (`mark_sub_agent_topic`; a
+tmux sibling is otherwise an ordinary topic with nothing to tell it apart —
+the topic's ➕ name is not readable by ccbot). A **main topic gets no 🗑 at
+all**: it holds the project's whole history, and one stray tap used to destroy
+both it and the session. Both taps in `agent_delete` re-check the predicate,
+because a panel scrolled back to from before the gate still carries the
+button. The teardown itself reuses `purge_deleted_topic`, so each kind loses
 exactly what that path already kills, and the confirm copy is per-kind for the
 same reason. Worktree topics keep their own 🗑: only that flow weighs unmerged
 git work before destroying anything.

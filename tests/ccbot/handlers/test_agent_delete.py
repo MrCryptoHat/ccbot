@@ -170,3 +170,40 @@ class TestCancel:
         assert (
             query.edit_message_caption.await_args.kwargs["reply_markup"] == "KEYBOARD"
         )
+
+
+class TestMainTopicIsProtected:
+    """An old panel scrolled back to still carries 🗑, so both taps re-check
+    that the topic's agent is an extra — a main topic is never deletable here."""
+
+    @pytest.mark.asyncio
+    async def test_confirm_is_refused_for_a_main_topic(self) -> None:
+        query, context = _query(), _context()
+        context.user_data = {}
+        with patch("ccbot.handlers.agent_delete.session_manager") as sm:
+            sm.get_window_for_thread.return_value = "@12"
+            sm.can_delete_agent.return_value = False
+            await _handle_agent_del(
+                query, f"{CB_AGENT_DEL}@12", _update(42), context, MagicMock(id=1)
+            )
+        query.edit_message_caption.assert_not_awaited()
+        assert query.answer.await_args.kwargs.get("show_alert") is True
+        assert "_agentdel_target" not in context.user_data
+
+    @pytest.mark.asyncio
+    async def test_confirmed_tap_is_refused_for_a_main_topic(self) -> None:
+        query, context = _query(), _context()
+        context.user_data = {"_agentdel_target": (42, "@12")}
+        with (
+            patch("ccbot.handlers.agent_delete.session_manager") as sm,
+            patch(
+                "ccbot.handlers.agent_delete.purge_deleted_topic", AsyncMock()
+            ) as purge,
+        ):
+            sm.get_window_for_thread.return_value = "@12"
+            sm.can_delete_agent.return_value = False
+            await _handle_agent_delok(
+                query, f"{CB_AGENT_DELOK}42", _update(), context, MagicMock(id=100)
+            )
+        purge.assert_not_awaited()
+        context.bot.delete_forum_topic.assert_not_awaited()

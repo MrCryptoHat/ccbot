@@ -6,7 +6,7 @@ screenshot — ccbot treats it as "yes, go ahead":
 
   - interactive prompt visible in the pane → press Enter (accept the highlighted
     option / "Yes" / "proceed") — same effect as the ⏎ inline button;
-  - agent idle, waiting for input → type «да» into the pane (a real submitted
+  - agent idle, waiting for input → type «yes» into the pane (a real submitted
     prompt, same path as a typed message);
   - agent busy → do nothing (a stray reaction must not inject text into a
     running prompt — only a short notice in the topic).
@@ -38,7 +38,7 @@ from telegram import ReactionType, ReactionTypeEmoji, Update
 from telegram.ext import ContextTypes
 
 from ..config import config
-from ..i18n import current_language, tr
+from ..i18n import tr
 from ..session import session_manager
 from ..runtimes import get_runtime
 from ..terminal_parser import extract_interactive_content
@@ -87,7 +87,7 @@ def decide_confirm_action(
         option is dangerous declares a safe route instead (GrokApproval
         preselects permanent always-approve; its blind confirm is Down →
         «Yes, proceed» → Enter).
-      - ``("type_yes", ())`` — agent idle waiting for input; type «да».
+      - ``("type_yes", ())`` — agent idle waiting for input; type «yes».
       - ``("skip", ())``     — agent busy or pane unavailable; don't touch it.
 
     ``runtime`` selects the busy-detection chrome (Claude's status line vs
@@ -210,11 +210,9 @@ async def _do_confirm(
             await _notice(tr("rconf.confirmed"))
         return
     if action == "type_yes":
-        # Agent-directed word, keyed by UI language: an English deployment's
-        # agent should receive "yes", not «да» (and the rconf.sent_yes toast
-        # should tell the truth about what was typed).
-        confirm_word = {"ru": "да", "en": "yes"}.get(current_language(), "да")
-        ok, _ = await session_manager.send_to_window(binding, confirm_word)
+        # Agent-directed text, not UI chrome — typed into the agent's pane as
+        # the user's answer to its question.
+        ok, _ = await session_manager.send_to_window(binding, "yes")
         if ok:
             await _notice(tr("rconf.sent_yes"))
         return

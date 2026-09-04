@@ -56,7 +56,6 @@ from .handlers.commands import (
     forward_command_handler,
     help_command,
     kill_command,
-    lang_command,
     menu_button_dispatcher,
     bind_command,
     menu_command,
@@ -1215,9 +1214,8 @@ async def post_init(application: Application) -> None:
     await application.bot.delete_my_commands(scope=BotCommandScopeDefault())
     await application.bot.delete_my_commands(scope=BotCommandScopeAllGroupChats())
 
-    # Publish the /command menu in the active UI language (loaded from state
-    # by SessionManager). /lang re-publishes it on switch via the same helper.
-    # Order is curated inside build_bot_commands — most-used at the top.
+    # Publish the /command menu. Order is curated inside build_bot_commands —
+    # most-used at the top.
     await apply_bot_commands(application.bot)
     await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
@@ -1397,7 +1395,6 @@ def create_bot() -> Application:
     application.add_handler(CommandHandler("tables", tables_command))
     application.add_handler(CommandHandler("diff", diff_command))
     application.add_handler(CommandHandler("pin", pin_command))
-    application.add_handler(CommandHandler("lang", lang_command))
     application.add_handler(CommandHandler("bind", bind_command))
     application.add_handler(CommandHandler("menu", menu_command))
     plugins.register_handlers(application)
@@ -1431,11 +1428,9 @@ def create_bot() -> Application:
         )
     )
     application.add_handler(MessageHandler(filters.COMMAND, forward_command_handler))
-    # Persistent ReplyKeyboard buttons — taps arrive as plain text labels.
-    # Match EVERY language's label (built once from the full catalog): the
-    # regex is fixed at registration, but a /lang switch must keep routing
-    # whichever label the client's still-shown keyboard carries.
-    _menu_labels = i18n.all_variants("menu.server") + i18n.all_variants("menu.agent")
+    # Persistent ReplyKeyboard buttons — taps arrive as plain text labels, so
+    # the dispatcher matches the catalog's labels (fixed at registration).
+    _menu_labels = [i18n.tr("menu.server"), i18n.tr("menu.agent")]
     _menu_regex = "^(" + "|".join(re.escape(lbl) for lbl in _menu_labels) + ")$"
     application.add_handler(
         MessageHandler(

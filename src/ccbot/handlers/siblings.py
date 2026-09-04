@@ -290,6 +290,9 @@ async def _provision_tmux_sibling(
     session_manager.bind_thread(user_id, new_thread, wid, window_name=wname)
     session_manager.set_group_chat_id(user_id, new_thread, chat_id)
     session_manager.record_thread_directory(user_id, new_thread, cwd, runtime=rt.name)
+    # Flags this topic as an EXTRA agent, which is what makes the panel offer
+    # 🗑 here (a main topic has no delete button — see can_delete_agent).
+    session_manager.mark_sub_agent_topic(user_id, new_thread)
     await safe_send(
         bot,
         chat_id,
@@ -333,7 +336,7 @@ async def _handle_sib_new(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """➕ Ещё агент — ask for the new agent's name."""
+    """➕ One more agent — ask for the new agent's name."""
     thread_id = get_thread_id(update)
     # The topic's CURRENT binding, not the payload: callback data holds only
     # the first CALLBACK_WID_MAX chars of it, and a truncated value would mint
@@ -370,7 +373,7 @@ async def _handle_sib_cancel(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """↩ Отмена on the naming prompt — clears THIS topic's step only."""
+    """↩ Cancel on the naming prompt — clears THIS topic's step only."""
     raw = data[len(CB_SIB_CANCEL) :]
     thread_id = int(raw) if raw.lstrip("-").isdigit() else get_thread_id(update)
     _clear_sib_naming(context.user_data, thread_id)

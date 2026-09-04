@@ -118,6 +118,26 @@ class TestThreadRuntimeMemory:
         assert calls["n"] == 2
         assert mgr.get_remembered_runtime(100, 42) == "codex"
 
+    def test_forget_drops_runtime_keeps_directory(self, mgr: SessionManager) -> None:
+        # Ending the session on purpose (/kill, panel, topic close) forgets the
+        # CLI so the next launch asks again — the folder memory survives.
+        mgr.record_thread_directory(100, 42, "/p", runtime="grok")
+        mgr.forget_thread_runtime(100, 42)
+        assert mgr.get_remembered_runtime(100, 42) is None
+        assert mgr.get_remembered_directory(100, 42) == "/p"
+
+    def test_forget_leaves_other_topics_alone(self, mgr: SessionManager) -> None:
+        mgr.record_thread_directory(100, 42, "/p", runtime="grok")
+        mgr.record_thread_directory(100, 43, "/q", runtime="codex")
+        mgr.forget_thread_runtime(100, 42)
+        assert mgr.get_remembered_runtime(100, 43) == "codex"
+
+    def test_forget_unknown_is_noop(self, mgr: SessionManager) -> None:
+        calls = {"n": 0}
+        mgr._save_state = lambda: calls.__setitem__("n", calls["n"] + 1)  # type: ignore[method-assign]
+        mgr.forget_thread_runtime(100, 42)  # never recorded
+        assert calls["n"] == 0
+
     def test_load_coerces_int_keys(self, monkeypatch, tmp_path) -> None:
         from ccbot import session as session_mod
 
@@ -1682,3 +1702,37 @@ class TestSubAgentSessionMapIngestion:
         assert (
             mgr.window_display_names["docker:assistant/fitness"] == "assistant-fitness"
         )
+
+
+class TestSubAgentTopics:
+    """Only agents ccbot created as extras (➕ sibling, docker sub-agent) may
+    be deleted from the panel — see SessionManager.can_delete_agent."""
+
+    def test_unflagged_topic_is_not_deletable(self, mgr: SessionManager) -> None:
+        mgr.bind_thread(100, 42, "@7")
+        assert mgr.can_delete_agent("@7") is False
+
+    def test_flagged_topic_is_deletable(self, mgr: SessionManager) -> None:
+        mgr.bind_thread(100, 42, "@7")
+        mgr.mark_sub_agent_topic(100, 42)
+        assert mgr.is_sub_agent_topic(100, 42) is True
+        assert mgr.can_delete_agent("@7") is True
+
+    def test_flag_is_per_topic(self, mgr: SessionManager) -> None:
+        mgr.bind_thread(100, 42, "@7")
+        mgr.bind_thread(100, 43, "@8")
+        mgr.mark_sub_agent_topic(100, 42)
+        assert mgr.can_delete_agent("@8") is False
+
+    def test_clear_drops_the_flag(self, mgr: SessionManager) -> None:
+        mgr.bind_thread(100, 42, "@7")
+        mgr.mark_sub_agent_topic(100, 42)
+        mgr.clear_sub_agent_topic(100, 42)
+        assert mgr.can_delete_agent("@7") is False
+
+    def test_docker_sub_agent_needs_no_flag(self, mgr: SessionManager) -> None:
+        assert mgr.can_delete_agent("docker:assistant/notes") is True
+
+    def test_docker_main_agent_is_not_deletable(self, mgr: SessionManager) -> None:
+        mgr.bind_thread(100, 42, "docker:assistant")
+        assert mgr.can_delete_agent("docker:assistant") is False
