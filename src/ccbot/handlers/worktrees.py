@@ -38,7 +38,6 @@ from telegram.ext import ContextTypes
 from .. import worktrees as wtc
 from ..config import config
 from ..i18n import tr
-from ..runtimes import get_runtime, pickable_runtimes
 from ..session import session_manager
 from ..tmux_manager import tmux_manager
 from ..worktrees import WorktreeMeta
@@ -51,7 +50,6 @@ from .callback_data import (
     CB_WT_DROP,
     CB_WT_KEEP,
     CB_WT_NEW,
-    CB_WT_RUNTIME,
 )
 from .cleanup import clear_topic_state
 from .directory_browser import STATE_KEY
@@ -166,18 +164,19 @@ async def provision_worktree_agent(
     base_repo: Path,
     repo_name: str,
     task_title: str,
-    runtime: str = "claude",
 ) -> tuple[bool, str]:
-    """Create a worktree-backed agent end to end. Returns (ok, message).
+    """Create the worktree and its topic. Returns (ok, message).
 
-    ``runtime`` selects the agent CLI launched in the worktree (Claude Code /
-    Codex); a worktree agent is just a tmux topic whose cwd is the worktree dir,
-    so the runtime rides on ``WindowState`` exactly like a normal topic.
+    Stops short of starting an agent: the topic is bound to the worktree
+    DIRECTORY (``thread_directory_memory``) and the first message there opens
+    the session picker, exactly like any other topic. Inheriting the parent's
+    CLI was the old behaviour and it removed the one choice a parallel agent
+    exists for — running the same files under a different model (operator
+    request 2026-09-04).
 
     Transactional: anything that fails after ``create_forum_topic`` rolls the
     topic (and any half-made worktree/branch) back so no orphan is left.
     """
-    rt = get_runtime(runtime)
     base = await wtc.detect_base_branch(base_repo)
     if not base:
         return False, tr("wt.err_no_base_branch")
@@ -201,26 +200,10 @@ async def provision_worktree_agent(
 
     await wtc.seed_worktree(base_repo, wt_path)
 
-    success, message, wname, wid = await tmux_manager.create_window(
-        str(wt_path), window_name=slug, runtime=rt.name
-    )
-    if not success:
-        await wtc.remove_worktree(base_repo, wt_path, force=True)
-        await wtc.delete_branch(base_repo, branch, force=True)
-        await _rollback_topic(bot, chat_id, new_thread)
-        return False, tr("wt.err_window", error=message[:120])
-
-    # Stamp runtime (+cwd for hookless runtimes — the monitor resolves their
-    # transcript by cwd), then wait for the SessionStart hook only where the
-    # runtime actually has one.
-    session_manager.tag_window_runtime(wid, rt.name, str(wt_path))
-    if rt.uses_session_map:
-        await session_manager.wait_for_session_map_entry(wid, timeout=5.0)
-    session_manager.bind_thread(user_id, new_thread, wid, window_name=wname)
     session_manager.set_group_chat_id(user_id, new_thread, chat_id)
-    session_manager.record_thread_directory(
-        user_id, new_thread, str(wt_path), runtime=rt.name
-    )
+    # Directory only — no runtime. The picker the first message opens is where
+    # the agent gets chosen, and recording one here would pre-answer it.
+    session_manager.record_thread_directory(user_id, new_thread, str(wt_path))
     session_manager.set_worktree_meta(
         user_id,
         new_thread,
@@ -241,11 +224,11 @@ async def provision_worktree_agent(
         reply_markup=_welcome_keyboard(str(wt_path), branch),
     )
     logger.info(
-        "Provisioned worktree agent: %s on %s (thread=%d, wid=%s)",
+        "Provisioned worktree %s on %s (thread=%d, path=%s) — awaiting agent pick",
         branch,
         repo_name,
         new_thread,
-        wid,
+        wt_path,
     )
     return True, tr("wt.provision_ok", repo=repo_name, title=task_title, branch=branch)
 
@@ -269,28 +252,6 @@ def _resolve_base_repo(user_id: int, thread_id: int | None, wid: str) -> Path | 
     return None
 
 
-def _wt_runtime_keyboard() -> InlineKeyboardMarkup:
-    """Runtime picker for a new worktree agent — one button per registered
-    runtime (Claude Code / Codex / …), built from the registry so a new runtime
-    appears with no change here. + a cancel row."""
-    rows: list[list[InlineKeyboardButton]] = []
-    row: list[InlineKeyboardButton] = []
-    for rt in pickable_runtimes():
-        row.append(
-            InlineKeyboardButton(
-                f"{rt.picker_icon} {rt.display_name}".strip(),
-                callback_data=f"{CB_WT_RUNTIME}{rt.name}",
-            )
-        )
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    rows.append([InlineKeyboardButton(tr("wt.cancel"), callback_data=CB_WT_CANCEL)])
-    return InlineKeyboardMarkup(rows)
-
-
 async def _handle_wt_new(
     query: CallbackQuery,
     data: str,
@@ -298,7 +259,11 @@ async def _handle_wt_new(
     context: ContextTypes.DEFAULT_TYPE,
     user: User,
 ) -> None:
-    """➕ New agent in the project — resolve project, then ask which runtime."""
+    """🌳 New agent in the project — resolve the repo, then ask for a task name.
+
+    No runtime step: the agent is picked in the new topic, on its first
+    message, together with the session.
+    """
     wid = data[len(CB_WT_NEW) :]
     thread_id = get_thread_id(update)
     base_repo = _resolve_base_repo(user.id, thread_id, wid)
@@ -311,68 +276,22 @@ async def _handle_wt_new(
         return
 
     chat_id = session_manager.resolve_chat_id(user.id, thread_id)
-    # Stash the target; the runtime pick (CB_WT_RUNTIME) transitions to naming.
-    # No STATE_WT_NAMING yet — a message typed during the runtime pick should
-    # fall through to normal routing, not be eaten as a task name.
     if context.user_data is not None:
         context.user_data["_wt_repo"] = str(base_repo)
         context.user_data["_wt_chat_id"] = chat_id
         context.user_data["_wt_source_thread"] = thread_id
         context.user_data["_wt_deadline"] = time.monotonic() + WT_NAMING_TTL_SEC
+        context.user_data[STATE_KEY] = STATE_WT_NAMING
     await query.answer()
     await safe_send(
         context.bot,
         chat_id,
-        tr("wt.choose_runtime", repo=repo_name),
+        tr("wt.new_agent_prompt", repo=repo_name),
         message_thread_id=thread_id,
-        reply_markup=_wt_runtime_keyboard(),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton(tr("wt.cancel"), callback_data=CB_WT_CANCEL)]]
+        ),
     )
-
-
-async def _handle_wt_runtime(
-    query: CallbackQuery,
-    data: str,
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user: User,
-) -> None:
-    """Runtime chosen for the new worktree agent → prompt for the task name."""
-    ud = context.user_data
-    thread_id = get_thread_id(update)
-    if not ud or ud.get("_wt_source_thread") != thread_id or "_wt_repo" not in ud:
-        # Stale pick (bot restart / wrong topic) — nothing to name.
-        await query.answer(tr("cb.cancelled"))
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception as e:
-            logger.debug("wt runtime stale clear failed: %s", e)
-        return
-
-    # get_runtime normalises an unknown suffix to "claude" (safe degrade).
-    runtime = get_runtime(data[len(CB_WT_RUNTIME) :]).name
-    ud["_wt_runtime"] = runtime
-    ud[STATE_KEY] = STATE_WT_NAMING
-    ud["_wt_deadline"] = time.monotonic() + WT_NAMING_TTL_SEC
-    repo_name = Path(str(ud.get("_wt_repo", ""))).name
-    await query.answer()
-    try:
-        await query.edit_message_text(
-            tr("wt.new_agent_prompt", repo=repo_name),
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton(tr("wt.cancel"), callback_data=CB_WT_CANCEL)]]
-            ),
-        )
-    except Exception:
-        # Message vanished — send a fresh prompt so naming can still proceed.
-        await safe_send(
-            context.bot,
-            int(ud.get("_wt_chat_id", 0)),
-            tr("wt.new_agent_prompt", repo=repo_name),
-            message_thread_id=thread_id,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton(tr("wt.cancel"), callback_data=CB_WT_CANCEL)]]
-            ),
-        )
 
 
 async def _handle_wt_cancel(
@@ -418,7 +337,6 @@ async def consume_worktree_name(
 
     base_repo = Path(str(ud.pop("_wt_repo", "")))
     chat_id = int(ud.pop("_wt_chat_id", 0))
-    runtime = str(ud.get("_wt_runtime", "claude"))
     _clear_wt_naming(ud)
     task_title = (update.message.text or "").strip()
 
@@ -432,7 +350,7 @@ async def consume_worktree_name(
         context.bot, chat_id, tr("wt.creating"), message_thread_id=thread_id
     )
     ok, info = await provision_worktree_agent(
-        context.bot, user.id, chat_id, base_repo, base_repo.name, task_title, runtime
+        context.bot, user.id, chat_id, base_repo, base_repo.name, task_title
     )
     await safe_send(
         context.bot,

@@ -29,7 +29,7 @@ Layout and colour came from live use and a design review; the code shows *what*,
 
 - Active tab is marked `▸ Label` — the icon is *replaced* by the pointer. A suffix marker was tried first and overflowed the 3-buttons-per-row width, so Telegram clipped it.
 - The nav row keeps `⏎` next to `↓` — a design review proposed isolating them and it was reverted; the single row is the user-confirmed layout.
-- «Действия» is deliberately **two** rows so the pane photo stays on screen.
+- «Actions» is deliberately **two** rows so the pane photo stays on screen. 🌳 and ➕ get a full-width row each: paired, Telegram clipped «➕ One more agent» on a phone.
 - Colour grammar (`KeyboardButtonStyle`): red in the always-visible grid = only 🗑 delete-agent. Clear and End are **neutral in the grid by user preference** — their red confirm step is where the loss warning lives. Blue = the primary tap. Green = restart/new confirms only, and green **never** sits in the grid (red-adjacent green reads as blotchy). `_DESTRUCTIVE_CONFIRMS` / `_FORWARD_CONFIRMS` pick the confirm colour.
 - Restart and New are not destructive, but ride the same confirm keyboard: the confirm-button label is the ONLY place the «same dialog» vs «from scratch» difference is spelled out.
 - Buttons are runtime-capability-gated (`session_manager.agent_supports` → `AgentRuntime.panel_actions`), slashes resolve via `AgentRuntime.panel_slash`. Survivors repack into rows so no gaps appear. No `if codex:` in the builder — a third agent is a capability set plus optional slash/renderer entries.

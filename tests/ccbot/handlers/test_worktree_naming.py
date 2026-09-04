@@ -18,7 +18,6 @@ from ccbot.handlers.worktrees import (
     WT_NAMING_TTL_SEC,
     _clear_wt_naming,
     _handle_wt_cancel,
-    _handle_wt_runtime,
     consume_worktree_name,
 )
 
@@ -70,59 +69,30 @@ class TestNamingTtl:
         assert STATE_KEY not in context.user_data
 
 
-class TestRuntimeChoice:
-    """🌳 → runtime pick → name. The chosen runtime rides through to
-    provision_worktree_agent so the new branch runs Claude Code or Codex."""
+class TestNoRuntimeStep:
+    """🌳 goes straight from the repo to the task name. The agent (and the
+    session) are picked in the NEW topic, on its first message — a worktree
+    exists to run the same files differently, so inheriting the parent's CLI
+    took away the choice it is for."""
 
     @pytest.mark.asyncio
-    async def test_runtime_pick_sets_state_and_runtime(self):
-        # After 🌳 (repo stashed, NO naming state yet), picking codex sets the
-        # runtime and transitions to naming.
-        context = MagicMock()
-        context.user_data = {
-            "_wt_repo": "/home/u/projects/x",
-            "_wt_chat_id": -100123,
-            "_wt_source_thread": 42,
-        }
-        context.bot = AsyncMock()
-        query = MagicMock()
-        query.answer = AsyncMock()
-        query.edit_message_text = AsyncMock()
-        await _handle_wt_runtime(query, "wt:rt:codex", _update(), context, MagicMock())
-        assert context.user_data["_wt_runtime"] == "codex"
-        assert context.user_data[STATE_KEY] == STATE_WT_NAMING
+    async def test_provision_takes_no_runtime(self):
+        import inspect
+
+        from ccbot.handlers.worktrees import provision_worktree_agent
+
+        assert "runtime" not in inspect.signature(provision_worktree_agent).parameters
 
     @pytest.mark.asyncio
-    async def test_stale_runtime_pick_is_ignored(self):
-        # No stashed repo (bot restart) → no state written, just a dismiss.
-        context = MagicMock()
-        context.user_data = {}
-        query = MagicMock()
-        query.answer = AsyncMock()
-        query.edit_message_reply_markup = AsyncMock()
-        await _handle_wt_runtime(query, "wt:rt:codex", _update(), context, MagicMock())
-        assert STATE_KEY not in context.user_data
-        assert "_wt_runtime" not in context.user_data
-
-    @pytest.mark.asyncio
-    async def test_consume_forwards_chosen_runtime(self):
+    async def test_consume_forwards_only_the_task(self):
         context = _naming_context()
-        context.user_data["_wt_runtime"] = "codex"
         prov = AsyncMock(return_value=(True, "ok"))
         with patch("ccbot.handlers.worktrees.provision_worktree_agent", new=prov):
             with patch("ccbot.handlers.worktrees.safe_send", new=AsyncMock()):
-                await consume_worktree_name(_update(text="новая фича"), context)
-        # runtime is the last positional arg to provision_worktree_agent.
-        assert prov.await_args.args[-1] == "codex"
-
-    @pytest.mark.asyncio
-    async def test_consume_defaults_to_claude(self):
-        context = _naming_context()  # no _wt_runtime set
-        prov = AsyncMock(return_value=(True, "ok"))
-        with patch("ccbot.handlers.worktrees.provision_worktree_agent", new=prov):
-            with patch("ccbot.handlers.worktrees.safe_send", new=AsyncMock()):
-                await consume_worktree_name(_update(text="фича"), context)
-        assert prov.await_args.args[-1] == "claude"
+                await consume_worktree_name(_update(text="new feature"), context)
+        # (bot, user_id, chat_id, base_repo, repo_name, task_title)
+        assert prov.await_args.args[-1] == "new feature"
+        assert len(prov.await_args.args) == 6
 
 
 class TestNamingCancel:

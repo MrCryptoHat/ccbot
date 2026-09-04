@@ -75,6 +75,8 @@ could ever reach that session again. `⏹ End session` still only kills, keeping
 the binding so 🔄 can revive it. Sub display names are ccbot's (the hook
 reports the raw binding as `window_name`, a routing key, not a label).
 
+**➕ provisions a topic, not an agent** (tmux parent): the topic gets the parent's cwd in `thread_directory_memory` — without a runtime — plus the `sub_agent_topics` flag, and its first message opens the session picker. Inheriting the parent's CLI was the old behaviour and removed the point of a sibling: the same files under a different model (operator request 2026-09-04). A DOCKER parent keeps the immediate provision — the container runs one CLI, so there is nothing to pick.
+
 ➕ is hidden on worktree topics (`can_offer_sibling`): the worktree teardown
 removes the directory, which would strand a sibling running inside it — bound,
 so the orphan janitor never reaps it. Fork another worktree with 🌳 instead.

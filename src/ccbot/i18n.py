@@ -365,7 +365,7 @@ STRINGS.update(
         "sib.err_start": "couldn't start the agent in the container",
         "sib.provision_ok": "Agent created: {name}",
         "sib.welcome_docker": "➕ Done — one more agent beside {parent}, on the same files.\nIt can't see its neighbour's chat, so describe the task here 👇",
-        "sib.welcome_tmux": "➕ Done — one more agent in {path}.\nIt can't see its neighbour's chat, so describe the task here 👇",
+        "sib.welcome_tmux": "➕ Ready — one more agent on the files in {path}.\nWrite the task 👇 and pick which agent runs it; it can't see its neighbour's chat, so describe it here.",
         # -- spoll --
         "spoll.agent_stopped": "⚠️ Agent *{name}* stopped. The window will be closed in {grace}s. Use /restart to restart it.",
         "spoll.sibling_down": "💤 Agent «{name}» isn't running right now — its container may have restarted. Tap «🔄 Restart» in the 👾 Agent panel to bring it back and continue.",
@@ -399,7 +399,6 @@ STRINGS.update(
         "wt.keep_agent": "↩ Keep the agent",
         "wt.kept_msg": "↩ Kept — the agent is still here.",
         "wt.kept_toast": "↩ Kept",
-        "wt.choose_runtime": "🌱 New agent in project {repo}.\nWhich agent to run in the new branch?",
         "wt.new_agent_prompt": "🌱 New agent in project {repo}.\nWrite a short name for the task — for example «header redesign». It becomes the topic and branch name; you'll set the actual task in the new topic.",
         "wt.no_project": "Can't determine this topic's project",
         "wt.not_git_repo": "{repo} — not a git repository",
@@ -408,6 +407,6 @@ STRINGS.update(
         "wt.panel_agent_header": "👾 *Agent:* {name}",
         "wt.provision_failed": "❌ Failed: {info}",
         "wt.provision_ok": "Agent created: 🌳 {repo} · {title} (branch {branch})",
-        "wt.welcome": "🌳 Done — a parallel agent for project {repo}.\nBranch: {branch} (a separate copy, I don't merge it into main myself).\n\nWrite the task 👇",
+        "wt.welcome": "🌳 Ready — a parallel copy of project {repo}.\nBranch: {branch} (a separate copy, I don't merge it into main myself).\n\nWrite the task 👇 and pick which agent runs it.",
     }
 )

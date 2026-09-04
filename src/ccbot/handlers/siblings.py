@@ -36,9 +36,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from ..i18n import tr
-from ..runtimes import get_runtime
 from ..session import session_manager
-from ..tmux_manager import tmux_manager
 from ..worktrees import dedup_slug, slugify
 from . import effective_user, get_thread_id
 from .callback_data import CALLBACK_WID_MAX, CB_SIB_CANCEL, CB_SIB_NEW
@@ -259,12 +257,18 @@ async def _provision_tmux_sibling(
     parent_wid: str,
     title: str,
 ) -> tuple[bool, str]:
-    """Open a second tmux window on the parent's directory."""
+    """Open a topic for a second agent on the parent's directory.
+
+    Stops short of starting it: the topic remembers the DIRECTORY and its
+    first message opens the session picker, so the sibling can run a different
+    CLI (and resume a different session) than its parent. Inheriting the
+    parent's runtime removed the one choice a parallel agent exists for
+    (operator request 2026-09-04).
+    """
     ws = session_manager.get_window_state(parent_wid)
     cwd = ws.cwd
     if not cwd or not Path(cwd).is_dir():
         return False, tr("sib.no_parent")
-    rt = get_runtime(ws.runtime)
     parent_display = session_manager.get_display_name(parent_wid)
     display = f"{parent_display}-{slugify(title)}"
     topic_name = f"{SIBLING_TOPIC_MARK} {display}"
@@ -275,21 +279,9 @@ async def _provision_tmux_sibling(
         return False, tr("wt.err_topic_not_created", error=e)
     new_thread = ft.message_thread_id
 
-    # create_window dedups the WINDOW name on collision (foo → foo-2); the
-    # topic keeps the name the user typed, like every other binding flow.
-    ok, message, wname, wid = await tmux_manager.create_window(
-        cwd, window_name=display, runtime=rt.name
-    )
-    if not ok:
-        await _rollback_topic(bot, chat_id, new_thread)
-        return False, tr("wt.err_window", error=message[:120])
-
-    session_manager.tag_window_runtime(wid, rt.name, cwd)
-    if rt.uses_session_map:
-        await session_manager.wait_for_session_map_entry(wid, timeout=5.0)
-    session_manager.bind_thread(user_id, new_thread, wid, window_name=wname)
     session_manager.set_group_chat_id(user_id, new_thread, chat_id)
-    session_manager.record_thread_directory(user_id, new_thread, cwd, runtime=rt.name)
+    # Directory only — no runtime: recording one would pre-answer the picker.
+    session_manager.record_thread_directory(user_id, new_thread, cwd)
     # Flags this topic as an EXTRA agent, which is what makes the panel offer
     # 🗑 here (a main topic has no delete button — see can_delete_agent).
     session_manager.mark_sub_agent_topic(user_id, new_thread)
@@ -300,11 +292,10 @@ async def _provision_tmux_sibling(
         message_thread_id=new_thread,
     )
     logger.info(
-        "Provisioned sibling tmux agent %s on %s (thread=%d)", wid, cwd, new_thread
+        "Provisioned sibling topic on %s (thread=%d) — awaiting agent pick",
+        cwd,
+        new_thread,
     )
-    # The topic name, not `wname`: create_window may have deduped the WINDOW
-    # ("proj-test" → "proj-test-2"), and naming that back at the user points at
-    # something they never see.
     return True, tr("sib.provision_ok", name=display)
 
 

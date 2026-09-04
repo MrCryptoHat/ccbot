@@ -224,3 +224,24 @@ class TestDeleteButtonGating:
     def test_docker_main_agent_has_no_delete(self, panel_window):
         wid = panel_window("docker:assistant", "claude")
         assert not _has(_prefixes(wid), "ad:del:")
+
+
+class TestParallelAgentRows:
+    """🌳 and ➕ each own a full-width row — their labels are the panel's
+    longest, and paired on a phone Telegram clipped «➕ One more agent»."""
+
+    def test_each_gets_its_own_row(self, panel_window, tmp_path):
+        (tmp_path / ".git").mkdir()
+        wid = panel_window("@30", "claude", cwd=tmp_path)
+        kb = _build_commands_keyboard(wid, tab="ses")
+        rows = [
+            row
+            for row in kb.inline_keyboard
+            if any(
+                isinstance(b.callback_data, str)
+                and b.callback_data.startswith(("wt:new:", "sb:new:"))
+                for b in row
+            )
+        ]
+        assert len(rows) == 2  # not one shared row
+        assert all(len(row) == 1 for row in rows)

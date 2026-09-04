@@ -178,26 +178,31 @@ class TestProvisionDockerSibling:
 
 class TestProvisionTmuxSibling:
     @pytest.mark.asyncio
-    async def test_new_window_on_the_same_directory(self, tmp_path) -> None:
+    async def test_topic_remembers_the_folder_and_starts_nothing(
+        self, tmp_path
+    ) -> None:
+        # The sibling exists to run the SAME files differently, so the agent is
+        # chosen in the new topic (first message → picker), not inherited.
         sm = MagicMock()
         sm._is_docker_binding.return_value = False
         sm.get_window_state.return_value = MagicMock(
             cwd=str(tmp_path), runtime="claude"
         )
         sm.get_display_name.return_value = "proj"
-        sm.wait_for_session_map_entry = AsyncMock(return_value=True)
-        tm = MagicMock()
-        tm.create_window = AsyncMock(return_value=(True, "", "proj-notes", "@7"))
         bot = _bot()
         with (
             patch("ccbot.handlers.siblings.session_manager", sm),
-            patch("ccbot.handlers.siblings.tmux_manager", tm),
             patch("ccbot.handlers.siblings.safe_send", AsyncMock()),
         ):
             ok, _ = await provision_sibling_agent(bot, 100, -100123, "@1", "notes")
         assert ok is True
-        assert tm.create_window.await_args.args[0] == str(tmp_path)
-        assert sm.bind_thread.call_args.args[2] == "@7"
+        # Folder remembered WITHOUT a runtime — recording one would pre-answer
+        # the picker.
+        sm.record_thread_directory.assert_called_once()
+        assert sm.record_thread_directory.call_args.args[2] == str(tmp_path)
+        assert not sm.record_thread_directory.call_args.kwargs
+        sm.bind_thread.assert_not_called()
+        sm.mark_sub_agent_topic.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_missing_cwd_is_refused(self) -> None:

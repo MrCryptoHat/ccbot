@@ -97,7 +97,6 @@ from .callback_data import (
     CB_WT_DROP,
     CB_WT_KEEP,
     CB_WT_NEW,
-    CB_WT_RUNTIME,
 )
 from .directory_browser import (
     BROWSE_DIRS_KEY,
@@ -147,7 +146,6 @@ from .worktrees import (
     _handle_wt_drop,
     _handle_wt_keep,
     _handle_wt_new,
-    _handle_wt_runtime,
 )
 
 logger = logging.getLogger(__name__)
@@ -1895,7 +1893,6 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     (CB_CMD_CANCEL, _handle_cmd_cancel),
     # Worktree agents (parallel agents on one project)
     (CB_WT_NEW, _handle_wt_new),
-    (CB_WT_RUNTIME, _handle_wt_runtime),
     (CB_WT_DELOK, _handle_wt_delok),
     (CB_WT_DELNO, _handle_wt_delno),
     (CB_WT_DEL, _handle_wt_del),

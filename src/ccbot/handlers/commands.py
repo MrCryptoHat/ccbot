@@ -1513,19 +1513,19 @@ def _build_commands_keyboard(
                 cmd_btn(tr("commands.btn_end"), CB_CMD_KILL),
             ]
         )
-        # Parallel-agent row. 🌳 forks a worktree agent (own branch+dir) —
-        # shown only when the runtime supports worktrees AND the topic can fork
-        # a repo (worktree topic, or cwd is a git repo). ➕ starts a sibling on
-        # the SAME files (same container / same directory) — no repo needed, so
-        # it also shows for docker agents and plain folders. Both hide rather
-        # than error on tap (session_manager.can_offer_*).
-        wt_row: list[InlineKeyboardButton] = []
+        # Parallel-agent buttons, ONE PER ROW. 🌳 forks a worktree agent (own
+        # branch+dir) — shown only when the runtime supports worktrees AND the
+        # topic can fork a repo (worktree topic, or cwd is a git repo). ➕
+        # starts a sibling on the SAME files (same container / same directory)
+        # — no repo needed, so it also shows for docker agents and plain
+        # folders. Both hide rather than error on tap
+        # (session_manager.can_offer_*). Full width because their labels are
+        # the longest in the panel: paired, Telegram clipped «➕ One more
+        # agent» to «➕ One more ag…» on a phone (operator report 2026-09-04).
         if session_manager.can_offer_worktree(window_id):
-            wt_row.append(cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW))
+            body.append([cmd_btn(tr("commands.btn_new_worktree"), CB_WT_NEW)])
         if session_manager.can_offer_sibling(window_id):
-            wt_row.append(cmd_btn(tr("commands.btn_new_sibling"), CB_SIB_NEW))
-        if wt_row:
-            body.append(wt_row)
+            body.append([cmd_btn(tr("commands.btn_new_sibling"), CB_SIB_NEW)])
         # Explicit instant delete of agent + topic (no waiting for the
         # hard-delete probe). Own row: the pair above already fills the width,
         # and a red button crammed as a third label clips. Shown ONLY for
