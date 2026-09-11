@@ -898,7 +898,8 @@ async def _build_status_text() -> str:
         windows = await tmux_manager.list_windows()
     except Exception:
         windows = []
-    return await asyncio.to_thread(_build_status_text_sync, windows)
+    running_ids = await tmux_manager.agent_running_ids(windows)
+    return await asyncio.to_thread(_build_status_text_sync, windows, running_ids)
 
 
 def _container_tmux_sessions(container: str) -> set[str]:
@@ -929,7 +930,7 @@ def _container_tmux_sessions(container: str) -> set[str]:
     return {line for line in result.stdout.split() if line}
 
 
-def _build_status_text_sync(windows: list) -> str:
+def _build_status_text_sync(windows: list, running_ids: set[str]) -> str:
     """Blocking body of /status — must be called via asyncio.to_thread."""
     warnings: list[str] = []
     sections: list[str] = []
@@ -968,10 +969,7 @@ def _build_status_text_sync(windows: list) -> str:
     for w in windows:
         if w.window_name == "__main__":
             continue
-        cmd = w.pane_current_command or "?"
-        # Runtime-aware: a codex window's foreground is `codex`, not claude/node.
-        runtime = get_runtime(session_manager.window_runtime(w.window_id))
-        if runtime.is_pane_alive(cmd):
+        if w.window_id in running_ids:
             alive_agents.append(w.window_name)
         else:
             dead_agents.append(w.window_name)
@@ -1800,17 +1798,17 @@ async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Wait for the real exit before the relaunch — a blind sleep raced a
         # swallowed /exit-Enter and typed the launch onto a lingering «/exit»
         # («/exitclaude …»). Fallback Enter flushes it, then proceed fail-visible.
-        if not await _wait_agent_exited(target_wid, runtime):
+        if not await _wait_agent_exited(target_wid):
             await tmux_manager.send_keys(
                 target_window.window_id, "Enter", enter=False, literal=False
             )
-            await _wait_agent_exited(target_wid, runtime, timeout=5.0)
+            await _wait_agent_exited(target_wid, timeout=5.0)
         cmd = runtime.launch_command(target_window.window_name, session_id or None)
         await tmux_manager.send_keys(target_window.window_id, cmd)
 
     await asyncio.sleep(8)
     w = await tmux_manager.find_window_by_id(target_window.window_id)
-    if w and runtime.is_pane_alive(w.pane_current_command):
+    if w and await tmux_manager.is_agent_running(w):
         await safe_reply(update.message, tr("commands.restarted", name=agent_name))
     else:
         await safe_reply(

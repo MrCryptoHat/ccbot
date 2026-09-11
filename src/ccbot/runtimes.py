@@ -121,12 +121,6 @@ _LOGIN_WHICH_NEGATIVE_TTL = 60.0
 # the divergence is a stable host property, not a per-render event).
 _login_shell_warned: set[str] = set()
 
-# binary name -> (resolved process name, probe monotonic time). See
-# _pane_command_name: the TTL is what lets a CLI self-update land without the
-# health check reaping every live window in the meantime.
-_pane_name_cache: dict[str, tuple[str | None, float]] = {}
-_PANE_NAME_TTL = 30.0
-
 
 def _login_shell_which(binary: str) -> str | None:
     """``command -v`` under a login shell, cached per binary name.
@@ -189,33 +183,6 @@ def _resolve_cli_binary(binary: str) -> str | None:
     if os.path.isabs(binary):
         return None  # explicit path that doesn't exist — nothing to probe
     return _login_shell_which(binary)
-
-
-def _pane_command_name(binary: str, *, refresh: bool = False) -> str | None:
-    """The ``pane_current_command`` tmux reports for a pane running ``binary``.
-
-    tmux takes that field from the kernel's process name, which BOTH Linux and
-    macOS derive from the *resolved* executable — symlinks already followed,
-    argv[0] ignored (``exec -a claude …`` does not rename it). Claude Code's
-    native installer makes ``~/.local/bin/claude`` a symlink into
-    ``~/.local/share/claude/versions/<version>``, so a perfectly healthy claude
-    pane reports ``2.1.233``, not ``claude`` — every window reaped 30 s after
-    launch (macOS, 2026-08-17). Hence: resolve, then take the real basename.
-
-    Cached with a short TTL because the CLI SELF-UPDATES under a running bot —
-    a pinned name would start reaping windows the moment the version bumped.
-    ``refresh`` forces re-resolution; the liveness check uses it before
-    declaring a pane dead, so a bump mid-TTL costs a syscall, not a window.
-    """
-    now = time.monotonic()
-    if not refresh:
-        cached = _pane_name_cache.get(binary)
-        if cached is not None and now - cached[1] < _PANE_NAME_TTL:
-            return cached[0]
-    resolved = _resolve_cli_binary(binary)
-    name = os.path.basename(os.path.realpath(resolved)) if resolved else None
-    _pane_name_cache[binary] = (name, now)
-    return name
 
 
 def _entry_context_tokens(entry: dict) -> int | None:
@@ -414,44 +381,6 @@ class AgentRuntime(abc.ABC):
     def image_marker(self, path: str) -> str:
         """Text-marker form for a text-marker runtime (native_image_input=False)."""
         return f"(image attached: {path})"
-
-    #: tmux ``pane_current_command`` values that mean "the agent is still running
-    #: in this window" — the dead-window health check (status_polling) treats any
-    #: OTHER foreground command (a bare ``bash`` the CLI exited back to) as a
-    #: crash and reaps the window after a grace period. Claude Code's foreground
-    #: is ``claude`` / ``node``; a runtime with a different process name (Codex →
-    #: ``codex``) MUST override this or its windows get killed 30 s after launch,
-    #: sign-in menu and all. Default is Claude's set (matches get_runtime's
-    #: fallback-to-claude).
-    pane_alive_commands: frozenset[str] = frozenset({"claude", "node"})
-
-    def is_pane_alive(self, pane_current_command: str | None) -> bool:
-        """Is this pane's foreground command this runtime's CLI, still running?
-
-        The declarative ``pane_alive_commands`` is the fast path; when it
-        misses, fall back to the name the CONFIGURED binary actually resolves
-        to. A version-symlinked install (Claude Code's native installer:
-        ``~/.local/bin/claude`` → ``…/versions/2.1.233``) reports the version
-        as the process name, matches nothing in the static set, and gets its
-        windows reaped 30 s after launch — the static set can't enumerate a
-        name that changes with every CLI update.
-
-        Ask ALL call sites through here rather than testing membership
-        directly: a false "dead" doesn't just mislabel a pane, it kills the
-        window and unbinds the topic under a live session.
-        """
-        if not pane_current_command:
-            return False
-        if pane_current_command in self.pane_alive_commands:
-            return True
-        parts = self.cli_command().split()
-        if not parts:
-            return False
-        if pane_current_command == _pane_command_name(parts[0]):
-            return True
-        # Cache may predate a CLI self-update — pay one re-resolution before
-        # declaring a window dead, never the other way round.
-        return pane_current_command == _pane_command_name(parts[0], refresh=True)
 
     async def list_sessions(self, session_manager: Any, cwd: str) -> list[AgentSession]:
         """Resumable sessions this runtime has for ``cwd`` (newest first, capped).
@@ -658,11 +587,6 @@ class CodexRuntime(AgentRuntime):
     auto_forward_first_message = False
     # Idle Ctrl-C arms codex's quit sequence — /esc sends Escape only.
     interrupt_keys = ("Escape",)
-    # Codex's TUI foreground process is `codex` (a native binary, not node) — the
-    # dead-window health check must accept it or every codex window is reaped 30 s
-    # after launch. codex owns the pane the whole time (subcommands run in its own
-    # PTY, not the tmux pane), so a single value suffices.
-    pane_alive_commands = frozenset({"codex"})
     # Codex panel set (probed live). Same wire strings as Claude for
     # compact/clear/model/mcp; "mode" reuses Shift+Tab (codex cycles "Plan
     # mode" on back-tab, same key handler); "context" maps to /status (codex has
@@ -953,8 +877,6 @@ class GrokRuntime(AgentRuntime):
     # Ctrl-C: grok's Ctrl-C clears the draft / escalates toward quit, and an
     # idle DOUBLE-Esc opens the rewind picker — one Escape per /esc is safe.
     interrupt_keys = ("Escape",)
-    # Grok's TUI foreground process is `grok` (a native binary, not node).
-    pane_alive_commands = frozenset({"grok"})
     # Probed live on 0.2.111: Shift+Tab cycles Normal → Plan → Always-approve
     # ("mode"), /effort, /compact, /clear (alias of /new), /model, /context,
     # Ctrl+B sends the running command to the background. EXCLUDED: "worktree"

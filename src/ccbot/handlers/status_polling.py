@@ -37,7 +37,6 @@ from telegram.error import BadRequest
 
 from ..i18n import tr
 from ..rate_limiter import background_context
-from ..runtimes import get_runtime
 from ..session import session_manager
 from ..terminal_parser import (
     detect_model_switch,
@@ -489,21 +488,18 @@ async def status_poll_loop(bot: Bot) -> None:
         try:
             all_windows = await tmux_manager.list_windows()
             live_ids = {w.window_id for w in all_windows}
+            # Decided by who holds each pane's terminal, never by process name
+            # — see tmux_manager.pane_agent_running for why.
+            running_ids = await tmux_manager.agent_running_ids(all_windows)
             for w in all_windows:
                 if w.window_name == "__main__":
                     continue
-                # Runtime-aware liveness: each runtime declares the foreground
-                # commands that mean "still running" (Claude → claude/node,
-                # Codex → codex). Keying on a hardcoded claude set reaped every
-                # codex window 30 s after launch (sign-in menu included).
-                runtime = get_runtime(session_manager.window_runtime(w.window_id))
-                is_alive = runtime.is_pane_alive(w.pane_current_command)
-                if is_alive:
+                if w.window_id in running_ids:
                     # Agent is running — clear any down timer
                     _agent_down_since.pop(w.window_id, None)
                     continue
 
-                # Agent is dead (bash or other process)
+                # Agent is dead (the pane's shell has the terminal back)
                 if w.window_id not in _agent_down_since:
                     # First detection — start timer and notify user
                     _agent_down_since[w.window_id] = time.monotonic()

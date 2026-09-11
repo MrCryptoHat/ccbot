@@ -11,7 +11,6 @@ import json
 
 import pytest
 
-from ccbot import runtimes
 from ccbot.runtimes import CLAUDE, CODEX, GROK, get_runtime
 
 _SEP = "─" * 40
@@ -218,84 +217,6 @@ class TestImageInput:
     def test_codex_uses_native_composer(self):
         assert CODEX.native_image_input is True
         assert CODEX.composer_image_token == "[Image #"
-
-
-class TestPaneAliveCommands:
-    """The dead-window health check keys on the runtime's foreground-command
-    set. Claude's is claude/node; codex's foreground is `codex` — keying on the
-    claude set reaped every codex window 30 s after launch (the bug)."""
-
-    def test_claude_set(self):
-        assert CLAUDE.pane_alive_commands == frozenset({"claude", "node"})
-
-    def test_codex_set(self):
-        # `codex`, NOT node — codex is a native binary.
-        assert CODEX.pane_alive_commands == frozenset({"codex"})
-        assert "codex" in CODEX.pane_alive_commands
-        assert "node" not in CODEX.pane_alive_commands
-
-    def test_grok_set(self):
-        # `grok` is a native binary too.
-        assert GROK.pane_alive_commands == frozenset({"grok"})
-
-    def test_unknown_runtime_degrades_to_claude_set(self):
-        # get_runtime(None) → CLAUDE, so an untracked window uses claude's set.
-        assert get_runtime(None).pane_alive_commands == frozenset({"claude", "node"})
-
-
-class TestIsPaneAlive:
-    """Liveness asks the runtime, not the static set — a version-symlinked CLI
-    reports its VERSION as the process name (Claude Code's native installer:
-    ~/.local/bin/claude → …/versions/2.1.233), matches nothing in the set, and
-    got every window reaped 30 s after launch (macOS, 2026-08-17)."""
-
-    def test_static_set_is_the_fast_path(self, monkeypatch):
-        # No resolution needed when the name is already declared alive.
-        monkeypatch.setattr(
-            runtimes, "_pane_command_name", lambda *a, **kw: pytest.fail("resolved")
-        )
-        assert CLAUDE.is_pane_alive("claude") is True
-        assert CLAUDE.is_pane_alive("node") is True
-
-    def test_shell_is_dead(self):
-        assert CLAUDE.is_pane_alive("bash") is False
-        assert CLAUDE.is_pane_alive("zsh") is False
-
-    def test_empty_pane_command_is_dead(self):
-        # commands.py passes "?" when tmux reports nothing; None is the
-        # find_window_by_id miss. Neither may read as alive.
-        assert CLAUDE.is_pane_alive(None) is False
-        assert CLAUDE.is_pane_alive("") is False
-
-    def test_versioned_binary_counts_as_alive(self, tmp_path, monkeypatch):
-        # The real shape: a `claude` symlink pointing at a version-named file.
-        versions = tmp_path / "versions"
-        versions.mkdir()
-        (versions / "2.1.233").write_text("#!/bin/sh\n")
-        link = tmp_path / "claude"
-        link.symlink_to(versions / "2.1.233")
-        monkeypatch.setattr(runtimes, "_pane_name_cache", {})
-        monkeypatch.setattr(runtimes, "_resolve_cli_binary", lambda b: str(link))
-        assert CLAUDE.is_pane_alive("2.1.233") is True
-        assert CLAUDE.is_pane_alive("bash") is False
-
-    def test_self_update_busts_the_cache(self, tmp_path, monkeypatch):
-        # A stale cached name must not reap windows running the NEW version:
-        # the pre-reap refresh re-resolves before answering False.
-        old, new = tmp_path / "2.1.233", tmp_path / "2.1.240"
-        old.write_text("")
-        new.write_text("")
-        target = {"path": str(old)}
-        monkeypatch.setattr(runtimes, "_pane_name_cache", {})
-        monkeypatch.setattr(runtimes, "_resolve_cli_binary", lambda b: target["path"])
-        assert CLAUDE.is_pane_alive("2.1.233") is True  # warms the cache
-        target["path"] = str(new)  # CLI self-updated under the running bot
-        assert CLAUDE.is_pane_alive("2.1.240") is True
-
-    def test_unresolvable_binary_does_not_crash(self, monkeypatch):
-        monkeypatch.setattr(runtimes, "_pane_name_cache", {})
-        monkeypatch.setattr(runtimes, "_resolve_cli_binary", lambda b: None)
-        assert CLAUDE.is_pane_alive("2.1.233") is False
 
 
 class TestPickerIcon:

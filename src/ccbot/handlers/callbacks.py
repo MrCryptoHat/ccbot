@@ -1436,12 +1436,12 @@ async def _handle_cmd_refresh(
     )
 
 
-async def _wait_agent_exited(window_id: str, runtime, *, timeout: float = 8.0) -> bool:
+async def _wait_agent_exited(window_id: str, *, timeout: float = 8.0) -> bool:
     """Poll until the agent process has exited back to the shell.
 
-    Returns True once the pane's foreground command is no longer one of the
-    runtime's alive commands (claude/node, codex) — i.e. ``/exit`` (or ``/quit``)
-    actually took and we're at a bash prompt. False at timeout.
+    Returns True once the pane's shell holds the terminal again
+    (``tmux_manager.is_agent_running``) — i.e. ``/exit`` (or ``/quit``) actually
+    took and a relaunch will land at the prompt. False at timeout.
 
     Why this exists: the restart used a blind ``sleep(3)`` between the exit
     command and the relaunch. When ``/exit``'s Enter didn't submit (Claude Code's
@@ -1453,7 +1453,7 @@ async def _wait_agent_exited(window_id: str, runtime, *, timeout: float = 8.0) -
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         w = await tmux_manager.find_window_by_id(window_id)
-        if w and not runtime.is_pane_alive(w.pane_current_command):
+        if w and not await tmux_manager.is_agent_running(w):
             return True
         await asyncio.sleep(0.3)
     return False
@@ -1575,9 +1575,9 @@ async def _restart_agent(
         # sleep raced a swallowed /exit-Enter and concatenated the two commands
         # («/exitclaude …»). If it hasn't exited, flush a lingering command line
         # with a bare Enter and wait again, then proceed fail-visible.
-        if not await _wait_agent_exited(window_id, runtime):
+        if not await _wait_agent_exited(window_id):
             await tmux_manager.send_keys(window_id, "Enter", enter=False, literal=False)
-            await _wait_agent_exited(window_id, runtime, timeout=5.0)
+            await _wait_agent_exited(window_id, timeout=5.0)
         cmd = runtime.launch_command(w.window_name, resume_id or None)
         await tmux_manager.send_keys(window_id, cmd)
     await _wait_pane_ready(window_id)

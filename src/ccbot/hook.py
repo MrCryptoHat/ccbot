@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .procinfo import read_proc_stat
+
 logger = logging.getLogger(__name__)
 
 # Validate session_id looks like a UUID
@@ -130,24 +132,13 @@ def _claude_process_names() -> set[str]:
 
 def _proc_parent(proc_root: Path, pid: int) -> tuple[str, int] | None:
     """``(process name, ppid)`` from ``/proc/<pid>/stat`` — Linux."""
-    try:
-        stat = (proc_root / str(pid) / "stat").read_bytes()
-    except OSError:
-        return None
-    # "<pid> (<comm>) <state> <ppid> …" — comm can contain ')' and spaces,
-    # so anchor on the LAST ')'.
-    lparen = stat.find(b"(")
-    rparen = stat.rfind(b")")
-    if lparen < 0 or rparen < lparen:
-        return None
-    fields = stat[rparen + 1 :].split()
-    if len(fields) < 2:
+    entry = read_proc_stat(proc_root, pid)
+    if entry is None or len(entry[1]) < 2:
         return None
     try:
-        ppid = int(fields[1])
+        return entry[0], int(entry[1][1])
     except ValueError:
         return None
-    return stat[lparen + 1 : rparen].decode("utf-8", "replace"), ppid
 
 
 def _ps_parent(pid: int) -> tuple[str, int] | None:

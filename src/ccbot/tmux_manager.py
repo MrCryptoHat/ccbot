@@ -2,6 +2,8 @@
 
 Wraps libtmux to provide async-friendly operations on a single tmux session:
   - list_windows / find_window_by_name: discover Claude Code windows.
+  - agent_running_ids / is_agent_running: does a window's agent still hold its
+    terminal — the dead-window check; the rule is pane_agent_running.
   - capture_pane: read terminal content (plain or with ANSI colors).
   - send_keys: forward user input or control keys to a window.
   - create_window / kill_window: lifecycle management.
@@ -15,16 +17,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import re
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import libtmux
 
 from .config import config
+from .procinfo import foreground_process_groups
 from .runtimes import get_runtime
 from .utils import CCBOT_DIR_ENV
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PaneState:
+    """What tmux reports about one pane — enough to judge its agent's liveness."""
+
+    pid: int | None  # pane_pid: the pane's root process, normally its shell
+    dead: bool  # pane_dead: the root exited and remain-on-exit kept the pane
+    start_command: str  # pane_start_command as tmux renders it; "" = default shell
 
 
 @dataclass
@@ -33,8 +47,99 @@ class TmuxWindow:
 
     window_id: str
     window_name: str
-    cwd: str  # Current working directory
-    pane_current_command: str = ""  # Process running in active pane
+    cwd: str  # Current working directory of the active pane
+    panes: list[PaneState] = field(default_factory=list)
+
+
+# tmux renders a pane's start command in its own quoting (args_escape): wrapped
+# in "…" or '…' when it holds shell-special characters, with backslash escapes
+# inside — \\ \" \$ \` and \~ for the character itself, C-style (\t, \n) or
+# octal (\033) for control bytes. Not shell quoting: shlex keeps "\$" as-is.
+_TMUX_ESCAPE_RE = re.compile(r"\\([0-7]{3}|.)", re.DOTALL)
+_TMUX_CSTYLE = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _tmux_unescape(rendered: str) -> str:
+    """Undo tmux's quoting of a single-argument start command."""
+    body = rendered
+    if len(body) >= 2 and body[0] == body[-1] and body[0] in "\"'":
+        body = body[1:-1]
+
+    def _char(match: re.Match[str]) -> str:
+        code = match.group(1)
+        if len(code) == 3:
+            return chr(int(code, 8))
+        return _TMUX_CSTYLE.get(code, code)
+
+    return _TMUX_ESCAPE_RE.sub(_char, body)
+
+
+def _starts_default_shell(start_command: str, default_command: str) -> bool:
+    """Did tmux start this pane with its default shell rather than a program?
+
+    Empty means tmux ran ``default-shell``. A set ``default-command`` (``set -g
+    default-command "$SHELL"`` is a common dotfile line) is copied into EVERY
+    command-less pane's start command in tmux's quoting (``zsh -l`` →
+    ``"zsh -l"``) — compare it with that quoting undone, or every pane on such
+    a host reads as "started with a program" and is never reaped. A rendering
+    this doesn't decode just fails to match, i.e. reads as running.
+    """
+    if not start_command:
+        return True
+    if not default_command:
+        return False
+    return _tmux_unescape(start_command) == default_command
+
+
+def pane_agent_running(
+    pane: PaneState, foreground: Mapping[int, int], default_command: str
+) -> bool:
+    """Does something other than the pane's own shell hold its terminal?
+
+    ccbot types the launch command into a shell pane, so "the agent exited" is
+    exactly "the shell has the terminal back": the tty's foreground process
+    group is the shell's own again (``foreground[pid] == pid``). That is a
+    kernel fact, the same for every CLI, version and OS. The process NAME is
+    not: codex runs as ``codex``, a native-install Claude Code as its version
+    (``2.1.267`` on macOS), and after a CLI self-update the installed binary
+    resolves to the NEW version while every window launched earlier still runs
+    the old one. Each name-based check reaped live windows until the next
+    variant — codex at launch, native claude at launch, then every window
+    minutes after a background update.
+
+    Every unknown answers "running": a false "dead" kills a live session, a
+    false "running" only delays cleanup. A Ctrl-Z'd agent does hand the
+    terminal back and reads as exited — deliberately, since text sent to that
+    pane would now run as shell commands.
+    """
+    if pane.dead:
+        # Before anything else: a remain-on-exit pane keeps its exited root's
+        # stale pid, which the unknown-means-running rule would keep forever.
+        return False
+    if not _starts_default_shell(pane.start_command, default_command):
+        # Started with a program (e.g. a window adopted from outside ccbot):
+        # the root IS the program and holds the terminal itself, so the shell
+        # rule would read it as idle. It lives exactly as long as the pane.
+        return True
+    if pane.pid is None:
+        return True
+    tpgid = foreground.get(pane.pid)
+    if tpgid is None or tpgid <= 0:
+        return True
+    return tpgid != pane.pid
+
+
+def _pane_state(pane: libtmux.Pane) -> PaneState:
+    """PaneState from a libtmux pane row — every field arrives as a string."""
+    try:
+        pid = int(pane.pane_pid) if pane.pane_pid else None
+    except ValueError:
+        pid = None
+    return PaneState(
+        pid=pid,
+        dead=pane.pane_dead == "1",  # "0" is a truthy string
+        start_command=pane.pane_start_command or "",
+    )
 
 
 class TmuxManager:
@@ -116,45 +221,38 @@ class TmuxManager:
     async def list_windows(self) -> list[TmuxWindow]:
         """List all windows in the session with their working directories.
 
+        One ``list-panes -s`` for the whole session — every row already names
+        its window. (``window.active_pane`` cost a tmux call per window, on a
+        poll loop that lists twice a second.)
+
         Returns:
-            List of TmuxWindow with window info and cwd
+            List of TmuxWindow with window info, active-pane cwd and pane states
         """
 
         def _sync_list_windows() -> list[TmuxWindow]:
-            windows = []
             session = self.get_session()
-
             if not session:
-                return windows
+                return []
 
-            for window in session.windows:
-                name = window.window_name or ""
+            windows: dict[str, TmuxWindow] = {}
+            for pane in session.panes:
+                window_id = pane.window_id or ""
+                name = pane.window_name or ""
                 # Skip the main window (placeholder window)
-                if name == config.tmux_main_window_name:
+                if not window_id or name == config.tmux_main_window_name:
                     continue
-
-                try:
-                    # Get the active pane's current path and command
-                    pane = window.active_pane
-                    if pane:
-                        cwd = pane.pane_current_path or ""
-                        pane_cmd = pane.pane_current_command or ""
-                    else:
-                        cwd = ""
-                        pane_cmd = ""
-
-                    windows.append(
-                        TmuxWindow(
-                            window_id=window.window_id or "",
-                            window_name=name,
-                            cwd=cwd,
-                            pane_current_command=pane_cmd,
-                        )
+                window = windows.get(window_id)
+                if window is None:
+                    window = windows[window_id] = TmuxWindow(
+                        window_id=window_id,
+                        window_name=name,
+                        cwd=pane.pane_current_path or "",
                     )
-                except Exception as e:
-                    logger.debug(f"Error getting window info: {e}")
+                elif pane.pane_active == "1":
+                    window.cwd = pane.pane_current_path or ""
+                window.panes.append(_pane_state(pane))
 
-            return windows
+            return list(windows.values())
 
         return await asyncio.to_thread(_sync_list_windows)
 
@@ -189,6 +287,57 @@ class TmuxManager:
                 return window
         logger.debug("Window not found by id: %s", window_id)
         return None
+
+    async def agent_running_ids(self, windows: Iterable[TmuxWindow]) -> set[str]:
+        """IDs of the windows whose agent still holds its terminal.
+
+        A window counts while ANY of its panes does: a user who splits an agent
+        window and focuses the shell half must not get the agent reaped. A
+        window with no pane data counts too — nothing to judge by. The rule
+        itself is pane_agent_running.
+        """
+        windows = list(windows)
+
+        def _sync() -> set[str]:
+            panes = [p for w in windows for p in w.panes]
+            # Dead panes are never looked up: their pid is stale, maybe reused.
+            foreground = foreground_process_groups(
+                p.pid for p in panes if p.pid is not None and not p.dead
+            )
+            # Only a pane started with a command needs default-command to be
+            # judged — skip the tmux call when no pane has one.
+            default_command = (
+                self._default_command() if any(p.start_command for p in panes) else ""
+            )
+            return {
+                w.window_id
+                for w in windows
+                if not w.panes
+                or any(
+                    pane_agent_running(p, foreground, default_command) for p in w.panes
+                )
+            }
+
+        return await asyncio.to_thread(_sync)
+
+    async def is_agent_running(self, window: TmuxWindow) -> bool:
+        """Whether this window's agent still holds its terminal."""
+        return window.window_id in await self.agent_running_ids([window])
+
+    def _default_command(self) -> str:
+        """The session's effective ``default-command`` ("" when unset or unknown).
+
+        Unknown degrades safely: a start command that then fails to match is
+        judged "started with a program", i.e. running.
+        """
+        session = self.get_session()
+        if not session:
+            return ""
+        try:
+            lines = session.cmd("show-options", "-Av", "default-command").stdout
+        except Exception:
+            return ""
+        return lines[0] if lines else ""
 
     async def ensure_session_pane_size(self, cols: int, rows: int) -> None:
         """Pin the session's pane size for screenshots.

@@ -42,7 +42,6 @@ default.
 | --- | --- |
 | `launch_command(window_name, resume_session_id)` | Shell line typed into a fresh pane. MUST validate the resume id (`is_valid_session_id`) — it reaches the shell. |
 | `exit_command()` | TUI quit command (`/exit`, `/quit`, …) used by restart. |
-| `pane_alive_commands` | tmux `pane_current_command` values meaning "still running". Get this wrong and the health check reaps your windows 30 s after launch. You don't need to list a version-symlinked install's changing name: `is_pane_alive()` falls back to whatever your configured binary resolves to. Call **that**, never the set directly. |
 | `interrupt_keys` | Keys `/esc` sends. Check what an idle Ctrl-C does in the TUI first (in Codex it arms quit). |
 
 **Bootstrap capabilities** (never branch on `runtime.name` at call sites)
@@ -51,7 +50,7 @@ default.
 | --- | --- |
 | `uses_session_map` | True iff a SessionStart hook registers sessions. False ⇒ window cwd is persisted and transcripts resolve by cwd. |
 | `auto_forward_first_message` | False if a fresh TUI can open on a menu (sign-in, onboarding) where blind typing would select something. |
-| `ready_message_key(resumed)` | i18n key of the "window ready" message (add the key to `i18n.py`, ru + en). |
+| `ready_message_key(resumed)` | i18n key of the "window ready" message (add the key to `i18n.py`). |
 
 **Transcripts** (the monitor)
 

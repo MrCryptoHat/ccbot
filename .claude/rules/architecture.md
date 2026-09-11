@@ -52,7 +52,7 @@ Inbound images for a `native_image_input` runtime go through `session_manager.se
 
 ## Status polling — what the 1 s loop owns
 
-Interactive-UI detection, dead-window cleanup (30 s grace; liveness is runtime-aware via `AgentRuntime.pane_alive_commands`), the orphan-window janitor (90 s grace — reaps tmux windows no binding points at, which is what stops `ccbot-2`, `ccbot-3`… piling up on one directory), the typing heartbeat, the CLI self-update canary, and the backstop topic-existence probe. Why `reopen_forum_topic` is the only probe that works: topic-architecture.md. It publishes **no** chat status line — see message-handling.md «What reaches the chat».
+Interactive-UI detection, dead-window cleanup (30 s grace; liveness = the pane's shell no longer holds its terminal, `tmux_manager.pane_agent_running` — never a process-name match, which broke on codex, on version-named native installs and on every CLI self-update), the orphan-window janitor (90 s grace — reaps tmux windows no binding points at, which is what stops `ccbot-2`, `ccbot-3`… piling up on one directory), the typing heartbeat, the CLI self-update canary, and the backstop topic-existence probe. Why `reopen_forum_topic` is the only probe that works: topic-architecture.md. It publishes **no** chat status line — see message-handling.md «What reaches the chat».
 
 `task_pin`'s idle check runs on the **pre-send** pane: after the send the agent is busy with this very message. Pinning needs *Pin messages* + *Delete messages* admin rights and fails soft to a WARNING without them.
 

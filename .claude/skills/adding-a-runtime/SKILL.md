@@ -47,21 +47,15 @@ fixes it.
 tmux new-session -d -s probe -x 100 -y 40 -c /tmp/probe
 tmux send-keys -t probe "$CLI" Enter
 sleep 10 && tmux capture-pane -t probe -p          # idle
-tmux display -p -t probe '#{pane_current_command}' # → pane_alive_commands
 ```
 
-If that prints a version rather than a name, the CLI is a symlink into a
-per-version directory: declare the stable name and let `is_pane_alive()`
-resolve the moving one — a version pinned into the set rots at the next update.
-
 Capture idle, busy (ask it something long-running), any approval menu, and the
-sign-in screen. Two things bite here: `pane_current_command` is what the health
-check reaps windows by, and an idle `Ctrl-C` arms "quit" in some TUIs — check
-what your interrupt key actually does before wiring `interrupt_keys`.
+sign-in screen. An idle `Ctrl-C` arms "quit" in some TUIs — check what your
+interrupt key actually does before wiring `interrupt_keys`.
 
-**Success criteria:** you have literal pane text for idle, busy and one menu, plus
-the verified `pane_current_command` value, and you noted the CLI version — agent
-CLIs self-update and every anchor you're about to write is pinned to that version.
+**Success criteria:** you have literal pane text for idle, busy and one menu, and
+you noted the CLI version — agent CLIs self-update and every anchor you're about
+to write is pinned to that version.
 
 ### 3. Parser first, wiring second
 
@@ -85,7 +79,10 @@ and put the busy / queued-input detectors as pure functions in `terminal_parser.
 Express every divergence from Claude as a **capability** (`uses_session_map`,
 `auto_forward_first_message`, `native_image_input`, …) — never as a
 `runtime.name == "codex"` comparison at a call site, which silently mis-treats
-the next runtime as codex-like. Add the ready-message i18n key in **both** ru and en.
+the next runtime as codex-like. Add the ready-message i18n key. Liveness is not a
+runtime member: the dead-window check asks whether the pane's shell holds the
+terminal again (`tmux_manager.pane_agent_running`) — never add a process-name
+list for it, names change with every installer and self-update.
 
 Interactive menus usually need no work: the generic `ChoiceMenu` pattern and the
 provider-agnostic login flow already catch most TUIs. Add a named pattern only
@@ -99,8 +96,8 @@ Create a topic, bind it, send a message, get a reply, then restart the session
 from the agent panel and confirm the same conversation comes back.
 
 **Success criteria:** the round trip works in Telegram — the unit tests can all
-pass while the window dies 30 s after launch because `pane_alive_commands` was
-wrong, and only a live pass catches that.
+pass while no reply ever arrives because `iter_transcripts` resolves the wrong
+file, and only a live pass catches that.
 
 ### 6. Record what the code can't say
 

