@@ -1575,6 +1575,17 @@ async def commands_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     display = session_manager.get_display_name(wid)
     pane_text = await session_manager.capture_pane(wid, with_ansi=True)
     if not pane_text:
+        # A container agent with no pane is the recoverable case (a docker
+        # restart wipes every sibling's tmux session), and the 🔄 button that
+        # fixes it lives inside the very panel this capture just failed to
+        # build — so offer the way back here instead of a dead end.
+        from .agent_restart import offer_docker_revive
+
+        chat_id = session_manager.resolve_chat_id(user.id, thread_id)
+        if session_manager._is_docker_binding(wid) and await offer_docker_revive(
+            context.bot, chat_id, thread_id, wid
+        ):
+            return
         await safe_reply(update.message, tr("commands.agent_unavailable", name=display))
         return
 

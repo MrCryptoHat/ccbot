@@ -116,6 +116,15 @@ CB_WT_DELNO = "wt:delno:"  # wt:delno:<window_id> — cancel 🗑 delete
 CB_SIB_NEW = "sb:new:"  # sb:new:<window_id> — ➕ one more agent beside this one
 CB_SIB_CANCEL = "sb:abort:"  # sb:abort:<thread_id> — cancel that topic's name step
 
+# Reviving a docker agent whose in-container tmux session is gone (a
+# `docker restart` takes every sibling with it). The payload carries the
+# SESSION, not the window — the binding comes from the topic the tap lands in,
+# which is also what keeps an old offer message from reviving the wrong agent.
+CB_DVR_RESUME = "dv:r:"  # dv:r:<session_id> — continue that conversation
+CB_DVR_FRESH = "dv:new"  # start the agent with a clean context
+CB_DVR_LIST = "dv:list"  # show earlier conversations
+CB_DVR_BACK = "dv:back"  # back to the first offer
+
 # 🗑 delete agent + topic for a non-worktree topic (handlers/agent_delete.py;
 # worktree topics use the CB_WT_DEL* flow, which guards unmerged git work)
 CB_AGENT_DEL = "ad:del:"  # ad:del:<window_id> — 🗑 delete the agent

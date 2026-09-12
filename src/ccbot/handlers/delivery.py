@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
 
 from telegram import Bot
 
@@ -29,7 +30,7 @@ from ..terminal_parser import is_interactive_ui
 from ..voice import build_on_directive, off_directive
 from .ask_question_router import try_route_to_text_option
 from .interactive_ui import handle_interactive_ui
-from .message_sender import safe_send
+from .message_sender import safe_reply, safe_send
 from .reaction_emit import arm as arm_reaction_ack
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,34 @@ async def deliver_user_text(
             arm_reaction_ack(wid, ack_chat_id, ack_message_id)
         return "sent", ""
     return "error", msg
+
+
+async def report_delivery_failure(
+    bot: Bot,
+    message: Any,
+    user_id: int,
+    thread_id: int | None,
+    wid: str,
+    detail: str,
+) -> None:
+    """Answer a send that failed — with the way back when one exists.
+
+    A container agent whose in-container tmux session is gone (a docker
+    restart takes every sibling with it) is recoverable without touching the
+    topic, so the user gets the revive offer instead of a bare
+    «Failed to send keys (docker)» they can do nothing with. Everything else
+    reports the error as before.
+    """
+    from .agent_restart import offer_docker_revive
+
+    if session_manager._is_docker_binding(
+        wid
+    ) and not await session_manager.docker_agent_running(wid):
+        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        if await offer_docker_revive(bot, chat_id, thread_id, wid):
+            return
+    if message is not None:
+        await safe_reply(message, f"❌ {detail}")
 
 
 async def forward_pending_text(

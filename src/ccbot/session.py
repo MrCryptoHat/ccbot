@@ -130,6 +130,25 @@ class WindowState:
 ClaudeSession: TypeAlias = AgentSession
 
 
+# Openers of "user" transcript entries that no human typed — tool plumbing,
+# harness notices, ccbot's own markers. A session's newest user entry is very
+# often one of these, and it makes the picker row unreadable ("<local-command-
+# caveat>Caveat: The messages be…"), so the summary falls back past them.
+_MACHINE_TEXT_PREFIXES = (
+    "<",  # <local-command-caveat>, <command-name>, <task-notification>, …
+    "[image:",
+    "[request interrupted",
+    "(image attached:",
+    "(send file:",
+    "caveat: the messages below",
+)
+
+
+def _is_machine_user_text(text: str) -> bool:
+    """True if this "user" message is plumbing rather than something typed."""
+    return text.lstrip().lower().startswith(_MACHINE_TEXT_PREFIXES)
+
+
 @dataclass
 class SessionManager:
     """Manages session state for Claude Code.
@@ -1717,6 +1736,7 @@ class SessionManager:
         # Single pass: read file once, extract summary + count messages
         summary = ""
         last_user_msg = ""
+        last_human_msg = ""
         message_count = 0
         try:
             async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
@@ -1737,13 +1757,19 @@ class SessionManager:
                             parsed = TranscriptParser.parse_message(data)
                             if parsed and parsed.text.strip():
                                 last_user_msg = parsed.text.strip()
+                                if not _is_machine_user_text(last_user_msg):
+                                    last_human_msg = last_user_msg
                     except json.JSONDecodeError:
                         continue
         except OSError:
             return None
 
         if not summary:
-            summary = last_user_msg[:50] if last_user_msg else "Untitled"
+            # Prefer something a person actually typed: a session's newest
+            # "user" entry is often a caveat block, a task notification or an
+            # image placeholder, which makes a picker row unreadable.
+            best = last_human_msg or last_user_msg
+            summary = best[:50] if best else "Untitled"
 
         return ClaudeSession(
             session_id=session_id,
@@ -1754,17 +1780,26 @@ class SessionManager:
 
     # --- Directory session listing ---
 
-    async def list_sessions_for_directory(self, cwd: str) -> list[ClaudeSession]:
+    async def list_sessions_for_directory(
+        self, cwd: str, projects_root: Path | None = None
+    ) -> list[ClaudeSession]:
         """List existing Claude sessions for a directory.
 
         Encodes the cwd path to find the project directory under
         ~/.claude/projects/{encoded_cwd}/, globs *.jsonl files, and
         extracts summary info from each.
 
+        ``projects_root`` overrides the host Claude home — that is how a
+        docker binding is enumerated (its transcripts live in the
+        container's bind-mounted claude-home, never under the host's).
+
         Returns a list sorted by mtime (most recent first), capped at 10.
         """
         encoded_cwd = self._encode_cwd(cwd)
-        project_dir = config.claude_projects_path / encoded_cwd
+        root = (
+            projects_root if projects_root is not None else config.claude_projects_path
+        )
+        project_dir = root / encoded_cwd
         if not project_dir.is_dir():
             return []
 
@@ -1788,10 +1823,42 @@ class SessionManager:
             if len(sessions) >= 10:
                 break
             session_id = f.stem
-            session = await self._get_session_direct(session_id, cwd)
+            session = await self._get_session_direct(session_id, cwd, projects_root)
             if session and session.message_count > 0:
                 sessions.append(session)
         return sessions
+
+    async def list_agent_sessions(self, binding_value: str) -> list[ClaudeSession]:
+        """Resumable sessions of THIS binding's agent, whatever its transport.
+
+        The transport-agnostic wrapper the revive flow picks from: a docker
+        binding's conversations live in the container's bind-mounted
+        claude-home (``_projects_root_for_binding``) under the cwd Claude
+        reported there (``/workspace``), a tmux binding's under the host's.
+        """
+        state = self.window_states.get(binding_value)
+        cwd = (state.cwd if state else "") or (
+            "/workspace" if self._is_docker_binding(binding_value) else ""
+        )
+        if not cwd:
+            return []
+        return await self.list_sessions_for_directory(
+            cwd, projects_root=self._projects_root_for_binding(binding_value)
+        )
+
+    def session_ids_of_other_bindings(self, binding_value: str) -> set[str]:
+        """Session ids some OTHER binding is tracking right now.
+
+        Container agents share one claude-home, so a sibling's session list is
+        also the parent's and every other sibling's. Resuming a conversation
+        another topic is holding would put two agents on one transcript (both
+        topics then mirror the same JSONL), so the revive picker drops these.
+        """
+        return {
+            wid_state.session_id
+            for wid, wid_state in self.window_states.items()
+            if wid != binding_value and wid_state.session_id
+        }
 
     # --- Window → Session resolution ---
 

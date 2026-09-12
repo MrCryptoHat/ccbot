@@ -2,6 +2,7 @@
 paths:
   - "src/ccbot/handlers/siblings.py"
   - "src/ccbot/handlers/agent_delete.py"
+  - "src/ccbot/handlers/agent_restart.py"
   - "src/ccbot/docker_driver.py"
   - "tests/**siblings**"
 ---
@@ -56,8 +57,21 @@ active by the monitor every tick.
 A dead sibling is invisible from the outside — its container is healthy, only
 its tmux session is gone (a `docker restart` recreates the entrypoint's agent
 and none of the siblings) — so `status_polling._notify_dead_sibling` turns the
-failed pane capture into one message in the topic pointing at 🔄. That is the
-sole caller of `session_manager.docker_agent_running`.
+failed pane capture into one message in the topic. That message **carries the
+way back with it** (`agent_restart.offer_docker_revive`: ▶️ continue the
+conversation it died in, 🆕 start clean, 📋 pick an earlier one): pointing at
+«🔄 Restart in the 👾 panel» was a dead end, because the panel is built from a
+pane capture — exactly what a dead agent can't give — so every route out of
+the topic was closed and the only "fix" was deleting a topic full of the
+user's files (operator report 2026-09-13). The same offer answers a message
+that couldn't be delivered (`delivery.report_delivery_failure`, shared by text
+and media) and a 👾 tap. `revive_docker_agent` never touches the binding or
+the topic — it restarts the in-container session, pinning the resumed id so
+the monitor reads the conversation the user picked. Candidates come from
+`session_manager.list_agent_sessions` (the CONTAINER's claude-home, not the
+host's) minus `session_ids_of_other_bindings`: one claude-home is shared by
+the parent and every sibling, and two agents resuming one transcript would
+mirror it into two topics.
 
 ## tmux targets must be exact
 

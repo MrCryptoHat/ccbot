@@ -467,11 +467,14 @@ class DockerDriver:
             argv.extend(["-S", f"-{scrollback_lines}"])
         rc, stdout, stderr = await self._run(argv)
         if rc != 0:
-            logger.error(
-                "docker capture-pane failed (container=%s): %s",
-                container,
-                stderr.decode(errors="replace").strip(),
-            )
+            err = stderr.decode(errors="replace").strip()
+            # A missing session is an expected state, not a fault: every
+            # sibling's session is gone after a `docker restart` and the 1 s
+            # status poll captures each of them every tick — at ERROR that is
+            # a line per agent per second drowning the log. The revive offer
+            # is what surfaces it to the user.
+            log = logger.debug if "can't find session" in err.lower() else logger.error
+            log("docker capture-pane failed (container=%s): %s", container, err)
             return None
         return stdout.decode("utf-8", errors="replace")
 

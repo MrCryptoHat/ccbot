@@ -17,7 +17,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from . import effective_user, get_thread_id, is_user_allowed, not_authorized_text
-from .delivery import deliver_user_text
+from .delivery import deliver_user_text, report_delivery_failure
 from .siblings import cancel_pending_naming
 from .message_sender import safe_reply, send_photo
 from .provisioning import wait_for_topic
@@ -295,7 +295,9 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if status == "blocked":
         return
     if status == "error":
-        await safe_reply(update.message, f"❌ {detail}")
+        await report_delivery_failure(
+            context.bot, update.message, user.id, thread_id, wid, detail
+        )
         return
 
     await safe_reply(update.message, tr("media.image_sent"))
@@ -378,7 +380,9 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if status == "blocked":
         return
     if status == "error":
-        await safe_reply(update.message, f"❌ {detail}")
+        await report_delivery_failure(
+            context.bot, update.message, user.id, thread_id, wid, detail
+        )
         return
 
     if is_archive:
@@ -476,4 +480,6 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             tr("media.voice_blocked_widget", text=text),
         )
         return
-    await safe_reply(update.message, f"❌ {detail}")
+    await report_delivery_failure(
+        context.bot, update.message, user.id, thread_id, wid, detail
+    )

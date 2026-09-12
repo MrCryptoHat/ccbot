@@ -44,6 +44,7 @@ from ..terminal_parser import (
     is_interactive_ui,
 )
 from ..tmux_manager import tmux_manager
+from .agent_restart import offer_docker_revive
 from .reaction_emit import maybe_fire as fire_reaction_ack
 from .interactive_ui import (
     clear_interactive_msg,
@@ -136,11 +137,14 @@ async def _notify_dead_sibling(
         return
     _sibling_down_seen[window_id] = True
     try:
-        await safe_send(
+        # The notice carries the way back with it. Pointing at «🔄 Restart in
+        # the 👾 panel» (the old copy) was a dead end: the panel opens on a
+        # pane capture, which is exactly what a dead agent can't give.
+        await offer_docker_revive(
             bot,
             session_manager.resolve_chat_id(user_id, thread_id),
-            tr("spoll.sibling_down", name=session_manager.get_display_name(window_id)),
-            message_thread_id=thread_id,
+            thread_id,
+            window_id,
         )
     except Exception as e:  # noqa: BLE001 — a notice is best-effort
         logger.debug("sibling-down notice failed for %s: %s", window_id, e)

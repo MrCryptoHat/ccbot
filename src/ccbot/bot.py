@@ -45,7 +45,11 @@ from .handlers import (
     not_authorized_text,
 )
 from .handlers.coalesce import coalesce_text
-from .handlers.delivery import deliver_user_text, forward_pending_text
+from .handlers.delivery import (
+    deliver_user_text,
+    forward_pending_text,
+    report_delivery_failure,
+)
 from .handlers.callbacks import callback_handler
 from .handlers.commands import (
     _auto_bind_to_directory,
@@ -531,7 +535,9 @@ async def _forward_text_to_agent(
         )
         return
     if status == "error":
-        await safe_reply(update.message, f"❌ {detail}")
+        await report_delivery_failure(
+            context.bot, update.message, user_id, thread_id, wid, detail
+        )
         return
 
     if pin_candidate:

@@ -71,6 +71,10 @@ from .callback_data import (
     CB_DIR_PAGE,
     CB_DIR_SELECT,
     CB_DIR_UP,
+    CB_DVR_BACK,
+    CB_DVR_FRESH,
+    CB_DVR_LIST,
+    CB_DVR_RESUME,
     CB_HISTORY_NEXT,
     CB_HISTORY_PREV,
     CB_KEYS_PREFIX,
@@ -1498,6 +1502,82 @@ async def _revive_from_panel(
     await _cmd_refresh_photo(query, new_wid, tab="ses")
 
 
+# --- Reviving a container agent from its topic ------------------------------
+
+
+def _revive_target(update: Update, user: User) -> str | None:
+    """The docker binding this topic still holds, if the tap belongs to one.
+
+    Read from the topic, never from the payload: the offer message can sit in
+    the history of a topic that has since been rebound, and the session id it
+    carries would then start a conversation in the wrong container.
+    """
+    wid = session_manager.resolve_window_for_thread(user.id, get_thread_id(update))
+    if not wid or not session_manager._is_docker_binding(wid):
+        return None
+    return wid
+
+
+async def _handle_dv_revive(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+) -> None:
+    """Bring a dead container agent back — continuing a conversation or clean."""
+    from .agent_restart import ReviveError, revive_docker_agent
+
+    wid = _revive_target(update, user)
+    if wid is None:
+        await query.answer(tr("revive.no_agent"), show_alert=True)
+        return
+    session_id = data[len(CB_DVR_RESUME) :] if data.startswith(CB_DVR_RESUME) else None
+    await query.answer(tr("cb.reviving_toast"))
+    try:
+        await revive_docker_agent(wid, session_id=session_id)
+    except ReviveError as e:
+        await safe_edit(query, tr(e.key, **e.fmt))
+        return
+    name = session_manager.get_display_name(wid)
+    await safe_edit(
+        query,
+        tr("revive.back_resumed" if session_id else "revive.back_fresh", name=name),
+    )
+
+
+async def _handle_dv_list(
+    query: CallbackQuery,
+    data: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user: User,
+) -> None:
+    """📋 Earlier conversations / ↩ Back — re-render the offer in place."""
+    from .agent_restart import (
+        build_revive_keyboard,
+        build_revive_session_list,
+        docker_revive_options,
+    )
+
+    wid = _revive_target(update, user)
+    if wid is None:
+        await query.answer(tr("revive.no_agent"), show_alert=True)
+        return
+    await query.answer()
+    last, others = await docker_revive_options(wid)
+    if data == CB_DVR_LIST:
+        await safe_edit(
+            query, tr("revive.pick"), reply_markup=build_revive_session_list(others)
+        )
+        return
+    await safe_edit(
+        query,
+        tr("revive.offer", name=session_manager.get_display_name(wid)),
+        reply_markup=build_revive_keyboard(last, others),
+    )
+
+
 async def _restart_agent(
     query: CallbackQuery, window_id: str, *, fresh: bool, update: Update | None = None
 ) -> None:
@@ -1901,6 +1981,11 @@ _PREFIX_DISPATCH: list[tuple[str, Any]] = [
     # Sibling agents (another agent beside this one, no worktree)
     (CB_SIB_NEW, _handle_sib_new),
     (CB_SIB_CANCEL, _handle_sib_cancel),
+    # Reviving a container agent whose in-container session is gone
+    (CB_DVR_RESUME, _handle_dv_revive),
+    (CB_DVR_FRESH, _handle_dv_revive),
+    (CB_DVR_LIST, _handle_dv_list),
+    (CB_DVR_BACK, _handle_dv_list),
     # 🗑 delete agent + topic (non-worktree topics)
     (CB_AGENT_DELOK, _handle_agent_delok),
     (CB_AGENT_DELNO, _handle_agent_delno),

@@ -138,3 +138,173 @@ async def test_hookless_runtime_refuses_a_second_window_on_the_cwd(tmp_path):
 
     assert e.value.key == "bot.same_dir_conflict"
     tm.create_window.assert_not_awaited()
+
+
+class TestReviveDockerAgent:
+    """A container agent dies with its container's tmux server — the topic,
+    its files and its transcripts all survive, so recovery is just starting
+    that session again (never re-creating the topic)."""
+
+    def _docker_mocks(self, *, alive: bool = True, started: bool = True):
+        sm = MagicMock()
+        sm.resolve_docker_target.return_value = SimpleNamespace(
+            agent=SimpleNamespace(container="ctn", name="assistant"),
+            tmux_session="claude-notes",
+            sub="notes",
+        )
+        sm.get_window_state.return_value = SimpleNamespace(
+            session_id="old", cwd="/workspace"
+        )
+        sm.start_docker_agent = AsyncMock(return_value=started)
+        sm.send_lock = MagicMock(return_value=_NullLock())
+        sm._save_state = MagicMock()
+        drv = MagicMock()
+        drv.is_container_alive = AsyncMock(return_value=alive)
+        drv.kill_session = AsyncMock(return_value=True)
+        return sm, drv
+
+    @pytest.mark.asyncio
+    async def test_resume_pins_the_chosen_transcript(self):
+        sm, drv = self._docker_mocks()
+        state = SimpleNamespace(session_id="whatever-the-hook-said", cwd="/workspace")
+        sm.get_window_state.return_value = state
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch("ccbot.docker_driver.docker_driver", drv),
+            patch("ccbot.handlers.agent_restart.asyncio.sleep", AsyncMock()),
+        ):
+            await ar.revive_docker_agent("docker:assistant/notes", session_id=PINNED)
+
+        kwargs = sm.start_docker_agent.await_args.kwargs
+        assert kwargs["resume_session_id"] == PINNED
+        assert kwargs["new_session_id"] is None
+        assert kwargs["cwd"] == "/workspace"
+        # The monitor must read the conversation the user picked, not whatever
+        # id the container's hook reports for a --resume.
+        assert state.session_id == PINNED
+
+    @pytest.mark.asyncio
+    async def test_fresh_start_pins_a_new_id(self):
+        sm, drv = self._docker_mocks()
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch("ccbot.docker_driver.docker_driver", drv),
+            patch("ccbot.handlers.agent_restart.asyncio.sleep", AsyncMock()),
+        ):
+            await ar.revive_docker_agent("docker:assistant/notes", session_id=None)
+
+        kwargs = sm.start_docker_agent.await_args.kwargs
+        assert kwargs["resume_session_id"] is None
+        assert kwargs["new_session_id"]  # ccbot picks the id up front
+
+    @pytest.mark.asyncio
+    async def test_dead_container_is_refused_not_started(self):
+        sm, drv = self._docker_mocks(alive=False)
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch("ccbot.docker_driver.docker_driver", drv),
+        ):
+            with pytest.raises(ar.ReviveError) as e:
+                await ar.revive_docker_agent("docker:assistant/notes", session_id=None)
+        assert e.value.key == "revive.container_down"
+        sm.start_docker_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_crafted_session_id_never_reaches_the_command_line(self):
+        sm, drv = self._docker_mocks()
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch("ccbot.docker_driver.docker_driver", drv),
+        ):
+            with pytest.raises(ar.ReviveError) as e:
+                await ar.revive_docker_agent(
+                    "docker:assistant/notes", session_id="x; rm -rf /"
+                )
+        assert e.value.key == "revive.bad_session"
+        sm.start_docker_agent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_start_raises(self):
+        sm, drv = self._docker_mocks(started=False)
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch("ccbot.docker_driver.docker_driver", drv),
+            patch("ccbot.handlers.agent_restart.asyncio.sleep", AsyncMock()),
+        ):
+            with pytest.raises(ar.ReviveError) as e:
+                await ar.revive_docker_agent("docker:assistant/notes", session_id=None)
+        assert e.value.key == "revive.start_failed"
+
+
+class TestReviveOptions:
+    @pytest.mark.asyncio
+    async def test_a_conversation_another_topic_holds_is_not_offered(self):
+        """One container = one claude-home, so the list is every agent's. Two
+        agents resuming one transcript would mirror it into two topics."""
+        sm = MagicMock()
+        sm.window_states = {"docker:a/one": SimpleNamespace(session_id="mine")}
+        sm.list_agent_sessions = AsyncMock(
+            return_value=[
+                SimpleNamespace(session_id="mine", summary="mine", file_path="/m"),
+                SimpleNamespace(session_id="busy", summary="parent", file_path="/b"),
+                SimpleNamespace(session_id="free", summary="older", file_path="/f"),
+            ]
+        )
+        sm.session_ids_of_other_bindings.return_value = {"busy"}
+        with patch.object(ar, "session_manager", sm):
+            last, others = await ar.docker_revive_options("docker:a/one")
+
+        assert last is not None and last.session_id == "mine"
+        assert [s.session_id for s in others] == ["free"]
+
+
+class _NullLock:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class TestReviveOffer:
+    @pytest.mark.asyncio
+    async def test_a_stopped_container_says_so_instead_of_offering_buttons(self):
+        sm = MagicMock()
+        sm.get_display_name.return_value = "assistant-notes"
+        sm.resolve_docker_target.return_value = SimpleNamespace(
+            agent=SimpleNamespace(container="ctn", name="assistant"),
+            tmux_session="claude-notes",
+            sub="notes",
+        )
+        drv = MagicMock()
+        drv.is_container_alive = AsyncMock(return_value=False)
+        send = AsyncMock()
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch("ccbot.docker_driver.docker_driver", drv),
+            patch.object(ar, "safe_send", send),
+        ):
+            sent = await ar.offer_docker_revive(
+                MagicMock(), -100, 7, "docker:assistant/notes"
+            )
+
+        assert sent is True
+        assert send.await_args.kwargs.get("reply_markup") is None
+
+    @pytest.mark.asyncio
+    async def test_offer_carries_continue_fresh_and_earlier(self):
+        last = SimpleNamespace(session_id=PINNED, summary="ui work", file_path="/a")
+        others = [SimpleNamespace(session_id=NEWEST, summary="older", file_path="/b")]
+        kb = ar.build_revive_keyboard(last, others)
+        labels = [b.text for row in kb.inline_keyboard for b in row]
+        assert len(labels) == 3
+        assert any(PINNED in b.callback_data for row in kb.inline_keyboard for b in row)
+
+    def test_earlier_list_is_capped_and_ends_with_back(self):
+        many = [
+            SimpleNamespace(session_id=f"{i}" * 8, summary=f"s{i}", file_path="/x")
+            for i in range(10)
+        ]
+        kb = ar.build_revive_session_list(many)
+        assert len(kb.inline_keyboard) == ar.REVIVE_SESSION_ROWS + 1
+        assert kb.inline_keyboard[-1][0].callback_data.endswith("back")
