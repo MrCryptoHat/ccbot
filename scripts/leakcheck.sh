@@ -8,6 +8,8 @@
 #   2. names of the operator's agents/projects (~/agents/*, ~/projects/*),
 #      EXCEPT names already present in the public tree (an example name like
 #      "assistant" that the docs legitimately use auto-allowlists itself);
+#   2b. agent names ccbot minted itself (sibling slugs, window display
+#      names) — they live only in state.json, not on disk or in .env;
 #   3. secret/ID VALUES from local .env files (tokens, allowed users, chat
 #      ids) — matched by value, so new kinds of secrets are caught without
 #      updating this script.
@@ -77,6 +79,25 @@ for env in ./.env "$HOME/.ccbot/.env"; do
         printf '%s\n' "$n" >>"$patterns"
     done
 done
+
+# 2c. Agent names ccbot minted itself, which exist in NO directory and in NO
+#     .env: sibling slugs (`docker:<agent>/<slug>`) and window display names
+#     live only in state.json. A real one reached a test fixture (2026-09-13)
+#     with both sweeps above blind to it. Same >=4 chars + public-tree rules.
+state="${CCBOT_DIR:-$HOME/.ccbot}/state.json"
+if [ -f "$state" ] && command -v python3 >/dev/null 2>&1; then
+    for n in $(python3 -c 'import json,sys
+data=json.load(open(sys.argv[1]))
+names=set()
+for k in data.get("window_states",{}):
+    if "/" in k: names.add(k.rsplit("/",1)[1])
+for v in data.get("window_display_names",{}).values():
+    names.update(str(v).replace("/","-").split("-"))
+print("\n".join(n for n in sorted(names) if n.isascii() and n.replace("_","").isalnum() and len(n)>=4))' "$state" 2>/dev/null); do
+        git grep -qiF "$n" "$base" -- 2>/dev/null && continue
+        printf '%s\n' "$n" >>"$patterns"
+    done
+fi
 
 # 3. Secret/ID values from local .env files (never echoed anywhere).
 #    awk, not `sed -n 's/^[A-Za-z_]*\(TOKEN\|...\)=//p'`: that BRE needs the
