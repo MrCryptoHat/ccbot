@@ -935,6 +935,8 @@ _GROK_LOGIN = (
     "\n"
     "                     If it doesn't open, click here to copy.\n"
     "\n"
+    "               Copying not working? Click here to show full URL.\n"
+    "\n"
     "                            Waiting for approval...\n"
     "\n"
     "                                  ctrl+q  quit\n"
@@ -979,8 +981,8 @@ class TestGrokApproval:
 
 
 class TestGrokLogin:
-    """Grok's sign-in screen: one-time code on screen, URL behind OSC 8
-    "click here" links — is_login surfaces both when parseable."""
+    """Grok's sign-in screen: one-time code on screen, URL behind mouse-only
+    "click here" links — rebuilt from the code via the pattern's template."""
 
     def test_login_detected_with_code(self):
         res = extract_interactive_content(_GROK_LOGIN)
@@ -988,6 +990,17 @@ class TestGrokLogin:
         assert res.name == "GrokLogin"
         assert res.is_login is True
         assert parse_login_code(_GROK_LOGIN) == "GRTC-1234"
+
+    def test_url_not_in_capture_but_template_rebuilds_it(self):
+        # grok 1.0.41 under tmux 3.4: the plain capture has no URL at all.
+        res = extract_interactive_content(_GROK_LOGIN)
+        assert res is not None
+        assert parse_login_url(_GROK_LOGIN) is None
+        assert res.login_url_template is not None
+        assert (
+            res.login_url_template.format(code="GRTC-1234")
+            == "https://accounts.x.ai/oauth2/device?user_code=GRTC-1234"
+        )
 
     def test_login_url_recovered_from_osc8(self):
         # The visible label says "click here"; the URL lives in the OSC 8

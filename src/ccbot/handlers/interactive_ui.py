@@ -33,6 +33,7 @@ import io
 import logging
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -662,6 +663,7 @@ async def _surface_login_url(
     ikey: tuple[int, int],
     thread_kwargs: dict[str, int],
     pane_ansi: str,
+    url_template: str | None = None,
 ) -> None:
     """Post the Claude Code sign-in URL as a clickable link + one-tap button.
 
@@ -677,6 +679,10 @@ async def _surface_login_url(
         window_id, with_ansi=True, scrollback_lines=100
     )
     url = parse_login_url(pane or pane_ansi)
+    code = parse_login_code(pane or pane_ansi)
+    if not url and code and url_template:
+        # Code-only screen (Grok): the pattern knows the URL shape.
+        url = url_template.format(code=urllib.parse.quote(code))
     if not url:
         _login_url_sent[ikey] = 0
         logger.debug("Login URL: nothing parseable for %s", window_id)
@@ -685,7 +691,6 @@ async def _surface_login_url(
     text = tr("iui.login_prompt", url=url)
     # If the sign-in screen shows a one-time code (Codex device flow), append it
     # as a copyable code span — reading it off the photo can't be copied.
-    code = parse_login_code(pane or pane_ansi)
     if code:
         text += "\n\n" + tr("iui.login_code", code=code)
     keyboard = InlineKeyboardMarkup(
@@ -784,7 +789,13 @@ async def _handle_interactive_ui_locked(
     if iui.is_login and ikey not in _login_url_sent:
         try:
             await _surface_login_url(
-                bot, chat_id, window_id, ikey, thread_kwargs, pane_ansi
+                bot,
+                chat_id,
+                window_id,
+                ikey,
+                thread_kwargs,
+                pane_ansi,
+                iui.login_url_template,
             )
         except Exception as e:  # never block the photo fallback
             logger.warning("Login URL surfacing failed: %s", e)
@@ -805,7 +816,7 @@ async def _handle_interactive_ui_locked(
         _mark_shown(ikey, window_id, iui.name)
         return True
 
-    caption = tr("iui.caption_waiting")
+    caption = tr("iui.caption_login" if iui.is_login else "iui.caption_waiting")
     keyboard = _build_interactive_keyboard(window_id)
 
     # file_id reuse: if we've uploaded this exact pane before in this

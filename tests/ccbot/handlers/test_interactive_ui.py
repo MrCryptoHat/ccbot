@@ -725,3 +725,50 @@ class TestSurfacePlanText:
         texts = await self._surface(_PLAN_WIDGET_PANE, tmp_path)
         assert len(texts) > 1  # not dropped, not truncated
         assert sum("шаг плана" in t for t in texts) >= 2
+
+
+class TestSurfaceLoginUrl:
+    """A code-only sign-in screen (Grok) still gets its clickable link."""
+
+    _PANE = (
+        "Approve in your browser to finish signing in.\n"
+        "\n"
+        "GRTC-1234\n"
+        "\n"
+        "Waiting for approval...\n"
+    )
+
+    async def _surface(self, template):
+        from ccbot.handlers import interactive_ui as iui
+
+        sent = MagicMock(message_id=77)
+        with (
+            patch.object(iui, "session_manager") as mock_sm,
+            patch.object(
+                iui, "send_with_fallback", AsyncMock(return_value=sent)
+            ) as mock_send,
+            patch.object(iui, "note_topic_message"),
+        ):
+            mock_sm.capture_pane = AsyncMock(return_value=self._PANE)
+            ikey = (1, 42)
+            iui._login_url_sent.pop(ikey, None)
+            await iui._surface_login_url(
+                MagicMock(), -100, "@1", ikey, {}, self._PANE, template
+            )
+            return mock_send, iui._login_url_sent.pop(ikey)
+
+    async def test_url_built_from_code(self):
+        mock_send, msg_id = await self._surface(
+            "https://accounts.x.ai/oauth2/device?user_code={code}"
+        )
+        text = mock_send.call_args.args[2]
+        url = "https://accounts.x.ai/oauth2/device?user_code=GRTC-1234"
+        assert url in text and "GRTC-1234" in text
+        button = mock_send.call_args.kwargs["reply_markup"].inline_keyboard[0][0]
+        assert button.url == url
+        assert msg_id == 77
+
+    async def test_no_template_no_url_sends_nothing(self):
+        mock_send, msg_id = await self._surface(None)
+        mock_send.assert_not_called()
+        assert msg_id == 0

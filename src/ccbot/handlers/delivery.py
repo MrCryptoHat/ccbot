@@ -26,7 +26,7 @@ from telegram import Bot
 
 from ..i18n import tr
 from ..session import session_manager
-from ..terminal_parser import is_interactive_ui
+from ..terminal_parser import is_interactive_ui, is_login_widget
 from ..voice import build_on_directive, off_directive
 from .ask_question_router import try_route_to_text_option
 from .interactive_ui import handle_interactive_ui
@@ -182,7 +182,8 @@ async def forward_pending_text(
     await safe_send(
         bot,
         chat_id,
-        tr("bot.pending_deferred"),
+        # A sign-in screen has nothing to pick with ↑↓⏎ — point at the link.
+        tr("bot.pending_login" if is_login_widget(detail) else "bot.pending_deferred"),
         message_thread_id=thread_id,
     )
     task = asyncio.create_task(

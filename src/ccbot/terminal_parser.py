@@ -36,6 +36,7 @@ class InteractiveUIContent:
     name: str = ""  # Pattern name that matched (e.g. "AskUserQuestion")
     is_login: bool = False  # matched a sign-in screen carrying an auth URL
     confirm_keys: tuple[str, ...] = ("Enter",)  # blind-confirm keys (see UIPattern)
+    login_url_template: str | None = None  # URL from the code (see UIPattern)
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,10 @@ class UIPattern:
     #: Enter. Modeled here, not in reaction_confirm, so a new hazardous menu
     #: is one field, not a new call-site branch.
     confirm_keys: tuple[str, ...] = ("Enter",)
+    #: ``is_login`` screens that print only a one-time CODE, keeping the URL
+    #: behind a mouse-only "click here": the sign-in URL built from that code
+    #: (``{code}`` placeholder), used when the pane yields no URL of its own.
+    login_url_template: str | None = None
 
 
 # How far above the pane's last line a ``tail_only`` widget's top marker may
@@ -365,14 +370,17 @@ UI_PATTERNS: list[UIPattern] = [
     UIPattern(
         # Grok sign-in screen (browser/device flow): "Approve in your browser
         # to finish signing in." + a one-time code + "Waiting for approval…".
-        # The full URL is hidden behind OSC 8 "click here" links, which
-        # parse_login_url already reads (accounts.x.ai is allowlisted); the
-        # code is picked up by parse_login_code. Photo is the fallback.
+        # The URL never reaches a tmux capture: it sits behind mouse-only
+        # "click here" links (no OSC 8 in tmux 3.4's capture-pane -e), and
+        # revealing it swaps this screen for a URL view this pattern no longer
+        # matches. So the link is rebuilt from the code (the device page
+        # takes it as user_code — observed on grok 1.0.41).
         name="GrokLogin",
         top=(re.compile(r"Approve in your browser to finish signing in"),),
         bottom=(re.compile(r"Waiting for approval"),),
         min_gap=1,
         is_login=True,
+        login_url_template="https://accounts.x.ai/oauth2/device?user_code={code}",
     ),
     UIPattern(
         # GENERIC numbered-choice menu — last resort so ANY agent CLI's
@@ -534,6 +542,7 @@ def _try_extract_tail(
                 name=pattern.name,
                 is_login=pattern.is_login,
                 confirm_keys=pattern.confirm_keys,
+                login_url_template=pattern.login_url_template,
             )
     return None
 
@@ -584,6 +593,7 @@ def _try_extract(
         name=pattern.name,
         is_login=pattern.is_login,
         confirm_keys=pattern.confirm_keys,
+        login_url_template=pattern.login_url_template,
     )
 
 
@@ -606,6 +616,11 @@ def extract_interactive_content(pane_text: str) -> InteractiveUIContent | None:
         if result:
             return result
     return None
+
+
+def is_login_widget(name: str | None) -> bool:
+    """True if ``name`` is a UI pattern marked ``is_login`` (a sign-in screen)."""
+    return any(p.is_login and p.name == name for p in UI_PATTERNS)
 
 
 def is_interactive_ui(pane_text: str) -> bool:

@@ -141,6 +141,7 @@ STRINGS.update(
         "bot.start_welcome": "🤖 *Your terminal agents in Telegram*\n\nEach topic is one agent (Claude Code, Codex, …). Create a new topic to start.",
         "bot.agent_waiting_in_dialog": "⚠️ The agent is waiting for a reply in the dialog \\(photo above\\)\\. First pick an option with the ↑↓⏎ buttons, then send your message again\\.",
         "bot.pending_deferred": "⏳ The agent is waiting for an answer in the dialog first \\(photo above\\)\\. Pick an option with the ↑↓⏎ buttons — your message goes to it right after\\.",
+        "bot.pending_login": "⏳ The agent needs you to sign in first: open the link above and approve\\. Your message goes to it right after\\.",
         "bot.pending_undelivered": "⚠️ Your message never reached the agent — the dialog is still waiting for an answer\\. Answer it, then send the message again\\.",
         "bot.no_free_text_option": "⚠️ This question from the agent has no free text answer field\\. Pick an option with ↑↓⏎ — open 🛠 Commands\\.",
         # -- cb --
@@ -328,6 +329,7 @@ STRINGS.update(
         "iui.btn_open_login": "🔗 Open sign-in",
         "iui.btn_refresh": "🔄 Refresh",
         "iui.caption_waiting": "❓ *Agent is waiting for a reply*",
+        "iui.caption_login": "🔐 *Agent needs you to sign in* — use the link above",
         "iui.login_prompt": "🔐 *Sign in*\n\nOpen the link and sign in to your account.\n\n`{url}`",
         "iui.login_code": "One-time code (enter it where prompted):\n`{code}`",
         "iui.plan_header": "📋 *Plan awaiting approval* — read it, then answer with the keys under the photo below:",
