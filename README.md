@@ -234,6 +234,7 @@ capabilities as you set env vars. Nothing optional runs unless you turn it on.
 | -------------------------- | -------------------------------------------- |
 | Core tmux bridge           | always on (the two required vars)            |
 | Codex runtime (2nd CLI)    | `codex` on PATH (auto-detected; `CODEX_*` vars tune it) |
+| GLM runtime (z.ai)         | a Claude Code settings file with your z.ai key (`CCBOT_GLM_SETTINGS`, see `.env.example`) |
 | Voice transcription / TTS  | a provider key (`DEEPGRAM_/OPENAI_/GEMINI_/ELEVENLABS_…`) |
 | Docker agents              | `DOCKER_AGENTS_ENABLED=true` + `DOCKER_AGENTS` ([docs](docs/docker-agents.md)) |
 | 👍-to-confirm reactions     | `REACTION_CONFIRM_ENABLED` (on by default)   |
@@ -328,8 +329,11 @@ the agent's question also confirms it.
 
 **Does it support OpenAI Codex or other CLI agents?**
 Codex is built in: install `codex` and a Codex tab appears in the session
-picker — nothing to configure. Other terminal agents are one runtime subclass
-away ([guide](docs/adding-a-runtime.md)).
+picker — nothing to configure. So is Grok (`grok` on PATH). A **GLM** (z.ai
+Coding Plan) tab runs Claude Code against z.ai's endpoint — drop a settings
+file with your key in place (`.env.example` shows it) and the tab appears;
+your other agents stay on Anthropic. Other terminal agents are one runtime
+subclass away ([guide](docs/adding-a-runtime.md)).
 
 **What happens if the bot or the server restarts?**
 The conversation isn't lost. Sessions live in tmux/Claude Code, not in the

@@ -323,6 +323,17 @@ class Config:
             if codex_sessions
             else Path.home() / ".codex" / "sessions"
         )
+        # GLM runtime (z.ai): Claude Code launched with `--settings <file>`,
+        # whose `env` block points it at z.ai (ANTHROPIC_BASE_URL,
+        # ANTHROPIC_AUTH_TOKEN, ANTHROPIC_DEFAULT_*_MODEL → glm-*). The file
+        # overlays only that process; no file → no GLM picker tab. It holds
+        # the API key: keep it 0600 and outside any repo.
+        glm_settings = os.getenv("CCBOT_GLM_SETTINGS")
+        self.glm_settings_path = (
+            Path(glm_settings).expanduser()
+            if glm_settings
+            else self.config_dir / "glm-settings.json"
+        )
         # Grok CLI command (launched in a grok-runtime window). Like codex,
         # no `--name` flag — the tmux window name is set at creation.
         self.grok_command = os.getenv("GROK_COMMAND", "grok")

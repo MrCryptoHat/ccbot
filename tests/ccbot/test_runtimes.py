@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from ccbot.runtimes import CLAUDE, CODEX, GROK, get_runtime
+from ccbot.runtimes import CLAUDE, CODEX, GLM, GROK, get_runtime
 
 _SEP = "─" * 40
 
@@ -206,6 +206,55 @@ class TestCodexSandboxBypass:
         )
 
 
+class TestGlmRuntime:
+    """GLM = Claude Code launched with a z.ai settings overlay; everything but
+    the launch line is Claude's."""
+
+    _SID = "0a1b2c3d-0000-4000-8000-000000000000"
+
+    def _cfg(self, monkeypatch, settings="/cfg/glm settings.json"):
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        import ccbot.runtimes as rt
+
+        monkeypatch.setattr(
+            rt,
+            "config",
+            MagicMock(claude_command="claude", glm_settings_path=Path(settings)),
+        )
+
+    def test_launch_adds_settings_overlay(self, monkeypatch):
+        self._cfg(monkeypatch)
+        assert (
+            GLM.launch_command("proj")
+            == "claude --settings '/cfg/glm settings.json' --name proj"
+        )
+        assert GLM.launch_command("proj", self._SID).endswith(
+            f"--name proj --resume {self._SID}"
+        )
+
+    def test_claude_launch_untouched(self, monkeypatch):
+        self._cfg(monkeypatch)
+        assert CLAUDE.launch_command("proj") == "claude --name proj"
+
+    async def test_no_second_transcript_pass(self):
+        # Claude's pass already delivers GLM sessions (same hook/session_map);
+        # a second one here would double every reply.
+        assert await GLM.iter_transcripts(None, None, {self._SID}) == []
+
+    async def test_no_second_version_canary(self):
+        assert await GLM.cli_version() is None
+
+    def test_claude_shaped_capabilities(self):
+        assert GLM.name == "glm"
+        assert GLM.uses_session_map is True
+        assert GLM.exit_command() == "/exit"
+        assert GLM.panel_actions == CLAUDE.panel_actions
+        assert GLM.picker_icon == "🟢"
+        assert get_runtime("glm") is GLM
+
+
 class TestImageInput:
     """Claude reads an image from a text marker; Codex attaches the path in its
     composer (native multimodal, client-side read → bypasses the sandbox)."""
@@ -296,7 +345,8 @@ class TestAvailabilityGating:
         # actual CLIs and defeat the availability-gating assertions below.
         monkeypatch.setattr(rt, "_login_shell_which", lambda b: None)
 
-    def _patch_cfg(self, monkeypatch, default="claude"):
+    def _patch_cfg(self, monkeypatch, default="claude", glm_settings=None):
+        from pathlib import Path
         from unittest.mock import MagicMock
 
         import ccbot.runtimes as rt
@@ -308,6 +358,7 @@ class TestAvailabilityGating:
                 claude_command="claude",
                 codex_command="codex",
                 grok_command="grok",
+                glm_settings_path=glm_settings or Path("/nonexistent/glm.json"),
                 default_runtime=default,
             ),
         )
@@ -325,6 +376,20 @@ class TestAvailabilityGating:
         self._patch_cfg(monkeypatch)
         self._patch_which(monkeypatch, {"claude", "codex", "grok"})
         assert pickable_runtimes() == [CLAUDE, CODEX, GROK]
+
+    def test_glm_tab_needs_its_settings_file(self, monkeypatch, tmp_path):
+        # GLM is the claude binary + a z.ai settings file: both must exist.
+        from ccbot.runtimes import pickable_runtimes
+
+        self._patch_which(monkeypatch, {"claude"})
+        self._patch_cfg(monkeypatch)
+        assert pickable_runtimes() == [CLAUDE]
+        settings = tmp_path / "glm-settings.json"
+        settings.write_text("{}")
+        self._patch_cfg(monkeypatch, glm_settings=settings)
+        assert pickable_runtimes() == [CLAUDE, GLM]
+        self._patch_which(monkeypatch, set())
+        assert GLM.is_available() is False
 
     def test_missing_codex_hides_its_tab(self, monkeypatch):
         from ccbot.runtimes import pickable_runtimes

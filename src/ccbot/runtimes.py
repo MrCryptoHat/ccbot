@@ -1,4 +1,4 @@
-"""Agent runtime abstraction — Claude Code, Codex, Grok, and future CLIs.
+"""Agent runtime abstraction — Claude Code, Codex, Grok, GLM, and future CLIs.
 
 An agent *runtime* is the CLI a topic's window runs (Claude Code, OpenAI Codex,
 …). It is a second axis, independent of the *transport* (tmux vs docker — see
@@ -40,7 +40,7 @@ Window-bootstrap divergence is expressed as *capabilities*, not name checks:
 compare ``runtime.name``.
 
 Key API: ``get_runtime(name)`` → AgentRuntime; module singletons ``CLAUDE`` /
-``CODEX`` / ``GROK``; ``RUNTIMES`` registry; ``monitored_runtimes()`` /
+``CODEX`` / ``GROK`` / ``GLM``; ``RUNTIMES`` registry; ``monitored_runtimes()`` /
 ``pickable_runtimes()`` (installed CLIs only) / ``default_runtime()``
 (CCBOT_DEFAULT_RUNTIME, validated + availability-checked); ``is_valid_runtime``.
 """
@@ -81,6 +81,7 @@ logger = logging.getLogger(__name__)
 CLAUDE_RUNTIME = "claude"
 CODEX_RUNTIME = "codex"
 GROK_RUNTIME = "grok"
+GLM_RUNTIME = "glm"
 
 # A transcript reference the monitor tracks: (session_id, file_path).
 TranscriptRef = tuple[str, Path]
@@ -513,12 +514,16 @@ class ClaudeRuntime(AgentRuntime):
     def cli_command(self) -> str:
         return config.claude_command
 
+    def _claude_invocation(self) -> str:
+        """The ``claude`` command line that ``launch_command`` extends."""
+        return config.claude_command
+
     def launch_command(
         self, window_name: str, resume_session_id: str | None = None
     ) -> str:
         # shlex.quote (not repr): this string is typed into the pane's shell,
         # and repr() is not shell-safe for a name holding both quote kinds.
-        cmd = f"{config.claude_command} --name {shlex.quote(window_name)}"
+        cmd = f"{self._claude_invocation()} --name {shlex.quote(window_name)}"
         if resume_session_id and is_valid_session_id(resume_session_id):
             cmd = f"{cmd} --resume {resume_session_id}"
         elif resume_session_id:
@@ -1155,14 +1160,60 @@ class GrokRuntime(AgentRuntime):
         return (session_dir / "updates.jsonl") if session_dir else None
 
 
+class GlmRuntime(ClaudeRuntime):
+    """GLM (z.ai Coding Plan) — Claude Code itself, served by z.ai's endpoint.
+
+    z.ai ships no terminal CLI of its own: its supported path is Claude Code
+    with ``ANTHROPIC_BASE_URL`` pointed at its Anthropic-compatible API and the
+    Claude model aliases mapped onto GLM models. So the pane, the transcripts,
+    the SessionStart hook and every TUI anchor are Claude's; the only
+    divergence is the launch line, which adds ``--settings <file>`` — that
+    file's ``env`` block (endpoint, key, model mapping) overlays THIS process
+    only, while ``~/.claude/settings.json`` — every other agent — stays on
+    Anthropic. No settings file ⇒ no picker tab.
+
+    Shared with Claude, by construction: ``~/.claude/projects`` (so both tabs
+    list the same resumable sessions — resuming one under the other just
+    changes who answers) and the ``claude`` binary (so its version canary is
+    Claude's).
+    """
+
+    name = GLM_RUNTIME
+    display_name = "GLM"
+    picker_icon = "🟢"
+
+    def is_available(self) -> bool:
+        return super().is_available() and config.glm_settings_path.is_file()
+
+    def _claude_invocation(self) -> str:
+        path = shlex.quote(str(config.glm_settings_path))
+        return f"{config.claude_command} --settings {path}"
+
+    async def cli_version(self) -> str | None:
+        # Same binary as Claude: its canary already watches it — a second
+        # probe would only double every self-update warning.
+        return None
+
+    async def iter_transcripts(
+        self, session_manager: Any, monitor: Any, active_session_ids: set[str]
+    ) -> list[TranscriptRef]:
+        # A GLM window registers through the same SessionStart hook, so its
+        # session is already in Claude's pass (which keys on the session_map,
+        # not on the window's runtime). Returning it here too would deliver
+        # every reply twice.
+        return []
+
+
 CLAUDE = ClaudeRuntime()
 CODEX = CodexRuntime()
 GROK = GrokRuntime()
+GLM = GlmRuntime()
 
 RUNTIMES: dict[str, AgentRuntime] = {
     CLAUDE.name: CLAUDE,
     CODEX.name: CODEX,
     GROK.name: GROK,
+    GLM.name: GLM,
 }
 
 
