@@ -122,11 +122,24 @@ def _claude_process_names() -> set[str]:
     Matching only ``claude`` there counts 0 ancestors on every host with a
     native install (Linux included) and silently disables the nested-claude
     guard below. Resolve and add the real name.
+
+    And not just the CURRENT version: the native installer auto-updates the
+    symlink while long-lived interactive sessions keep running the binary
+    they started with. A pane's Claude named ``2.1.280`` next to a symlink now
+    at ``2.1.283`` didn't count, so a ``claude -p`` it shelled out looked
+    top-level and hijacked its session_map slot — the topic went silent. So
+    every sibling in the versions dir counts.
     """
     names = {"claude"}
     resolved = shutil.which("claude")
     if resolved:
-        names.add(os.path.basename(os.path.realpath(resolved)))
+        real = os.path.realpath(resolved)
+        names.add(os.path.basename(real))
+        if os.path.basename(os.path.dirname(real)) == "versions":
+            try:
+                names.update(os.listdir(os.path.dirname(real)))
+            except OSError:
+                pass
     return names
 
 

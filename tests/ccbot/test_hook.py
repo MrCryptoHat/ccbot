@@ -365,6 +365,18 @@ class TestCountClaudeAncestors:
         )
         assert _count_claude_ancestors(root, start_pid=100) == 1
 
+    def test_older_installed_version_counts(self, tmp_path: Path, monkeypatch) -> None:
+        # The pane's Claude still runs 2.1.280 after the symlink auto-updated
+        # to 2.1.283 — a nested `claude -p` (2.1.283) must still see 2 ancestors.
+        versions = tmp_path / "versions"
+        versions.mkdir()
+        for v in ("2.1.280", "2.1.283"):
+            (versions / v).write_text("")
+        link = tmp_path / "claude"
+        link.symlink_to(versions / "2.1.283")
+        monkeypatch.setattr(hook.shutil, "which", lambda _: str(link))
+        assert {"2.1.280", "2.1.283"} <= hook._claude_process_names()
+
     def test_single_interactive_claude(self, tmp_path: Path) -> None:
         # ccbot-hook -> sh -> claude -> pane-shell -> tmux -> init
         root = _fake_proc(
