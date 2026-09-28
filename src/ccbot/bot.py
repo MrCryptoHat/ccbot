@@ -1283,9 +1283,7 @@ async def post_init(application: Application) -> None:
         global _boot_resume_task
         from .handlers.agent_restart import resume_agents_after_boot
 
-        _boot_resume_task = asyncio.create_task(
-            resume_agents_after_boot(application.bot)
-        )
+        _boot_resume_task = asyncio.create_task(resume_agents_after_boot())
 
     # Optional plugins declared in CCBOT_PLUGINS (mail bus, gateways, live
     # dashboards, …). Each starts its own servers/tasks; absent ones skipped.

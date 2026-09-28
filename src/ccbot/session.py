@@ -208,6 +208,10 @@ class SessionManager:
     # reply (message_queue backstop) attach the keyboard only when the
     # topic isn't marked yet. /menu re-attaches unconditionally.
     menu_shown_topics: set[str] = field(default_factory=set)
+    # Docker bindings whose agent the user stopped on purpose (⏹). A dead
+    # agent NOT in here died with its container, and is brought back silently
+    # (CCBOT_AUTO_RESUME_AGENTS); one in here stays down until started again.
+    stopped_docker_agents: set[str] = field(default_factory=set)
     # Not persisted: topics whose tmux window died with the previous tmux
     # server, as (user_id, thread_id, session_id the window ran — "" if
     # unknown). Filled by resolve_stale_ids, drained once at boot by
@@ -371,6 +375,7 @@ class SessionManager:
             "diff_mode_topics": sorted(self.diff_mode_topics),
             "pin_topic_overrides": dict(sorted(self.pin_topic_overrides.items())),
             "menu_shown_topics": sorted(self.menu_shown_topics),
+            "stopped_docker_agents": sorted(self.stopped_docker_agents),
             "sub_agent_topics": sorted(self.sub_agent_topics),
             "reaction_ack_enabled": self.reaction_ack_enabled,
             "table_style": self.table_style,
@@ -555,6 +560,7 @@ class SessionManager:
                 for key in state.get("pin_mode_topics", []):
                     self.pin_topic_overrides.setdefault(str(key), True)
                 self.menu_shown_topics = set(state.get("menu_shown_topics", []))
+                self.stopped_docker_agents = set(state.get("stopped_docker_agents", []))
                 self.sub_agent_topics = set(state.get("sub_agent_topics", []))
                 self.reaction_ack_enabled = bool(
                     state.get("reaction_ack_enabled", config.reaction_ack_default)
@@ -628,6 +634,7 @@ class SessionManager:
                 self.diff_mode_topics = set()
                 self.pin_topic_overrides = {}
                 self.menu_shown_topics = set()
+                self.stopped_docker_agents = set()
                 self.sub_agent_topics = set()
                 self.reaction_ack_enabled = config.reaction_ack_default
                 self.table_style = config.table_style_default
@@ -2544,6 +2551,9 @@ class SessionManager:
             session=target.tmux_session,
             env={AGENT_NAME_ENV: binding_value[len(DOCKER_PREFIX) :]},
         )
+        if started and binding_value in self.stopped_docker_agents:
+            self.stopped_docker_agents.discard(binding_value)
+            self._save_state()
         if started and new_session_id and not resume_session_id:
             # We chose the id, so record it now instead of waiting on the
             # container's hook — the whole point of pinning: a sub-agent stays
@@ -2553,6 +2563,12 @@ class SessionManager:
             state.cwd = self._normalize_cwd(cwd)
             self._save_state()
         return started
+
+    def mark_docker_agent_stopped(self, binding_value: str) -> None:
+        """Record a deliberate stop (⏹) so auto-resume leaves it down."""
+        if binding_value not in self.stopped_docker_agents:
+            self.stopped_docker_agents.add(binding_value)
+            self._save_state()
 
     async def docker_agent_running(self, binding_value: str) -> bool:
         """True iff this docker binding's container AND tmux session are up.

@@ -251,7 +251,6 @@ STRINGS.update(
         "commands.restarted": "✅ {name} restarted.",
         "restart.nothing_to_revive": "❌ Nothing to bring back here — this topic has no folder yet. Send a message to pick one.",
         "restart.window_failed": "❌ Couldn't start the agent again: {err}",
-        "restart.auto_resumed": "🔄 {name} is back after a restart — same conversation, carry on.",
         "restart.revived": "🔄 {name} is back — same folder, same conversation.",
         "revive.offer": "💤 Agent «{name}» isn't running — its container restarted. Bring it back:",
         "revive.btn_continue": "▶️ Continue: {title} · {age}",

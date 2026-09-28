@@ -1753,6 +1753,9 @@ async def _handle_cmd_kill_confirmed(
         await query.answer(tr("cb.kill_failed"), show_alert=True)
         return
     is_docker = session_manager._is_docker_binding(window_id)
+    if is_docker:
+        # A deliberate stop: auto-resume must not bring it back.
+        session_manager.mark_docker_agent_stopped(window_id)
     # Tmux: window is gone → unbind every topic pointing at it.
     # Docker: container stays up; /restart can revive the in-container
     # tmux session, so the topic binding stays intact.

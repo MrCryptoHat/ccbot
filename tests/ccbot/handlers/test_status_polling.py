@@ -234,3 +234,67 @@ class TestStatusPollerSettingsDetection:
             assert call_kwargs["chat_id"] == 100
             assert call_kwargs["message_thread_id"] == 42
             assert call_kwargs["reply_markup"] is not None
+
+
+class TestDeadSiblingIsQuiet:
+    """A container restart should look like nothing happened: a sibling that
+    died with its container comes back silently; one the user stopped stays
+    down without a notice after every bot restart."""
+
+    WID = "docker:agent/side"
+
+    def _patch(self, monkeypatch, *, stopped=False, container_up=True, last="s1"):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ccbot.handlers import status_polling as sp
+
+        sm = MagicMock()
+        sm.is_docker_sub_agent.return_value = True
+        sm.docker_agent_running = AsyncMock(return_value=False)
+        sm.stopped_docker_agents = {self.WID} if stopped else set()
+        sm.resolve_docker_target.return_value = SimpleNamespace(
+            agent=SimpleNamespace(container="ctn")
+        )
+        monkeypatch.setattr(sp, "session_manager", sm)
+        monkeypatch.setattr(sp.config, "auto_resume_agents", True)
+        import ccbot.docker_driver as dd
+
+        monkeypatch.setattr(
+            dd.docker_driver, "is_container_alive", AsyncMock(return_value=container_up)
+        )
+        options = (SimpleNamespace(session_id=last) if last else None, [])
+        monkeypatch.setattr(
+            sp, "docker_revive_options", AsyncMock(return_value=options)
+        )
+        revive = AsyncMock()
+        offer = AsyncMock()
+        monkeypatch.setattr(sp, "revive_docker_agent", revive)
+        monkeypatch.setattr(sp, "offer_docker_revive", offer)
+        sp._sibling_down_seen.pop(self.WID, None)
+        sp._auto_revive_tried.pop(self.WID, None)
+        return sp, revive, offer
+
+    async def test_died_with_container_is_revived_silently(self, monkeypatch):
+        sp, revive, offer = self._patch(monkeypatch)
+        await sp._notify_dead_sibling(MagicMock(), self.WID, 7, 1)
+        revive.assert_awaited_once_with(self.WID, session_id="s1")
+        offer.assert_not_awaited()
+
+    async def test_user_stopped_stays_down_and_quiet(self, monkeypatch):
+        sp, revive, offer = self._patch(monkeypatch, stopped=True)
+        await sp._notify_dead_sibling(MagicMock(), self.WID, 7, 1)
+        revive.assert_not_awaited()
+        offer.assert_not_awaited()
+
+    async def test_container_still_restarting_says_nothing(self, monkeypatch):
+        sp, revive, offer = self._patch(monkeypatch, container_up=False)
+        await sp._notify_dead_sibling(MagicMock(), self.WID, 7, 1)
+        revive.assert_not_awaited()
+        offer.assert_not_awaited()
+
+    async def test_no_known_session_falls_back_to_offer(self, monkeypatch):
+        sp, revive, offer = self._patch(monkeypatch, last=None)
+        await sp._notify_dead_sibling(MagicMock(), self.WID, 7, 1)
+        revive.assert_not_awaited()
+        offer.assert_awaited_once()

@@ -345,7 +345,7 @@ class TestResumeAgentsAfterBoot:
             patch.object(ar, "revive_topic_agent", revive),
             patch.object(ar, "safe_send", send),
         ):
-            await ar.resume_agents_after_boot(MagicMock())
+            await ar.resume_agents_after_boot()
         return sm, revive, send
 
     async def test_each_topic_resumes_its_own_session(self):
@@ -354,7 +354,7 @@ class TestResumeAgentsAfterBoot:
             NEWEST,
             PINNED,
         ]
-        assert send.await_count == 2
+        send.assert_not_awaited()  # silent: a restart looks like nothing happened
         assert sm.boot_orphans == []
 
     async def test_one_session_two_bindings_launches_once(self):
@@ -380,5 +380,5 @@ class TestResumeAgentsAfterBoot:
             patch.object(ar, "revive_topic_agent", revive),
             patch.object(ar, "safe_send", AsyncMock()),
         ):
-            await ar.resume_agents_after_boot(MagicMock())
+            await ar.resume_agents_after_boot()
         assert revive.await_count == 2

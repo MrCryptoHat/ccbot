@@ -35,6 +35,7 @@ import time
 from telegram import Bot
 from telegram.error import BadRequest
 
+from ..config import config
 from ..i18n import tr
 from ..rate_limiter import background_context
 from ..session import session_manager
@@ -44,7 +45,12 @@ from ..terminal_parser import (
     is_interactive_ui,
 )
 from ..tmux_manager import tmux_manager
-from .agent_restart import offer_docker_revive
+from .agent_restart import (
+    ReviveError,
+    docker_revive_options,
+    offer_docker_revive,
+    revive_docker_agent,
+)
 from .reaction_emit import maybe_fire as fire_reaction_ack
 from .interactive_ui import (
     clear_interactive_msg,
@@ -124,10 +130,51 @@ _model_switch_seen: dict[str, bool] = {}
 _sibling_down_seen: dict[str, bool] = {}
 
 
+# Silent auto-revive (CCBOT_AUTO_RESUME_AGENTS): monotonic time of the last
+# attempt per binding. One try per AUTO_REVIVE_RETRY, so an agent that dies
+# right after launch falls back to the offer instead of a relaunch loop.
+_auto_revive_tried: dict[str, float] = {}
+AUTO_REVIVE_RETRY = 600.0  # seconds
+
+
+async def _auto_revive_sibling(window_id: str) -> bool:
+    """Bring a sibling that died with its container back on its own session.
+
+    Silent by design: a container restart should look like nothing happened.
+    Only its OWN last conversation is resumed — with none known, starting a
+    blank one behind the user's back would be a surprise, so that case (and
+    any failure) falls back to the offer. True iff the agent is running again.
+    """
+    now = time.monotonic()
+    if now - _auto_revive_tried.get(window_id, -AUTO_REVIVE_RETRY) < AUTO_REVIVE_RETRY:
+        return False
+    _auto_revive_tried[window_id] = now
+    last, _ = await docker_revive_options(window_id)
+    if last is None:
+        return False
+    try:
+        await revive_docker_agent(window_id, session_id=last.session_id)
+    except ReviveError as e:
+        logger.info("Auto-resume of %s failed: %s", window_id, e.key)
+        return False
+    except Exception:  # noqa: BLE001 — best-effort; the offer is the fallback
+        logger.exception("Auto-resume of %s failed", window_id)
+        return False
+    logger.info("Auto-resumed %s on session %s", window_id, last.session_id)
+    return True
+
+
 async def _notify_dead_sibling(
     bot: Bot, window_id: str, thread_id: int | None, user_id: int
 ) -> None:
-    """Tell the topic once that its sibling agent is no longer running."""
+    """Bring a dead sibling back, or tell the topic once that it's down.
+
+    A sibling the user stopped (⏹) stays down and quiet — the stop's own
+    confirmation already said so, and repeating it after every bot restart
+    was noise. One that died with its container comes back silently when
+    CCBOT_AUTO_RESUME_AGENTS is on; while the container itself is still
+    restarting there is nothing to say yet.
+    """
     if not session_manager.is_docker_sub_agent(window_id):
         return
     if await session_manager.docker_agent_running(window_id):
@@ -135,6 +182,18 @@ async def _notify_dead_sibling(
         return
     if _sibling_down_seen.get(window_id):
         return
+    if window_id in session_manager.stopped_docker_agents:
+        return
+    if config.auto_resume_agents:
+        from ..docker_driver import docker_driver
+
+        target = session_manager.resolve_docker_target(window_id)
+        if target is not None and not await docker_driver.is_container_alive(
+            target.agent.container
+        ):
+            return
+        if await _auto_revive_sibling(window_id):
+            return
     _sibling_down_seen[window_id] = True
     try:
         # The notice carries the way back with it. Pointing at «🔄 Restart in

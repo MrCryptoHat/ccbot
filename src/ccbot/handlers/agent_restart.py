@@ -176,7 +176,7 @@ async def revive_topic_agent(
     return wid, wname
 
 
-async def resume_agents_after_boot(bot: Bot) -> None:
+async def resume_agents_after_boot() -> None:
     """Relaunch every topic whose window died with tmux, on its own session.
 
     ``CCBOT_AUTO_RESUME_AGENTS``: after a host reboot or a container rebuild
@@ -184,7 +184,8 @@ async def resume_agents_after_boot(bot: Bot) -> None:
     someone wrote into it and picked the session again. Sequential (one
     claude boot at a time), best-effort per topic. A session met twice — two
     users' bindings on one topic, as before the one-agent-per-topic fix — is
-    relaunched once; the other writer then routes to it.
+    relaunched once; the other writer then routes to it. Nothing is posted
+    to the topics — the conversation just carries on.
     """
     orphans, session_manager.boot_orphans = session_manager.boot_orphans, []
     started: set[str] = set()
@@ -208,12 +209,8 @@ async def resume_agents_after_boot(bot: Bot) -> None:
             continue
         if session_id:
             started.add(session_id)
-        await safe_send(
-            bot,
-            chat_id,
-            tr("restart.auto_resumed", name=display),
-            message_thread_id=thread_id,
-        )
+        # Silent: a restart should look like nothing happened in the chat.
+        logger.info("Boot resume: thread %d back as %s", thread_id, display)
 
 
 # --- Docker bindings: their agent is a tmux session inside the container ----
