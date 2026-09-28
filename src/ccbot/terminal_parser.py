@@ -758,6 +758,54 @@ def _is_chrome_separator(stripped: str) -> bool:
     return len(stripped.replace("─", "").strip()) <= 30
 
 
+# Claude Code collapses a long paste into this placeholder in its input box.
+_PASTE_PLACEHOLDER_RE = re.compile(r"\[Pasted text #\d+")
+# Characters of the sent text (whitespace removed) probed for in the box.
+_COMPOSER_PROBE_LEN = 24
+
+
+def claude_composer_text(pane_text: str) -> str | None:
+    """What Claude Code's input box currently shows (None = no box drawn).
+
+    The box is the region between the LAST two chrome separators at the bottom
+    of the pane: typed text sits there until Enter submits it, after which the
+    transcript echoes it ABOVE the top border and the box is empty again.
+    """
+    if not pane_text:
+        return None
+    lines = pane_text.split("\n")
+    seps = [
+        i
+        for i in range(max(0, len(lines) - 40), len(lines))
+        if _is_chrome_separator(lines[i].strip())
+    ]
+    if len(seps) < 2:
+        return None
+    return "\n".join(lines[seps[-2] + 1 : seps[-1]])
+
+
+def composer_holds_text(pane_text: str, sent: str) -> bool:
+    """True iff Claude Code's input box still holds ``sent`` (not submitted).
+
+    Matches OUR text, not "box non-empty": with prompt suggestions on, Claude
+    Code draws a dimmed suggested prompt into an empty box, which a plain
+    capture can't tell from typed text. Whitespace is dropped on both sides so
+    the box's soft wrapping doesn't matter; the head and the tail of the text
+    are probed (a tall message scrolls inside the box), and a long paste that
+    Claude collapsed to ``[Pasted text #N …]`` counts as held.
+    """
+    box = claude_composer_text(pane_text)
+    if box is None:
+        return False
+    if _PASTE_PLACEHOLDER_RE.search(box):
+        return True
+    want = re.sub(r"\s+", "", sent)
+    if not want:
+        return False
+    flat = re.sub(r"\s+", "", box)
+    return want[:_COMPOSER_PROBE_LEN] in flat or want[-_COMPOSER_PROBE_LEN:] in flat
+
+
 def parse_status_line(pane_text: str) -> str | None:
     """Extract the Claude Code status line from terminal output.
 

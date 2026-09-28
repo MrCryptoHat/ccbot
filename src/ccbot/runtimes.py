@@ -66,6 +66,7 @@ from .codex_transcript_parser import CodexTranscriptParser
 from .config import config
 from .grok_transcript_parser import GrokTranscriptParser
 from .terminal_parser import (
+    composer_holds_text,
     has_codex_queued_messages,
     has_grok_queued_messages,
     has_queued_messages,
@@ -465,6 +466,16 @@ class AgentRuntime(abc.ABC):
         """
         return is_claude_working(pane_text)
 
+    def unsent_in_composer(self, pane_text: str, sent: str) -> bool:
+        """True iff typed ``sent`` still sits unsubmitted in the input box.
+
+        Checked after every typed message's Enter; True makes the sender press
+        Enter again (``SessionManager._confirm_submitted``). Default reads
+        Claude Code's box; a runtime whose box it can't read returns False,
+        which skips the check rather than re-pressing Enter blind.
+        """
+        return composer_holds_text(pane_text, sent)
+
     def has_queued_input(self, pane_text: str) -> bool:
         """True iff the CLI shows buffered, not-yet-ingested input.
 
@@ -685,6 +696,10 @@ class CodexRuntime(AgentRuntime):
         # Codex's "Messages to be submitted after next tool call" hint (its
         # analog of Claude's "Press up to edit queued messages").
         return has_codex_queued_messages(pane_text)
+
+    def unsent_in_composer(self, pane_text: str, sent: str) -> bool:
+        # Codex draws no ─ chrome around its composer; not verified.
+        return False
 
     # latest_context_tokens: Codex's usage block (event_msg/token_count) uses a
     # per-model window (e.g. 258k for gpt-5.5), not the fixed 1M the alert
@@ -920,6 +935,10 @@ class GrokRuntime(AgentRuntime):
         # Grok's "Queued · Enter to send now" hint (analog of Claude's
         # "Press up to edit queued messages").
         return has_grok_queued_messages(pane_text)
+
+    def unsent_in_composer(self, pane_text: str, sent: str) -> bool:
+        # Grok's box (╭─╮ / │ ❯ … │) is not Claude's; not verified live.
+        return False
 
     def launch_command(
         self, window_name: str, resume_session_id: str | None = None

@@ -3,6 +3,7 @@
 import pytest
 
 from ccbot.terminal_parser import (
+    composer_holds_text,
     detect_model_switch,
     extract_bash_output,
     extract_interactive_content,
@@ -1263,3 +1264,58 @@ class TestClaudeTrustUnnumbered:
             "──────────────────────────────────────\n"
         )
         assert is_interactive_ui(pane) is False
+
+
+# ── Unsent text left in Claude Code's input box ─────────────────────────
+
+_SEP = "─" * 60
+
+
+def _claude_pane(box: list[str]) -> str:
+    return "\n".join(
+        ["● earlier answer", "", _SEP, *box, _SEP, "  Opus 5.5", "  ⏵⏵ auto mode on"]
+    )
+
+
+class TestComposerHoldsText:
+    """After Enter, the typed message must have left the box (2.1.283 once
+    kept a long multi-line message there and stacked the next one on it)."""
+
+    LONG = (
+        "First line with a link https://example.com/a?b=1 to read.\n"
+        "Second line asks @someone about it.\n"
+        "Third line closes the message here."
+    )
+
+    def test_unsent_long_message_is_detected(self):
+        pane = _claude_pane(
+            [
+                "❯\xa0First line with a link https://example.com/a?b=1 to read.",
+                "  Second line asks @someone about it.",
+                "  Third line closes the message here.",
+            ]
+        )
+        assert composer_holds_text(pane, self.LONG) is True
+
+    def test_soft_wrapped_box_still_matches(self):
+        pane = _claude_pane(
+            ["❯\xa0First line with a link https://exam", "  ple.com/a?b=1 to read."]
+        )
+        assert composer_holds_text(pane, self.LONG) is True
+
+    def test_submitted_message_echoed_above_box_is_not_held(self):
+        pane = "\n".join(
+            ["❯ " + self.LONG, "● OK", "", _SEP, "❯\xa0", _SEP, "  Opus 5.5"]
+        )
+        assert composer_holds_text(pane, self.LONG) is False
+
+    def test_prompt_suggestion_in_empty_box_is_not_our_text(self):
+        pane = _claude_pane(["❯\xa0run the tests again"])
+        assert composer_holds_text(pane, self.LONG) is False
+
+    def test_collapsed_paste_placeholder_counts_as_held(self):
+        pane = _claude_pane(["❯\xa0[Pasted text #1 +12 lines]"])
+        assert composer_holds_text(pane, self.LONG) is True
+
+    def test_no_box_drawn_is_not_held(self):
+        assert composer_holds_text("Do you trust this folder?\n❯ 1. Yes", "x") is False

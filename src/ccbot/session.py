@@ -57,6 +57,16 @@ from .worktrees import WorktreeMeta
 
 logger = logging.getLogger(__name__)
 
+# After typing a message + Enter: how long to let the TUI settle before
+# checking that the input box emptied, and how many extra Enters to press
+# while it still holds the text (see SessionManager._confirm_submitted).
+SUBMIT_CHECK_DELAY = 0.7
+SUBMIT_RETRIES = 2
+UNSENT_IN_COMPOSER = (
+    "The message was typed but the agent did not accept it — it is still "
+    "in the input box. The agent may be stuck; try restarting it."
+)
+
 # Binding-value grammar for containers: "docker:<agent>" (the agent's own
 # long-lived session) and "docker:<agent>/<slug>" (a ccbot-created sub-agent
 # beside it in the same container).
@@ -2283,19 +2293,18 @@ class SessionManager:
                 success = await docker_driver.send_keys(
                     agent.container, text, session=target.tmux_session
                 )
-                if success:
-                    self.mark_generating(window_id)
-                    return True, f"Sent to {display}"
-                return False, "Failed to send keys (docker)"
-
-            window = await tmux_manager.find_window_by_id(window_id)
-            if not window:
-                return False, "Window not found (may have been closed)"
-            success = await tmux_manager.send_keys(window.window_id, text)
-            if success:
-                self.mark_generating(window_id)
-                return True, f"Sent to {display}"
-            return False, "Failed to send keys"
+                if not success:
+                    return False, "Failed to send keys (docker)"
+            else:
+                window = await tmux_manager.find_window_by_id(window_id)
+                if not window:
+                    return False, "Window not found (may have been closed)"
+                if not await tmux_manager.send_keys(window.window_id, text):
+                    return False, "Failed to send keys"
+            if not await self._confirm_submitted(window_id, text):
+                return False, UNSENT_IN_COMPOSER
+            self.mark_generating(window_id)
+            return True, f"Sent to {display}"
 
     async def send_keys(
         self,
@@ -2318,27 +2327,71 @@ class SessionManager:
         hold it for one tmux round-trip — uncontended cost is nil.
         """
         async with self.send_lock(binding_value):
-            if self._is_docker_binding(binding_value):
-                if not config.docker_agents_enabled:
-                    return False
-                target = self.resolve_docker_target(binding_value)
-                if not target:
-                    return False
-                if not await docker_driver.is_container_alive(target.agent.container):
-                    return False
-                return await docker_driver.send_keys(
-                    target.agent.container,
-                    keys,
-                    enter=enter,
-                    literal=literal,
-                    session=target.tmux_session,
-                )
-            window = await tmux_manager.find_window_by_id(binding_value)
-            if not window:
-                return False
-            return await tmux_manager.send_keys(
-                window.window_id, keys, enter=enter, literal=literal
+            return await self._send_keys_unlocked(
+                binding_value, keys, enter=enter, literal=literal
             )
+
+    async def _send_keys_unlocked(
+        self, binding_value: str, keys: str, *, enter: bool, literal: bool
+    ) -> bool:
+        """``send_keys`` for a caller already holding the binding's send lock."""
+        if self._is_docker_binding(binding_value):
+            if not config.docker_agents_enabled:
+                return False
+            target = self.resolve_docker_target(binding_value)
+            if not target:
+                return False
+            if not await docker_driver.is_container_alive(target.agent.container):
+                return False
+            return await docker_driver.send_keys(
+                target.agent.container,
+                keys,
+                enter=enter,
+                literal=literal,
+                session=target.tmux_session,
+            )
+        window = await tmux_manager.find_window_by_id(binding_value)
+        if not window:
+            return False
+        return await tmux_manager.send_keys(
+            window.window_id, keys, enter=enter, literal=literal
+        )
+
+    async def _confirm_submitted(self, binding_value: str, text: str) -> bool:
+        """Make sure the Enter after typed ``text`` really submitted it.
+
+        The typed-then-Enter send is blind, and an Enter can be swallowed —
+        a long multi-line message was once left sitting in Claude Code's input
+        box (2.1.283), and the next message stacked onto it. So re-read the
+        pane: while the composer still holds our text, press Enter again, up
+        to SUBMIT_RETRIES times. False = still unsent — the caller reports a
+        failure instead of a silent "sent". Runtimes that can't read their
+        composer (``unsent_in_composer`` → False) pass straight through.
+        """
+        rt = get_runtime(self.window_runtime(binding_value))
+        for attempt in range(SUBMIT_RETRIES + 1):
+            await asyncio.sleep(SUBMIT_CHECK_DELAY)
+            pane = await self.capture_pane(binding_value)
+            if not pane or not rt.unsent_in_composer(pane, text):
+                return True
+            if attempt == SUBMIT_RETRIES:
+                break
+            logger.warning(
+                "Text still in the input box of %s after Enter — pressing Enter "
+                "again (retry %d/%d)",
+                binding_value,
+                attempt + 1,
+                SUBMIT_RETRIES,
+            )
+            await self._send_keys_unlocked(
+                binding_value, "Enter", enter=False, literal=False
+            )
+        logger.error(
+            "Text left unsent in the input box of %s after %d Enter retries",
+            binding_value,
+            SUBMIT_RETRIES,
+        )
+        return False
 
     async def send_composer_image(
         self, binding_value: str, image_path: str, caption: str = ""

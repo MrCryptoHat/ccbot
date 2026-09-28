@@ -1776,3 +1776,36 @@ class TestLiveWindowForSession:
         assert await mgr.live_window_for_session(self.SID) == "@4"
         live.clear()
         assert await mgr.live_window_for_session(self.SID) is None
+
+
+class TestConfirmSubmitted:
+    """A typed message whose Enter got swallowed gets Enter again; one that
+    never leaves the box is reported, not claimed as sent."""
+
+    async def _run(self, mgr, monkeypatch, held: list[bool]):
+        from ccbot import session as session_mod
+
+        monkeypatch.setattr(session_mod, "SUBMIT_CHECK_DELAY", 0)
+        states = iter(held)
+        monkeypatch.setattr(mgr, "capture_pane", AsyncMock(return_value="pane"))
+        rt = type("RT", (), {"unsent_in_composer": lambda self, p, t: next(states)})()
+        monkeypatch.setattr(session_mod, "get_runtime", lambda name: rt)
+        press = AsyncMock(return_value=True)
+        monkeypatch.setattr(mgr, "_send_keys_unlocked", press)
+        ok = await mgr._confirm_submitted("@1", "hello")
+        return ok, press
+
+    async def test_clean_submit_presses_nothing(self, mgr, monkeypatch):
+        ok, press = await self._run(mgr, monkeypatch, [False])
+        assert ok is True
+        press.assert_not_awaited()
+
+    async def test_swallowed_enter_is_repeated(self, mgr, monkeypatch):
+        ok, press = await self._run(mgr, monkeypatch, [True, False])
+        assert ok is True
+        press.assert_awaited_once_with("@1", "Enter", enter=False, literal=False)
+
+    async def test_stuck_box_reported_after_retries(self, mgr, monkeypatch):
+        ok, press = await self._run(mgr, monkeypatch, [True, True, True])
+        assert ok is False
+        assert press.await_count == 2
