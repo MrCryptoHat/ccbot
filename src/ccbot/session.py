@@ -198,6 +198,11 @@ class SessionManager:
     # reply (message_queue backstop) attach the keyboard only when the
     # topic isn't marked yet. /menu re-attaches unconditionally.
     menu_shown_topics: set[str] = field(default_factory=set)
+    # Not persisted: topics whose tmux window died with the previous tmux
+    # server, as (user_id, thread_id, session_id the window ran — "" if
+    # unknown). Filled by resolve_stale_ids, drained once at boot by
+    # agent_restart.resume_agents_after_boot (CCBOT_AUTO_RESUME_AGENTS).
+    boot_orphans: list[tuple[int, int, str]] = field(default_factory=list)
     # Topics whose agent ccbot created as an EXTRA beside an existing one —
     # the ➕ sibling flow ("user_id:thread_id" keys). Only these (and worktree
     # topics, tracked by worktree_meta) may be torn down from the panel's 🗑:
@@ -641,6 +646,8 @@ class SessionManager:
 
         # --- Migrate window_states ---
         new_window_states: dict[str, WindowState] = {}
+        # Dropped window → the session it ran, for boot auto-resume.
+        dead_sessions: dict[str, str] = {}
         for key, ws in self.window_states.items():
             if self._is_docker_binding(key):
                 # Docker-agent state lives outside tmux; keep verbatim.
@@ -669,6 +676,7 @@ class SessionManager:
                         logger.info(
                             "Dropping stale window_state: %s (name=%s)", key, display
                         )
+                        dead_sessions[key] = ws.session_id
                         changed = True
             else:
                 # Old format: key is window_name
@@ -716,6 +724,9 @@ class SessionManager:
                                 uid,
                                 tid,
                                 val,
+                            )
+                            self.boot_orphans.append(
+                                (uid, tid, dead_sessions.get(val, ""))
                             )
                             changed = True
                 else:

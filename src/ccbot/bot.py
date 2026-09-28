@@ -161,6 +161,7 @@ session_monitor: SessionMonitor | None = None
 
 # Status polling task
 _status_poll_task: asyncio.Task | None = None
+_boot_resume_task: asyncio.Task | None = None
 
 # /inject unix-socket server runner (None when CCBOT_INJECT_TOKEN is unset).
 _inject_runner: _AiohttpAppRunner | None = None
@@ -1275,6 +1276,16 @@ async def post_init(application: Application) -> None:
 
     _status_poll_task = asyncio.create_task(status_poll_loop(application.bot))
     logger.info("Status polling task started")
+
+    # Windows lost with the previous tmux server come back on their sessions
+    # (CCBOT_AUTO_RESUME_AGENTS); otherwise they wait for a message + picker.
+    if config.auto_resume_agents and session_manager.boot_orphans:
+        global _boot_resume_task
+        from .handlers.agent_restart import resume_agents_after_boot
+
+        _boot_resume_task = asyncio.create_task(
+            resume_agents_after_boot(application.bot)
+        )
 
     # Optional plugins declared in CCBOT_PLUGINS (mail bus, gateways, live
     # dashboards, …). Each starts its own servers/tasks; absent ones skipped.

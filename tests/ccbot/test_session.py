@@ -557,6 +557,25 @@ class TestResolveStaleIdsPreservesDocker:
         assert mgr.window_states["docker:assistant"].session_id == "sid-1"
 
 
+class TestBootOrphans:
+    """A tmux binding whose window died with tmux is remembered, with the
+    session it ran, for CCBOT_AUTO_RESUME_AGENTS."""
+
+    async def test_dropped_binding_recorded_with_its_session(
+        self, mgr: SessionManager, monkeypatch
+    ) -> None:
+        from ccbot import tmux_manager as tm_mod
+
+        monkeypatch.setattr(
+            tm_mod.tmux_manager, "list_windows", AsyncMock(return_value=[])
+        )
+        mgr.bind_thread(100, 1, "@4")
+        mgr.get_window_state("@4").session_id = "sid-4"
+        mgr.bind_thread(100, 2, "docker:assistant")
+        await mgr.resolve_stale_ids()
+        assert mgr.boot_orphans == [(100, 1, "sid-4")]
+
+
 class TestSendToWindowRouting:
     """send_to_window is the one place where the transport branch happens.
     Legacy tmux bindings must keep using tmux_manager; docker bindings

@@ -323,6 +323,13 @@ class Config:
             if codex_sessions
             else Path.home() / ".codex" / "sessions"
         )
+        # Bring every topic's agent back after tmux itself died (host reboot,
+        # container rebuild): at boot, each topic whose window is gone is
+        # relaunched resuming the session it ran. Off by default — a fresh
+        # boot otherwise waits for the first message and offers the picker.
+        self.auto_resume_agents = (
+            os.getenv("CCBOT_AUTO_RESUME_AGENTS", "false").lower() == "true"
+        )
         # GLM runtime (z.ai): Claude Code launched with `--settings <file>`,
         # whose `env` block points it at z.ai (ANTHROPIC_BASE_URL,
         # ANTHROPIC_AUTH_TOKEN, ANTHROPIC_DEFAULT_*_MODEL → glm-*). The file

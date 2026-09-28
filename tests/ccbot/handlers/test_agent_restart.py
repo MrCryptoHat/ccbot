@@ -326,3 +326,59 @@ class TestReviveOffer:
         kb = ar.build_revive_session_list(many)
         assert len(kb.inline_keyboard) == ar.REVIVE_SESSION_ROWS + 1
         assert kb.inline_keyboard[-1][0].callback_data.endswith("back")
+
+
+class TestResumeAgentsAfterBoot:
+    """CCBOT_AUTO_RESUME_AGENTS: every orphaned topic comes back on its own
+    session, once per session."""
+
+    async def _run(self, orphans, *, owner=None):
+        sm = MagicMock()
+        sm.boot_orphans = list(orphans)
+        sm.get_window_for_thread.return_value = None
+        sm.resolve_chat_id.return_value = -100
+        sm.topic_owner.return_value = owner
+        revive = AsyncMock(return_value=("@9", "proj"))
+        send = AsyncMock()
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch.object(ar, "revive_topic_agent", revive),
+            patch.object(ar, "safe_send", send),
+        ):
+            await ar.resume_agents_after_boot(MagicMock())
+        return sm, revive, send
+
+    async def test_each_topic_resumes_its_own_session(self):
+        sm, revive, send = await self._run([(1, 10, NEWEST), (1, 11, PINNED)])
+        assert [c.kwargs["resume_session_id"] for c in revive.await_args_list] == [
+            NEWEST,
+            PINNED,
+        ]
+        assert send.await_count == 2
+        assert sm.boot_orphans == []
+
+    async def test_one_session_two_bindings_launches_once(self):
+        # Two users' bindings on one topic (pre-fix state): one window.
+        _, revive, _ = await self._run([(1, 10, NEWEST), (2, 10, NEWEST)])
+        assert revive.await_count == 1
+
+    async def test_topic_already_served_is_skipped(self):
+        _, revive, send = await self._run([(2, 10, NEWEST)], owner=1)
+        revive.assert_not_awaited()
+        send.assert_not_awaited()
+
+    async def test_failure_of_one_topic_does_not_stop_the_rest(self):
+        sm = MagicMock()
+        sm.boot_orphans = [(1, 10, NEWEST), (1, 11, PINNED)]
+        sm.get_window_for_thread.return_value = None
+        sm.topic_owner.return_value = None
+        revive = AsyncMock(
+            side_effect=[ar.ReviveError("restart.nothing_to_revive"), ("@9", "x")]
+        )
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch.object(ar, "revive_topic_agent", revive),
+            patch.object(ar, "safe_send", AsyncMock()),
+        ):
+            await ar.resume_agents_after_boot(MagicMock())
+        assert revive.await_count == 2

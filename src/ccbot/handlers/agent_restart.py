@@ -85,12 +85,19 @@ async def _session_to_resume(rt: AgentRuntime, cwd: str, old_wid: str | None) ->
 
 
 async def revive_topic_agent(
-    user_id: int, thread_id: int, *, fresh: bool = False
+    user_id: int,
+    thread_id: int,
+    *,
+    fresh: bool = False,
+    resume_session_id: str | None = None,
 ) -> tuple[str, str]:
     """Recreate this topic's agent window and bind it. Returns (wid, display).
 
     ``fresh=True`` (🆕 New session on a dead window) skips the resume and
     starts the same CLI in the same folder with an empty context.
+    ``resume_session_id`` names the session to continue when the caller knows
+    it better than the dead window's state (boot auto-resume: that state is
+    already swept by then).
 
     Raises :class:`ReviveError` with a user-facing i18n key when the topic has
     no remembered folder, the folder is gone, a hookless runtime already runs
@@ -104,7 +111,10 @@ async def revive_topic_agent(
 
     rt = _runtime_for_topic(user_id, thread_id)
     old_wid = session_manager.get_window_for_thread(user_id, thread_id)
-    resume_id = "" if fresh else await _session_to_resume(rt, cwd, old_wid)
+    if fresh:
+        resume_id = ""
+    else:
+        resume_id = resume_session_id or await _session_to_resume(rt, cwd, old_wid)
 
     # Same-cwd guard for hookless runtimes: their transcript resolves by cwd
     # ("newest wins"), so a second live window here would make two topics
@@ -164,6 +174,46 @@ async def revive_topic_agent(
         resume_id or "none",
     )
     return wid, wname
+
+
+async def resume_agents_after_boot(bot: Bot) -> None:
+    """Relaunch every topic whose window died with tmux, on its own session.
+
+    ``CCBOT_AUTO_RESUME_AGENTS``: after a host reboot or a container rebuild
+    every agent window is gone, and without this each topic sat dead until
+    someone wrote into it and picked the session again. Sequential (one
+    claude boot at a time), best-effort per topic. A session met twice — two
+    users' bindings on one topic, as before the one-agent-per-topic fix — is
+    relaunched once; the other writer then routes to it.
+    """
+    orphans, session_manager.boot_orphans = session_manager.boot_orphans, []
+    started: set[str] = set()
+    for user_id, thread_id, session_id in orphans:
+        if session_id and session_id in started:
+            continue
+        chat_id = session_manager.resolve_chat_id(user_id, thread_id)
+        if session_manager.get_window_for_thread(user_id, thread_id) or (
+            session_manager.topic_owner(chat_id, thread_id, exclude=user_id)
+        ):
+            continue
+        try:
+            _, display = await revive_topic_agent(
+                user_id, thread_id, resume_session_id=session_id or None
+            )
+        except ReviveError as e:
+            logger.info("Boot resume skipped thread %d: %s", thread_id, e.key)
+            continue
+        except Exception:
+            logger.exception("Boot resume failed for thread %d", thread_id)
+            continue
+        if session_id:
+            started.add(session_id)
+        await safe_send(
+            bot,
+            chat_id,
+            tr("restart.auto_resumed", name=display),
+            message_thread_id=thread_id,
+        )
 
 
 # --- Docker bindings: their agent is a tmux session inside the container ----
