@@ -114,6 +114,10 @@ async def revive_topic_agent(
     ):
         raise ReviveError("bot.same_dir_conflict", agent=rt.display_name, dir=cwd)
 
+    # One process per session (see bot._create_and_bind_window).
+    if resume_id and await session_manager.live_window_for_session(resume_id):
+        raise ReviveError("bot.session_already_open")
+
     ok, message, wname, wid = await tmux_manager.create_window(
         cwd, resume_session_id=resume_id or None, runtime=rt.name
     )

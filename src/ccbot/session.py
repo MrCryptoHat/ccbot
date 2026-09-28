@@ -1488,6 +1488,40 @@ class SessionManager:
                 return True
         return False
 
+    def topic_owner(self, chat_id: int, thread_id: int, exclude: int) -> int | None:
+        """Another user whose binding already serves topic ``(chat_id, thread_id)``.
+
+        A topic runs ONE agent whoever writes in it, but bindings are keyed per
+        user — so a second allowed user posting into a bound topic had no
+        binding of their own, got the picker, and launched a second window
+        (possibly ``--resume`` of the very session the first one runs): two
+        processes on one JSONL, and every reply delivered twice — once per
+        binding. ``handlers.effective_user`` acts as this owner instead.
+        Thread ids are only unique within a chat, hence the chat match.
+        """
+        for uid, tid, _wid in self.iter_thread_bindings():
+            if uid != exclude and tid == thread_id:
+                if self.resolve_chat_id(uid, tid) == chat_id:
+                    return uid
+        return None
+
+    async def live_window_for_session(self, session_id: str) -> str | None:
+        """The LIVE tmux window already running ``session_id``, if any.
+
+        Guard for every ``--resume`` launch: two Claude processes on one
+        session both append to the same JSONL and both windows' bindings
+        deliver it. Dead window_states rows (window gone from tmux) and docker
+        bindings (not launched through these paths) don't count.
+        """
+        from .tmux_manager import tmux_manager
+
+        for wid, ws in list(self.window_states.items()):
+            if ws.session_id != session_id or self._is_docker_binding(wid):
+                continue
+            if await tmux_manager.find_window_by_id(wid) is not None:
+                return wid
+        return None
+
     def is_agent_working(self, binding_value: str, pane_text: str | None) -> bool:
         """True iff the bound agent is mid-turn — the runtime-aware busy check.
 

@@ -1736,3 +1736,24 @@ class TestSubAgentTopics:
     def test_docker_main_agent_is_not_deletable(self, mgr: SessionManager) -> None:
         mgr.bind_thread(100, 42, "docker:assistant")
         assert mgr.can_delete_agent("docker:assistant") is False
+
+
+class TestLiveWindowForSession:
+    """One process per session: the --resume guard finds a LIVE window only."""
+
+    SID = "ea000000-0000-4000-8000-000000000000"
+
+    async def test_live_window_found_dead_one_ignored(self, mgr, monkeypatch):
+        from ccbot import tmux_manager as tm_mod
+
+        mgr.window_states["@4"] = WindowState(session_id=self.SID)
+        mgr.window_states["@7"] = WindowState(session_id="other")
+        live = {"@4"}
+        monkeypatch.setattr(
+            tm_mod.tmux_manager,
+            "find_window_by_id",
+            AsyncMock(side_effect=lambda w: object() if w in live else None),
+        )
+        assert await mgr.live_window_for_session(self.SID) == "@4"
+        live.clear()
+        assert await mgr.live_window_for_session(self.SID) is None

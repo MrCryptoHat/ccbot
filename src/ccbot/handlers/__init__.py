@@ -35,6 +35,12 @@ def effective_user(update: Update) -> User | None:
     identity BEFORE the id is used as a state key — otherwise each alias gets
     its own parallel binding universe.
 
+    The same collapse applies per TOPIC: an allowed user with no binding in a
+    topic another allowed user's agent already serves acts as that owner
+    (``session_manager.topic_owner``) — one topic, one agent, whoever types.
+    Without it the second writer got a picker and a second window on the same
+    session, and every reply arrived twice.
+
     Caveat: the rewritten ``User`` keeps the alias's own name/username and
     carries no bot binding — only ``.id`` is canonical. Read ids off it;
     don't feed it to ``mention_html()``/``send_message()``-style calls."""
@@ -42,11 +48,31 @@ def effective_user(update: Update) -> User | None:
     if user is None:
         return None
     canonical = config.canonical_user_id(user.id)
+    owner = _topic_owner(update, canonical)
+    if owner is not None:
+        canonical = owner
     if canonical == user.id:
         return user
     data = user.to_dict()
     data["id"] = canonical
     return User.de_json(data, None)
+
+
+def _topic_owner(update: Update, user_id: int) -> int | None:
+    """The user whose agent serves this update's topic, if not ``user_id``.
+
+    Only for an allowed sender (never a way past the allowlist) with no
+    binding of its own in the topic.
+    """
+    from ..session import session_manager
+
+    chat = update.effective_chat
+    thread_id = get_thread_id(update)
+    if chat is None or thread_id is None or user_id not in config.allowed_users:
+        return None
+    if session_manager.get_window_for_thread(user_id, thread_id) is not None:
+        return None
+    return session_manager.topic_owner(chat.id, thread_id, exclude=user_id)
 
 
 def not_authorized_text(user_id: int | None) -> str:

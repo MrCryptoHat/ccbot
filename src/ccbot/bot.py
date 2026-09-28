@@ -726,6 +726,14 @@ async def _create_and_bind_window(
         )
         return
 
+    # One process per session: resuming a session a live window already runs
+    # would put two agents on one JSONL and deliver every reply twice.
+    if resume_session_id and await session_manager.live_window_for_session(
+        resume_session_id
+    ):
+        await safe_edit(query, i18n.tr("bot.session_already_open"))
+        return
+
     success, message, created_wname, created_wid = await tmux_manager.create_window(
         selected_path, resume_session_id=resume_session_id, runtime=rt.name
     )

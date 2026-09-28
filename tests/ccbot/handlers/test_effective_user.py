@@ -63,3 +63,66 @@ def test_not_authorized_text_anonymous_admin():
     text = handlers.not_authorized_text(handlers.ANONYMOUS_ADMIN_ID)
     assert "CCBOT_USER_ALIASES" in text
     assert "GroupAnonymousBot" in text
+
+
+class TestTopicOwner:
+    """One topic, one agent: an allowed user with no binding of their own in a
+    topic another allowed user's agent serves acts as that owner — otherwise
+    they launch a second window on the same session and every reply arrives
+    twice (once per binding)."""
+
+    OWNER, OTHER, STRANGER = 1001, 2002, 3003
+    CHAT, THREAD = -100123, 42
+
+    def _topic_update(self, uid: int, chat_id: int = CHAT) -> Update:
+        user = User(id=uid, first_name="X", is_bot=False)
+        msg = Message(
+            message_id=1,
+            date=datetime.datetime.now(datetime.UTC),
+            chat=Chat(id=chat_id, type="supergroup", is_forum=True),
+            from_user=user,
+            message_thread_id=self.THREAD,
+            is_topic_message=True,
+        )
+        return Update(update_id=1, message=msg)
+
+    def _setup(self, monkeypatch):
+        from ccbot.session import session_manager
+
+        monkeypatch.setattr(config, "user_aliases", {})
+        monkeypatch.setattr(config, "allowed_users", {self.OWNER, self.OTHER})
+        monkeypatch.setattr(
+            session_manager, "thread_bindings", {self.OWNER: {self.THREAD: "@4"}}
+        )
+        monkeypatch.setattr(
+            session_manager,
+            "group_chat_ids",
+            {f"{self.OWNER}:{self.THREAD}": self.CHAT},
+        )
+        return session_manager
+
+    def test_second_user_acts_as_owner(self, monkeypatch):
+        self._setup(monkeypatch)
+        user = handlers.effective_user(self._topic_update(self.OTHER))
+        assert user is not None and user.id == self.OWNER
+
+    def test_owner_is_untouched(self, monkeypatch):
+        self._setup(monkeypatch)
+        upd = self._topic_update(self.OWNER)
+        assert handlers.effective_user(upd) is upd.effective_user
+
+    def test_own_binding_wins(self, monkeypatch):
+        sm = self._setup(monkeypatch)
+        sm.thread_bindings[self.OTHER] = {self.THREAD: "@5"}
+        user = handlers.effective_user(self._topic_update(self.OTHER))
+        assert user is not None and user.id == self.OTHER
+
+    def test_same_thread_id_in_another_chat_is_not_the_topic(self, monkeypatch):
+        self._setup(monkeypatch)
+        user = handlers.effective_user(self._topic_update(self.OTHER, chat_id=-999))
+        assert user is not None and user.id == self.OTHER
+
+    def test_never_a_way_past_the_allowlist(self, monkeypatch):
+        self._setup(monkeypatch)
+        user = handlers.effective_user(self._topic_update(self.STRANGER))
+        assert user is not None and user.id == self.STRANGER

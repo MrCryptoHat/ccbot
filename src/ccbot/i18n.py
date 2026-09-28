@@ -141,6 +141,7 @@ STRINGS.update(
         "bot.start_welcome": "🤖 *Your terminal agents in Telegram*\n\nEach topic is one agent (Claude Code, Codex, …). Create a new topic to start.",
         "bot.agent_waiting_in_dialog": "⚠️ The agent is waiting for a reply in the dialog \\(photo above\\)\\. First pick an option with the ↑↓⏎ buttons, then send your message again\\.",
         "bot.pending_deferred": "⏳ The agent is waiting for an answer in the dialog first \\(photo above\\)\\. Pick an option with the ↑↓⏎ buttons — your message goes to it right after\\.",
+        "bot.session_already_open": "⚠️ This session is already running in another topic\\. Continue it there, or start a new session here\\.",
         "bot.pending_login": "⏳ The agent needs you to sign in first: open the link above and approve\\. Your message goes to it right after\\.",
         "bot.pending_undelivered": "⚠️ Your message never reached the agent — the dialog is still waiting for an answer\\. Answer it, then send the message again\\.",
         "bot.no_free_text_option": "⚠️ This question from the agent has no free text answer field\\. Pick an option with ↑↓⏎ — open 🛠 Commands\\.",

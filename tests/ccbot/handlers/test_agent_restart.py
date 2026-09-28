@@ -27,6 +27,7 @@ def _mocks(tmp_path, *, sessions=None, window_state=None):
     sm.get_window_for_thread.return_value = None
     sm.window_states = {}
     sm.has_live_agent_on_cwd = AsyncMock(return_value=False)
+    sm.live_window_for_session = AsyncMock(return_value=None)
     sm.wait_for_session_map_entry = AsyncMock(return_value=True)
     sm.get_window_state.return_value = window_state or SimpleNamespace(
         session_id="", cwd="", window_name=""
@@ -137,6 +138,23 @@ async def test_hookless_runtime_refuses_a_second_window_on_the_cwd(tmp_path):
             await ar.revive_topic_agent(1, 42)
 
     assert e.value.key == "bot.same_dir_conflict"
+    tm.create_window.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refuses_to_resume_a_session_a_live_window_runs(tmp_path):
+    # Two processes on one session = one JSONL written twice, replies twice.
+    sm, tm, rt = _mocks(tmp_path, sessions=[NEWEST])
+    sm.live_window_for_session = AsyncMock(return_value="@4")
+    with (
+        patch.object(ar, "session_manager", sm),
+        patch.object(ar, "tmux_manager", tm),
+        patch.object(ar, "get_runtime", return_value=rt),
+    ):
+        with pytest.raises(ar.ReviveError) as e:
+            await ar.revive_topic_agent(1, 42)
+
+    assert e.value.key == "bot.session_already_open"
     tm.create_window.assert_not_awaited()
 
 
