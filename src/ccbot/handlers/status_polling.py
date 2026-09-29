@@ -164,6 +164,38 @@ async def _auto_revive_sibling(window_id: str) -> bool:
     return True
 
 
+async def _revive_dead_window(bot: Bot, window_id: str, display: str) -> bool:
+    """Relaunch the topic agent whose window died, on its own session. Silent.
+
+    Called after the grace with the dead window already killed: the topic's
+    binding still names it, so ``revive_topic_agent`` resumes exactly the
+    session that window ran (its window_state) and rebinds the topic. True
+    iff the agent is back; on failure the operator's notifications chat (if
+    any) hears about it and the caller falls back to closing the topic.
+    """
+    from .agent_restart import revive_topic_agent
+
+    for uid, tid, wid in list(session_manager.iter_thread_bindings()):
+        if wid != window_id:
+            continue
+        try:
+            new_wid, _ = await revive_topic_agent(uid, tid)
+        except Exception as e:  # noqa: BLE001 — fall back to the old close path
+            key = getattr(e, "key", str(e))
+            logger.warning("Auto-resume of dead window %s failed: %s", display, key)
+            if config.notifications_chat_id:
+                with background_context():
+                    await safe_send(
+                        bot,
+                        config.notifications_chat_id,
+                        tr("spoll.auto_resume_failed", name=display, err=key),
+                    )
+            return False
+        logger.info("Auto-resumed dead window %s as %s", display, new_wid)
+        return True
+    return False
+
+
 async def _notify_dead_sibling(
     bot: Bot, window_id: str, thread_id: int | None, user_id: int
 ) -> None:
@@ -566,6 +598,11 @@ async def status_poll_loop(bot: Bot) -> None:
                 if w.window_id not in _agent_down_since:
                     # First detection — start timer and notify user
                     _agent_down_since[w.window_id] = time.monotonic()
+                    if config.auto_resume_agents:
+                        # Quiet: it may come back on its own within the grace
+                        # (an operator restarting claude to apply an update),
+                        # and if not it is revived below — nothing to say yet.
+                        continue
                     for uid, tid, wid in list(session_manager.iter_thread_bindings()):
                         if wid == w.window_id:
                             chat_id = session_manager.resolve_chat_id(uid, tid)
@@ -587,6 +624,10 @@ async def status_poll_loop(bot: Bot) -> None:
                         display = w.window_name
                         await tmux_manager.kill_window(w.window_id)
                         _agent_down_since.pop(w.window_id, None)
+                        if config.auto_resume_agents and await _revive_dead_window(
+                            bot, w.window_id, display
+                        ):
+                            continue
                         logger.info(
                             "Auto-killed dead window %s (%s) after %.0fs",
                             w.window_id,

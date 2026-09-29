@@ -384,6 +384,7 @@ STRINGS.update(
         "sib.welcome_tmux": "➕ Ready — one more agent on the files in {path}.\nWrite the task 👇 and pick which agent runs it; it can't see its neighbour's chat, so describe it here.",
         # -- spoll --
         "spoll.agent_stopped": "⚠️ Agent *{name}* stopped. The window will be closed in {grace}s. Use /restart to restart it.",
+        "spoll.auto_resume_failed": "⚠️ Couldn't bring agent {name} back after it stopped ({err}). Its topic falls back to the session picker.",
         "spoll.window_closed": "💀 Window *{name}* closed (the agent was down for {secs}s).",
         "spoll.model_switched": "⚠️ A model safeguard fired on the last message — the agent auto-switched to {model}. Safeguards are broad right now and can trip even on safe work (coding, cybersecurity, biology).",
         "spoll.model_switched_fallback": "another model",

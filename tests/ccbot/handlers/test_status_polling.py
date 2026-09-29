@@ -298,3 +298,46 @@ class TestDeadSiblingIsQuiet:
         await sp._notify_dead_sibling(MagicMock(), self.WID, 7, 1)
         revive.assert_not_awaited()
         offer.assert_awaited_once()
+
+
+class TestReviveDeadWindow:
+    """CCBOT_AUTO_RESUME_AGENTS: a topic agent whose claude exited comes back
+    on its own session instead of the topic being closed."""
+
+    async def test_bound_window_is_revived(self, monkeypatch):
+        from ccbot.handlers import agent_restart
+        from ccbot.handlers import status_polling as sp
+
+        sm = MagicMock()
+        sm.iter_thread_bindings.return_value = [(1, 42, "@7")]
+        monkeypatch.setattr(sp, "session_manager", sm)
+        revive = AsyncMock(return_value=("@9", "proj-x"))
+        monkeypatch.setattr(agent_restart, "revive_topic_agent", revive)
+        assert await sp._revive_dead_window(MagicMock(), "@7", "x") is True
+        revive.assert_awaited_once_with(1, 42)
+
+    async def test_failure_alerts_operator_and_falls_back(self, monkeypatch):
+        from ccbot.handlers import agent_restart
+        from ccbot.handlers import status_polling as sp
+
+        sm = MagicMock()
+        sm.iter_thread_bindings.return_value = [(1, 42, "@7")]
+        monkeypatch.setattr(sp, "session_manager", sm)
+        monkeypatch.setattr(
+            agent_restart,
+            "revive_topic_agent",
+            AsyncMock(side_effect=agent_restart.ReviveError("restart.window_failed")),
+        )
+        monkeypatch.setattr(sp.config, "notifications_chat_id", -500)
+        send = AsyncMock()
+        monkeypatch.setattr(sp, "safe_send", send)
+        assert await sp._revive_dead_window(MagicMock(), "@7", "x") is False
+        assert send.await_args.args[1] == -500
+
+    async def test_unbound_window_is_not_revived(self, monkeypatch):
+        from ccbot.handlers import status_polling as sp
+
+        sm = MagicMock()
+        sm.iter_thread_bindings.return_value = [(1, 42, "@8")]
+        monkeypatch.setattr(sp, "session_manager", sm)
+        assert await sp._revive_dead_window(MagicMock(), "@7", "x") is False
