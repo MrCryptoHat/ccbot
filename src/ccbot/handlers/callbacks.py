@@ -1748,14 +1748,15 @@ async def _handle_cmd_kill_confirmed(
     Telegram clients — the user saw no feedback. A new text message is
     100% reliable and leaves a clear trace in the topic history."""
     display = session_manager.get_display_name(window_id)
-    killed = await session_manager.kill_agent(window_id)
+    is_docker = session_manager._is_docker_binding(window_id)
+    if is_docker:
+        # A deliberate stop: recorded, so auto-resume won't bring it back.
+        killed = await session_manager.stop_docker_agent(window_id)
+    else:
+        killed = await session_manager.kill_agent(window_id)
     if not killed:
         await query.answer(tr("cb.kill_failed"), show_alert=True)
         return
-    is_docker = session_manager._is_docker_binding(window_id)
-    if is_docker:
-        # A deliberate stop: auto-resume must not bring it back.
-        session_manager.mark_docker_agent_stopped(window_id)
     # Tmux: window is gone → unbind every topic pointing at it.
     # Docker: container stays up; /restart can revive the in-container
     # tmux session, so the topic binding stays intact.

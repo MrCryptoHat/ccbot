@@ -2032,6 +2032,13 @@ async def _auto_bind_to_directory(
     stays internal). Records the directory in memory up front so the topic
     re-resolves here next time regardless of its current name.
     """
+    # A container agent's workspace gets the hint, not a picker that could
+    # only end in a refusal (bot._create_and_bind_window guards the same).
+    owner = session_manager.docker_agent_for_dir(str(matching_dir))
+    if owner:
+        await safe_reply(msg, tr("bot.docker_agent_dir", agent=owner))
+        return True
+
     # The picker opens on the runtime this topic last ran (a codex topic comes
     # back with codex's sessions listed, not Claude's); never-bound topics take
     # the default. A remembered runtime whose CLI is gone degrades to the

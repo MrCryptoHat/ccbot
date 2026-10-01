@@ -210,3 +210,44 @@ class TestForwardPendingText:
             await _deliver_when_pane_free(MagicMock(), 1, 42, "@5", "привет")
             deliver.assert_not_awaited()
             sm.capture_pane.assert_not_awaited()
+
+
+class TestWakeOnMessage:
+    """A message to a stopped container agent wakes it and is then delivered."""
+
+    async def _deliver(self, *, woke: bool, auto_resume: bool = True):
+        from ccbot.handlers import agent_restart, delivery
+
+        send = AsyncMock(
+            side_effect=[(False, "Failed to send keys (docker)"), (True, "")]
+        )
+        wake = AsyncMock(return_value=woke)
+        with (
+            patch(
+                "ccbot.handlers.delivery.try_route_to_text_option",
+                new=AsyncMock(return_value=(False, None)),
+            ),
+            patch("ccbot.handlers.delivery.session_manager") as sm,
+            patch.object(delivery.config, "auto_resume_agents", auto_resume),
+            patch.object(agent_restart, "wake_docker_agent", wake),
+        ):
+            sm.send_to_window = send
+            sm.consume_voice_directive.return_value = None
+            sm.is_reaction_ack_enabled.return_value = False
+            status, _ = await deliver_user_text(1, 42, "docker:agent/side", "hi")
+        return status, send, wake
+
+    async def test_woken_agent_gets_the_message(self):
+        status, send, _ = await self._deliver(woke=True)
+        assert status == "sent"
+        assert send.await_count == 2
+
+    async def test_agent_that_cannot_wake_reports_the_error(self):
+        status, send, _ = await self._deliver(woke=False)
+        assert status == "error"
+        assert send.await_count == 1
+
+    async def test_off_without_auto_resume(self):
+        status, _, wake = await self._deliver(woke=True, auto_resume=False)
+        assert status == "error"
+        wake.assert_not_awaited()

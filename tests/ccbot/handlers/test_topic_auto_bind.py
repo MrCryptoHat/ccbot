@@ -135,6 +135,7 @@ def _autobind_mocks(sessions):
         return_value=SimpleNamespace(session_id="", cwd="", window_name="")
     )
     sm._save_state = MagicMock()
+    sm.docker_agent_for_dir = MagicMock(return_value=None)
     tm = MagicMock()
     tm.create_window = AsyncMock(return_value=(True, "ok", "editor", "@7"))
     return sm, tm
@@ -260,3 +261,24 @@ async def test_picker_offers_change_folder_and_agent(tmp_path: Path):
     data = {b.callback_data for row in keyboard.inline_keyboard for b in row}
     assert "rs:browse" in data  # 📂 Change folder
     assert any(d_.startswith("rt:") for d_ in data)  # ➕ New session / 🤖 Agent
+
+
+@pytest.mark.asyncio
+async def test_container_agents_workspace_gets_the_hint_not_a_picker(tmp_path: Path):
+    """A topic that resolved to a docker agent's workspace must not start a
+    host agent on the same files — it is pointed at /bind instead."""
+    d = tmp_path / "ws"
+    d.mkdir()
+    sm, tm = _autobind_mocks([])
+    sm.docker_agent_for_dir = MagicMock(return_value="agent")
+    reply = AsyncMock()
+    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+    with (
+        patch.object(cmd, "session_manager", sm),
+        patch.object(cmd, "tmux_manager", tm),
+        patch.object(cmd, "safe_reply", new=reply),
+    ):
+        assert await cmd._auto_bind_to_directory(1, 42, d, MagicMock(), ctx) is True
+    assert "/bind agent" in reply.await_args.args[1]
+    sm.record_thread_directory.assert_not_called()
+    assert ctx.user_data == {}

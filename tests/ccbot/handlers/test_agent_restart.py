@@ -28,6 +28,7 @@ def _mocks(tmp_path, *, sessions=None, window_state=None):
     sm.window_states = {}
     sm.has_live_agent_on_cwd = AsyncMock(return_value=False)
     sm.live_window_for_session = AsyncMock(return_value=None)
+    sm.docker_agent_for_dir.return_value = None
     sm.wait_for_session_map_entry = AsyncMock(return_value=True)
     sm.get_window_state.return_value = window_state or SimpleNamespace(
         session_id="", cwd="", window_name=""
@@ -155,6 +156,23 @@ async def test_refuses_to_resume_a_session_a_live_window_runs(tmp_path):
             await ar.revive_topic_agent(1, 42)
 
     assert e.value.key == "bot.session_already_open"
+    tm.create_window.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refuses_a_container_agents_workspace(tmp_path):
+    # A host agent there would edit the container agent's files behind it.
+    sm, tm, rt = _mocks(tmp_path, sessions=[NEWEST])
+    sm.docker_agent_for_dir.return_value = "agent"
+    with (
+        patch.object(ar, "session_manager", sm),
+        patch.object(ar, "tmux_manager", tm),
+        patch.object(ar, "get_runtime", return_value=rt),
+    ):
+        with pytest.raises(ar.ReviveError) as e:
+            await ar.revive_topic_agent(1, 42)
+
+    assert e.value.key == "bot.docker_agent_dir"
     tm.create_window.assert_not_awaited()
 
 
@@ -382,3 +400,48 @@ class TestResumeAgentsAfterBoot:
         ):
             await ar.resume_agents_after_boot()
         assert revive.await_count == 2
+
+
+class TestWakeDockerAgent:
+    """A message to a stopped / dead container agent wakes it on its own
+    conversation instead of drawing the "bring it back?" keyboard."""
+
+    WID = "docker:agent/side"
+
+    def _sm(self, *, running=False, pane="─" * 30):
+        sm = MagicMock()
+        sm._is_docker_binding.return_value = True
+        sm.docker_agent_running = AsyncMock(return_value=running)
+        sm.capture_pane = AsyncMock(return_value=pane)
+        return sm
+
+    async def _wake(self, sm, *, last=NEWEST, revive=None):
+        options = (SimpleNamespace(session_id=last) if last else None, [])
+        revive = revive or AsyncMock()
+        with (
+            patch.object(ar, "session_manager", sm),
+            patch.object(ar, "docker_revive_options", AsyncMock(return_value=options)),
+            patch.object(ar, "revive_docker_agent", revive),
+            patch.object(ar.asyncio, "sleep", AsyncMock()),
+        ):
+            return await ar.wake_docker_agent(self.WID), revive
+
+    async def test_resumes_last_session_and_waits_for_the_tui(self):
+        ok, revive = await self._wake(self._sm())
+        assert ok is True
+        revive.assert_awaited_once_with(self.WID, session_id=NEWEST)
+
+    async def test_running_agent_is_not_touched(self):
+        ok, revive = await self._wake(self._sm(running=True))
+        assert ok is False
+        revive.assert_not_awaited()
+
+    async def test_no_known_session_leaves_it_to_the_offer(self):
+        ok, revive = await self._wake(self._sm(), last=None)
+        assert ok is False
+        revive.assert_not_awaited()
+
+    async def test_failed_start_reports_false(self):
+        failing = AsyncMock(side_effect=ar.ReviveError("revive.container_down"))
+        ok, _ = await self._wake(self._sm(), revive=failing)
+        assert ok is False

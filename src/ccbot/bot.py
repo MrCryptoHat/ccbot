@@ -715,6 +715,13 @@ async def _create_and_bind_window(
 
     rt = get_runtime(runtime)
 
+    # A container agent's workspace is not a place for a host agent (see
+    # SessionManager.docker_agent_for_dir).
+    owner = session_manager.docker_agent_for_dir(str(selected_path))
+    if owner:
+        await safe_edit(query, i18n.tr("bot.docker_agent_dir", agent=owner))
+        return
+
     # A runtime without a session_map resolves its transcript by cwd ("newest
     # wins") — a second live window on the same directory would cross-talk
     # with the first topic. Refuse it up front with an explanation.

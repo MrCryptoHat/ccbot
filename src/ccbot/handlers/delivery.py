@@ -26,6 +26,7 @@ from telegram import Bot
 
 from ..i18n import tr
 from ..session import session_manager
+from ..config import config
 from ..terminal_parser import is_interactive_ui, is_login_widget
 from ..voice import build_on_directive, off_directive
 from .ask_question_router import try_route_to_text_option
@@ -88,6 +89,13 @@ async def deliver_user_text(
         text = f"{off_directive()}\n\n---\n{text}"
 
     ok, msg = await session_manager.send_to_window(wid, text)
+    if not ok and config.auto_resume_agents:
+        # A stopped / dead container agent wakes on the message itself and
+        # gets it, instead of the "bring it back?" keyboard.
+        from .agent_restart import wake_docker_agent
+
+        if await wake_docker_agent(wid):
+            ok, msg = await session_manager.send_to_window(wid, text)
     if ok:
         # Reaction-ack (opt-in via /react): the message reached the agent's pane.
         # Arm a pending 👀 here in the shared seam (so typed and voice behave

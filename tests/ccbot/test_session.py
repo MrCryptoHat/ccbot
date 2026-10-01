@@ -1809,3 +1809,22 @@ class TestConfirmSubmitted:
         ok, press = await self._run(mgr, monkeypatch, [True, True, True])
         assert ok is False
         assert press.await_count == 2
+
+
+class TestDockerAgentForDir:
+    """A container agent's workspace is recognised (realpath-equal), so no
+    host window is started on the same files."""
+
+    def test_workspace_matches_and_others_do_not(self, mgr, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        from ccbot import session as session_mod
+
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (tmp_path / "link").symlink_to(ws)
+        agent = SimpleNamespace(name="agent", workspace_host_path=ws)
+        monkeypatch.setattr(session_mod.config, "active_docker_agents", lambda: [agent])
+        assert mgr.docker_agent_for_dir(str(ws)) == "agent"
+        assert mgr.docker_agent_for_dir(str(tmp_path / "link")) == "agent"
+        assert mgr.docker_agent_for_dir(str(tmp_path)) is None

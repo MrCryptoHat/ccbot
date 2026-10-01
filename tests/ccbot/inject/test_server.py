@@ -202,3 +202,78 @@ async def test_success_tmux_binding_sent(client: TestClient) -> None:
     binding, text = send_mock.await_args.args
     assert binding == "@7"
     assert text == "deploy please"
+
+
+# ── /stop — end a docker agent the way ⏹ does (for an external idle-reaper) ──
+
+_SM = "ccbot.inject.server.session_manager"
+_SIDE = "docker:agent/side"
+
+
+def _stop_patches(*, running: bool = True, pane: str = "idle", working: bool = False):
+    from unittest.mock import MagicMock
+
+    return (
+        patch(f"{_SM}.iter_thread_bindings", return_value=[(1, 7, _SIDE)]),
+        patch(f"{_SM}.resolve_docker_target", return_value=MagicMock()),
+        patch(f"{_SM}.docker_agent_running", AsyncMock(return_value=running)),
+        patch(f"{_SM}.capture_pane", AsyncMock(return_value=pane)),
+        patch(f"{_SM}.is_agent_working", return_value=working),
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_needs_token(client: TestClient) -> None:
+    r = await client.post("/stop", json={"binding": _SIDE})
+    assert r.status == 401
+
+
+@pytest.mark.asyncio
+async def test_stop_rejects_non_docker_binding(client: TestClient) -> None:
+    r = await client.post("/stop", json={"binding": "@4"}, headers=_HDR)
+    assert r.status == 400
+    assert (await r.json())["error"] == "bad_binding"
+
+
+@pytest.mark.asyncio
+async def test_stop_unknown_binding_is_404(client: TestClient) -> None:
+    with patch(f"{_SM}.iter_thread_bindings", return_value=[]):
+        r = await client.post("/stop", json={"binding": _SIDE}, headers=_HDR)
+    assert r.status == 404
+
+
+@pytest.mark.asyncio
+async def test_stop_idle_agent(client: TestClient) -> None:
+    p = _stop_patches()
+    with p[0], p[1], p[2], p[3], p[4]:
+        with patch(f"{_SM}.stop_docker_agent", AsyncMock(return_value=True)) as stop:
+            r = await client.post("/stop", json={"binding": _SIDE}, headers=_HDR)
+    assert r.status == 200
+    assert await r.json() == {"ok": True, "was_running": True}
+    stop.assert_awaited_once_with(_SIDE)
+
+
+@pytest.mark.asyncio
+async def test_stop_refuses_a_working_agent_unless_forced(client: TestClient) -> None:
+    p = _stop_patches(working=True)
+    with p[0], p[1], p[2], p[3], p[4]:
+        with patch(f"{_SM}.stop_docker_agent", AsyncMock(return_value=True)) as stop:
+            r = await client.post("/stop", json={"binding": _SIDE}, headers=_HDR)
+            assert r.status == 409
+            stop.assert_not_awaited()
+            r = await client.post(
+                "/stop", json={"binding": _SIDE, "force": True}, headers=_HDR
+            )
+            assert r.status == 200
+
+
+@pytest.mark.asyncio
+async def test_stop_already_down_still_records_the_stop(client: TestClient) -> None:
+    # Dead with its container but never marked: marking is the whole point,
+    # or auto-resume brings it back on the next poll.
+    p = _stop_patches(running=False)
+    with p[0], p[1], p[2], p[3], p[4]:
+        with patch(f"{_SM}.stop_docker_agent", AsyncMock(return_value=True)) as stop:
+            r = await client.post("/stop", json={"binding": _SIDE}, headers=_HDR)
+    assert await r.json() == {"ok": True, "was_running": False}
+    stop.assert_awaited_once()

@@ -1,4 +1,4 @@
-"""aiohttp listener for the /inject endpoint (fire-and-forget task injection).
+"""aiohttp listener for the /inject and /stop endpoints (local agent control).
 
 Transport is a **unix socket** (default ``~/.ccbot/run/inject.sock``,
 mode ``0660`` under a ``0700`` parent dir), so it's unreachable from docker
@@ -29,6 +29,19 @@ Status codes:
   - 503 ``unavailable`` — binding resolved but the pane is uncapturable
     (container down / window died) or the send failed
   - 200 ``{"ok": true}`` — task injected
+
+Second route: ``POST /stop`` (same token header), body
+``{"binding": "docker:<agent>[/<slug>]"}`` — ends that docker agent the way
+the panel's ⏹ does (``session_manager.stop_docker_agent``): its in-container
+session is killed and the stop is recorded, so auto-resume leaves it down
+while the topic keeps its binding and the next message wakes the same
+conversation. It exists for an external idle-reaper: killing the session from
+outside would only make auto-resume bring it straight back. Not gated by the
+agent allowlist (that guards *typing prompts*; this can only stop), docker
+bindings only. Codes: 401; 400 ``bad_binding``; 404 ``unknown_binding`` (no
+topic is bound to it); 409 ``busy`` (mid-turn or an open prompt — pass
+``"force": true`` to stop anyway); 503 ``stop_failed``; 200
+``{"ok": true, "was_running": bool}``.
 
 Lifecycle: ``start_server(cfg)`` returns an
 ``AppRunner`` that ``bot.post_init`` stashes; ``post_shutdown`` calls
@@ -120,11 +133,50 @@ async def _handle_inject(request: web.Request) -> web.Response:
     return web.json_response({"ok": True}, status=200)
 
 
+async def _handle_stop(request: web.Request) -> web.Response:
+    cfg = request.app[_CFG_KEY]
+    if not secrets.compare_digest(request.headers.get(_TOKEN_HEADER, ""), cfg.token):
+        logger.warning("stop: unauthorized request (bad/missing token)")
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "bad_json"}, status=400)
+
+    binding = body.get("binding")
+    if not isinstance(binding, str) or not session_manager._is_docker_binding(binding):
+        return web.json_response({"ok": False, "error": "bad_binding"}, status=400)
+    # Only what a topic is bound to: the caller names bindings it read from
+    # ccbot's own state, and anything else is a typo, not an agent.
+    bound = {wid for _, _, wid in session_manager.iter_thread_bindings()}
+    if binding not in bound or session_manager.resolve_docker_target(binding) is None:
+        return web.json_response({"ok": False, "error": "unknown_binding"}, status=404)
+
+    was_running = await session_manager.docker_agent_running(binding)
+    if was_running and body.get("force") is not True:
+        # An idle-reaper must never cut a live turn or an unanswered prompt.
+        pane = await session_manager.capture_pane(binding)
+        if pane and (
+            terminal_parser.is_interactive_ui(pane)
+            or session_manager.is_agent_working(binding, pane)
+        ):
+            return web.json_response({"ok": False, "error": "busy"}, status=409)
+
+    if not await session_manager.stop_docker_agent(binding):
+        logger.warning("stop: failed for %s", binding)
+        return web.json_response({"ok": False, "error": "stop_failed"}, status=503)
+    logger.info("stop: %s stopped (was_running=%s)", binding, was_running)
+    return web.json_response({"ok": True, "was_running": was_running}, status=200)
+
+
 def build_app(cfg: "InjectConfig") -> web.Application:
     """Construct the aiohttp application. Exposed for tests."""
     app = web.Application()
     app[_CFG_KEY] = cfg
     app.router.add_post("/inject", _handle_inject)
+    app.router.add_post("/stop", _handle_stop)
     return app
 
 

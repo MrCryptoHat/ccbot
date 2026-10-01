@@ -1489,6 +1489,19 @@ class SessionManager:
         if changed:
             self._save_state()
 
+    def docker_agent_for_dir(self, path: str) -> str | None:
+        """Name of the docker agent whose workspace IS ``path`` (None if none).
+
+        A host window started in a container agent's workspace is a second
+        agent on the same files, outside the container's sandbox and unseen by
+        it — it happened whenever a topic resolved to that folder by name or
+        memory. Window-creation paths refuse the folder and point at /bind.
+        """
+        for agent in config.active_docker_agents():
+            if same_dir(str(agent.workspace_host_path), path):
+                return agent.name
+        return None
+
     async def has_live_agent_on_cwd(self, runtime: str, cwd: str) -> bool:
         """True iff a LIVE tmux window of ``runtime`` already runs in ``cwd``.
 
@@ -2563,6 +2576,23 @@ class SessionManager:
             state.cwd = self._normalize_cwd(cwd)
             self._save_state()
         return started
+
+    async def stop_docker_agent(self, binding_value: str) -> bool:
+        """End a docker binding's agent on purpose — what the panel's ⏹ does.
+
+        Kills its in-container tmux session and records the stop, so
+        auto-resume leaves it down; the topic and its binding stay, and the
+        next start (a message to the topic, 🔄) continues the conversation.
+        The one path for every deliberate stop — the ⏹ button and the
+        ``/stop`` endpoint an external idle-reaper calls. False if the kill
+        failed (nothing is recorded then).
+        """
+        if not self._is_docker_binding(binding_value):
+            return False
+        if not await self.kill_agent(binding_value):
+            return False
+        self.mark_docker_agent_stopped(binding_value)
+        return True
 
     def mark_docker_agent_stopped(self, binding_value: str) -> None:
         """Record a deliberate stop (⏹) so auto-resume leaves it down."""

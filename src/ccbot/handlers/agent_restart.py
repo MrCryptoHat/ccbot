@@ -109,6 +109,10 @@ async def revive_topic_agent(
     if not cwd or not Path(cwd).is_dir():
         raise ReviveError("restart.nothing_to_revive")
 
+    owner = session_manager.docker_agent_for_dir(cwd)
+    if owner:
+        raise ReviveError("bot.docker_agent_dir", agent=owner)
+
     rt = _runtime_for_topic(user_id, thread_id)
     old_wid = session_manager.get_window_for_thread(user_id, thread_id)
     if fresh:
@@ -276,6 +280,46 @@ async def revive_docker_agent(window_id: str, *, session_id: str | None) -> None
         target.tmux_session,
         session_id or "none",
     )
+
+
+# How long a woken agent gets to draw its input box before the message that
+# woke it is typed (a resumed claude boots in ~5-10 s).
+WAKE_READY_TIMEOUT = 40.0
+
+
+async def wake_docker_agent(window_id: str) -> bool:
+    """Bring a docker agent that isn't running back on its own conversation.
+
+    For a message arriving in a topic whose agent was stopped (⏹, an idle
+    reaper) or died: resume its last session and wait for the TUI, so the
+    caller can deliver the message as if nothing happened — no "bring it
+    back?" keyboard. True iff the agent is up and ready for input; False
+    (container down, no known session, start failed) leaves the caller on
+    its normal failure path, which shows the offer.
+    """
+    from ..terminal_parser import is_tui_ready
+
+    if not session_manager._is_docker_binding(window_id):
+        return False
+    if await session_manager.docker_agent_running(window_id):
+        return False
+    last, _ = await docker_revive_options(window_id)
+    if last is None:
+        return False
+    try:
+        await revive_docker_agent(window_id, session_id=last.session_id)
+    except ReviveError as e:
+        logger.info("Wake of %s failed: %s", window_id, e.key)
+        return False
+    deadline = asyncio.get_running_loop().time() + WAKE_READY_TIMEOUT
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(1.0)
+        pane = await session_manager.capture_pane(window_id)
+        if pane and is_tui_ready(pane):
+            logger.info("Woke %s on session %s", window_id, last.session_id)
+            return True
+    logger.warning("Woke %s but its TUI never became ready", window_id)
+    return False
 
 
 async def docker_revive_options(
