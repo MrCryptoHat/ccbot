@@ -445,3 +445,41 @@ class TestWakeDockerAgent:
         failing = AsyncMock(side_effect=ar.ReviveError("revive.container_down"))
         ok, _ = await self._wake(self._sm(), revive=failing)
         assert ok is False
+
+
+class TestOwnSessionOutsideTheShortlist:
+    """The session listing is a recency shortlist over the whole container; an
+    agent stopped long enough drops out of it and must still be recognised by
+    its own record — else nothing wakes it and the offer loses «continue»."""
+
+    WID = "docker:agent/side"
+
+    def _sm(self, *, own_id=NEWEST, busy=()):
+        sm = MagicMock()
+        sm.window_states = {self.WID: SimpleNamespace(session_id=own_id)}
+        sm.session_ids_of_other_bindings.return_value = set(busy)
+        sm.list_agent_sessions = AsyncMock(
+            return_value=[SimpleNamespace(session_id=PINNED)]
+        )
+        sm.resolve_session_for_window = AsyncMock(
+            return_value=SimpleNamespace(session_id=own_id)
+        )
+        return sm
+
+    async def test_own_session_found_by_its_record(self):
+        with patch.object(ar, "session_manager", self._sm()):
+            last, others = await ar.docker_revive_options(self.WID)
+        assert last is not None and last.session_id == NEWEST
+        assert [s.session_id for s in others] == [PINNED]
+
+    async def test_session_held_by_another_binding_is_not_offered(self):
+        with patch.object(ar, "session_manager", self._sm(busy={NEWEST})):
+            last, _ = await ar.docker_revive_options(self.WID)
+        assert last is None
+
+    async def test_missing_transcript_means_unknown(self):
+        sm = self._sm()
+        sm.resolve_session_for_window = AsyncMock(return_value=None)
+        with patch.object(ar, "session_manager", sm):
+            last, _ = await ar.docker_revive_options(self.WID)
+        assert last is None

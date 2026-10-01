@@ -340,6 +340,15 @@ async def docker_revive_options(
         if s.session_id not in busy
     ]
     last = next((s for s in sessions if s.session_id == last_id), None)
+    if last is None and last_id and last_id not in busy:
+        # The listing is a shortlist by recency over the whole container, so
+        # an agent that sat stopped while its neighbours kept talking drops
+        # out of it — and "its own last conversation" then looked unknown:
+        # nothing woke it, and the offer lost its ▶️ continue button. The
+        # binding's own record is the answer; the listing only decorates it.
+        own = await session_manager.resolve_session_for_window(window_id)
+        if own is not None and own.session_id == last_id:
+            last = own
     return last, [s for s in sessions if s is not last]
 
 
