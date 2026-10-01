@@ -78,6 +78,7 @@ venv.bak/
 /src/ccbot/drive
 /src/ccbot/fleet
 /src/ccbot/topicicons
+/src/ccbot/alertsru
 /tests/ccbot/wamcp
 /tests/ccbot/tgmcp
 /tests/ccbot/test_mail_notifier.py
@@ -88,6 +89,7 @@ venv.bak/
 /tests/ccbot/test_drive.py
 /tests/ccbot/test_fleet_live_board.py
 /tests/ccbot/test_topicicons.py
+/tests/ccbot/test_alertsru.py
 /.claude/rules/wamcp-integration.md
 /.claude/rules/tgmcp-integration.md
 /.claude/rules/plugin-development.md
