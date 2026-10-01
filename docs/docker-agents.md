@@ -69,9 +69,19 @@ So the contract is small, but strict:
    sid=$(printf '%s' "$payload" | jq -r .session_id)
    cwd=$(printf '%s' "$payload" | jq -r .cwd)
    name=${AGENT_NAME:-assistant}
-   jq -n --arg name "$name" --arg sid "$sid" --arg cwd "$cwd" \
-     '{("docker:" + $name): {session_id:$sid, cwd:$cwd, window_name:$name}}' \
-     > /ipc/session-map.json.tmp && mv /ipc/session-map.json.tmp /ipc/session-map.json
+   map=/ipc/session-map.json
+   # MERGE under a lock — never write the file with only your own key. The
+   # map is shared by the main agent and every sibling: a hook that replaces
+   # it erases the others' rows, and an entrypoint that reads its own row
+   # back to `--resume` then starts the main agent with a blank conversation.
+   (
+     flock 9
+     old=$(cat "$map" 2>/dev/null); [ -n "$old" ] || old='{}'
+     printf '%s' "$old" | jq --arg name "$name" --arg sid "$sid" --arg cwd "$cwd" \
+       '(if type == "object" then . else {} end)
+        + {("docker:" + $name): {session_id:$sid, cwd:$cwd, window_name:$name}}' \
+       > "$map.tmp" && mv "$map.tmp" "$map"
+   ) 9> /tmp/ccbot-session-map.lock
    ```
 
    The host-side hook (`ccbot hook`) also briefs the starting session on the
