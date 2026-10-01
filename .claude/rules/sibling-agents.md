@@ -56,8 +56,19 @@ active by the monitor every tick.
 
 A dead sibling is invisible from the outside — its container is healthy, only
 its tmux session is gone (a `docker restart` recreates the entrypoint's agent
-and none of the siblings) — so `status_polling._notify_dead_sibling` turns the
-failed pane capture into one message in the topic. That message **carries the
+and none of the siblings) — so `status_polling._notify_dead_sibling` acts on
+the failed pane capture. Which way depends on WHY it is dead, and that is
+recorded, not guessed: a deliberate stop (⏹, or `POST /stop` on the inject
+socket — both `session_manager.stop_docker_agent`) lands in the persisted
+`stopped_docker_agents` and stays down and silent until something starts it
+(`start_docker_agent` clears the mark). Anything else died with its container:
+with `CCBOT_AUTO_RESUME_AGENTS` it is relaunched silently on its own last
+session (one try per `AUTO_REVIVE_RETRY`; nothing is said while the container
+itself is still down), and a message to a not-running agent wakes it and is
+delivered (`agent_restart.wake_docker_agent`). **Never mark a stop by editing
+state.json from outside** — the running bot rewrites it; `/stop` exists for
+that. Without the flag, or when a revive fails or no session is known, the
+topic gets one message. That message **carries the
 way back with it** (`agent_restart.offer_docker_revive`: ▶️ continue the
 conversation it died in, 🆕 start clean, 📋 pick an earlier one): pointing at
 «🔄 Restart in the 👾 panel» was a dead end, because the panel is built from a
