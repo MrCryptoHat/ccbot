@@ -123,11 +123,20 @@ When voice mode is enabled for a topic (`/voice` toggle), the message queue work
 
 `synthesize_speech` walks every configured provider in priority order (Gemini → ElevenLabs → OpenAI) with a hard `PROVIDER_BUDGET_SEC=45s` per attempt via `asyncio.wait_for`. One slow provider fails fast and the chain advances — text fallback only kicks in if every configured provider fails. Gemini requires `ffmpeg` for PCM→OGG. Input capped at 4096 characters.
 
+**Spend guard — every TTS request goes through `synthesize_speech(text, ledger)`, NEVER a provider directly.** `tests/ccbot/test_tts_fence.py` fails any TTS endpoint/key use outside `voice/providers.py` — a new runtime, transport or seam inherits the guard by going through the queue, never by calling TTS itself. A runaway loop once burned ~$40 in about a minute; the guard (`voice/safety.py`, contract in its docstring) is what bounds that class of bug, so don't weaken any of its parts:
+- worst-case cost is **reserved before** each provider attempt (`Provider.max_cost_usd`) and settled after; a failed/timed-out call is **never refunded** (the provider may have billed it). Daily ceiling `TTS_DAILY_BUDGET_USD`.
+- Gemini's worst case is real only because the request carries **`maxOutputTokens`** sized from the text (`GeminiProvider.max_audio_tokens`) — without it one short line can bill ~11 min of audio. A new provider needs an equally hard per-request ceiling.
+- rate/failure **breaker** (`MAX_CALLS_PER_MINUTE`/`_HOUR`, `MAX_CONSECUTIVE_FAILURES`) trips → every call refused, voice off in all topics, notice; only `/voice` on (or midnight) re-arms it.
+- one global `_tts_lock`: reserve → call → settle are serialized, so parallel topics can't race the ceiling.
+- the ledger is its own file `voice_ledger.json` (flock + synchronous fsync'd write per operation, `SessionManager._with_ledger`), NOT state.json — so a stale second bot process shares one budget and a crash can't drop a reservation. An unreadable ledger refuses the call (fail closed).
+- settled cost is never below the audio actually received (`GeminiProvider._billed_cost`: max of reported tokens and PCM length, + thinking tokens); a flood-retried voice segment resends its paid audio (`MessageTask.voice_audio_cache`), never re-buys it.
+- price table `_GEMINI_PRICES` holds the **higher** (post-promo 2027) rates; an unknown model is priced above all known ones.
+
 Gemini quality knobs via env:
 - `GEMINI_TTS_VOICE` — prebuilt voice name (default `Sulafat` in code; override via env)
 - `GEMINI_TTS_TEMPERATURE` — 0.0-2.0 (default `1.0`)
 - `GEMINI_TTS_LANGUAGE` — BCP-47 (default `ru-RU`)
-- `GEMINI_TTS_MODEL` — default `gemini-3.1-flash-tts-preview`; `gemini-2.5-pro-preview-tts` is available at identical pricing ($1/$20 per 1M in/out tokens) but ~50% slower
+- `GEMINI_TTS_MODEL` — default `gemini-3.8-flash-tts` (`-lite-` is cheaper). 3.8 still serves `generateContent` (docs show only the Interactions API), but its inline vocal tags are `<angle>`, not `[bracket]` — `tag_catalog` and `strip_output_tags` follow the model generation
 - `GEMINI_TTS_STYLE_PREFIX` — whole-utterance style prefix prepended to every Gemini request inside `GeminiProvider._request`. More reliable than inline pace tags (which burn off after the first phrase). Empty string disables. Default: `"Speak warmly like you're chatting with a close friend, at a brisk natural pace:"`
 
 ## Splitting at the send layer

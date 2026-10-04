@@ -1828,3 +1828,47 @@ class TestDockerAgentForDir:
         assert mgr.docker_agent_for_dir(str(ws)) == "agent"
         assert mgr.docker_agent_for_dir(str(tmp_path / "link")) == "agent"
         assert mgr.docker_agent_for_dir(str(tmp_path)) is None
+
+
+class TestVoiceLedgerFile:
+    """The TTS ledger is a flock-guarded file shared by every process."""
+
+    @pytest.fixture
+    def ledger_dir(self, tmp_path, monkeypatch):
+        from ccbot import session as session_mod
+
+        monkeypatch.setattr(session_mod.config, "config_dir", tmp_path)
+        monkeypatch.setattr(session_mod.config, "tts_daily_budget_usd", 1.0)
+        return tmp_path
+
+    def test_two_managers_share_one_budget(self, ledger_dir, monkeypatch) -> None:
+        """A stale second bot process must not get a second budget."""
+        from ccbot.voice.safety import DENY_BUDGET, SpendDenied
+
+        monkeypatch.setattr(SessionManager, "_load_state", lambda self: None)
+        monkeypatch.setattr(SessionManager, "_save_state", lambda self: None)
+        a, b = SessionManager(), SessionManager()
+        a.tts_reserve(0.6, 10)
+        with pytest.raises(SpendDenied) as exc:
+            b.tts_reserve(0.6, 10)
+        assert exc.value.reason == DENY_BUDGET
+
+    def test_reservation_is_on_disk_before_call(self, ledger_dir, mgr) -> None:
+        mgr.tts_reserve(0.25, 10)
+        on_disk = json.loads((ledger_dir / "voice_ledger.json").read_text())
+        assert on_disk["spent_usd"] == pytest.approx(0.25)
+        assert on_disk["calls"] == 1
+
+    def test_breaker_trip_is_persisted(self, ledger_dir, mgr) -> None:
+        from ccbot.voice.safety import MAX_CALLS_PER_MINUTE, SpendDenied
+
+        with pytest.raises(SpendDenied):
+            for _ in range(MAX_CALLS_PER_MINUTE + 1):
+                mgr.tts_reserve(0.001, 1)
+        on_disk = json.loads((ledger_dir / "voice_ledger.json").read_text())
+        assert on_disk["tripped"]
+
+    def test_corrupt_ledger_fails_closed(self, ledger_dir, mgr) -> None:
+        (ledger_dir / "voice_ledger.json").write_text("{not json")
+        with pytest.raises(ValueError):
+            mgr.tts_reserve(0.01, 1)

@@ -137,6 +137,13 @@ class TestStripOutputTags:
     def test_removes_audio_tags(self):
         assert strip_output_tags("[warmly] привет") == "привет"
 
+    def test_removes_angle_vocal_tags(self):
+        assert strip_output_tags("ну <sigh> ладно <short pause>да") == "ну ладно да"
+
+    def test_keeps_unrelated_angle_brackets(self):
+        text = "use <div> and List<str>, a <b> tag"
+        assert strip_output_tags(text) == text
+
     def test_removes_chat_markers(self):
         assert strip_output_tags("[chat]link[/chat]") == "link"
 

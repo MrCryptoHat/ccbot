@@ -33,6 +33,14 @@ _TAG_STRIP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Gemini 3.8+ vocal tags. A closed list on purpose: a generic <word> pattern
+# would eat HTML/generics in ordinary replies.
+_ANGLE_TAG_STRIP_RE = re.compile(
+    r"<(?:chuckles?|laugh(?:ter)?|sighs?|breath|heavy breath|exhales|"
+    r"whisper(?:s|ing)|short pause|long pause|phew|gasp|giggle|tsk)>[ \t]*",
+    re.IGNORECASE,
+)
+
 _CHAT_TAG_STRIP_RE = re.compile(r"\[/?chat\][ \t]*", re.IGNORECASE)
 
 _STYLE_PREFIX_STRIP_RE = re.compile(
@@ -51,7 +59,7 @@ _CHAT_CLOSE_RE = re.compile(r"\[/chat\]", re.IGNORECASE)
 _OFF_DIRECTIVE = (
     "[SYSTEM: VOICE MODE OFF]\n"
     "Voice mode is off. Reply in regular markdown text from now on. Do "
-    "NOT use audio tags ([warmly], [pause] etc.), [chat]...[/chat] "
+    "NOT use audio tags ([warmly], [pause], <sigh> etc.), [chat]...[/chat] "
     "markers or style prefixes (Say cheerfully: etc.) — they would land "
     "in the chat verbatim."
 )
@@ -86,7 +94,7 @@ _ON_TAGS = (
 
 _ON_NO_TAGS = (
     "\nThe voice provider does not support audio tags — don't use "
-    "[warmly], [pause] etc., they would be read out literally."
+    "[warmly], <sigh> etc., they would be read out literally."
 )
 
 _ON_TAIL = "\nThe mode stays active until '[SYSTEM: VOICE MODE OFF]'."
@@ -199,6 +207,7 @@ def strip_output_tags(text: str) -> str:
     whitespace collapse) mangles code blocks and aligned output.
     """
     text = _TAG_STRIP_RE.sub("", text)
+    text = _ANGLE_TAG_STRIP_RE.sub("", text)
     text = _CHAT_TAG_STRIP_RE.sub("", text)
     text = _STYLE_PREFIX_STRIP_RE.sub("", text)
     return text

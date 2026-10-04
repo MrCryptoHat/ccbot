@@ -9,6 +9,7 @@ Key class: Config (singleton instantiated as `config`).
 """
 
 import logging
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -198,6 +199,44 @@ def _parse_docker_agents(env: Mapping[str, str], home: Path) -> list[DockerAgent
             )
         )
     return agents
+
+
+# Ceiling on TTS_DAILY_BUDGET_USD. The budget is the only thing bounding TTS
+# spend per day, so a value that disables the comparison (nan, inf, 1e9) or a
+# typo'd extra zero must not pass silently.
+_TTS_BUDGET_MAX_USD = 50.0
+_TTS_BUDGET_DEFAULT_USD = 1.0
+
+
+def _parse_tts_budget(raw: str) -> float:
+    """TTS_DAILY_BUDGET_USD → a finite value in [0, _TTS_BUDGET_MAX_USD].
+
+    Unset → default. Unparseable / non-finite / negative → default with an
+    ERROR. Above the ceiling → clamped to it with an ERROR. 0 is valid: it
+    refuses every TTS call (a kill switch).
+    """
+    raw = raw.strip()
+    if not raw:
+        return _TTS_BUDGET_DEFAULT_USD
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value < 0:
+        logger.error(
+            "TTS_DAILY_BUDGET_USD=%r is not a usable amount; using $%.2f",
+            raw,
+            _TTS_BUDGET_DEFAULT_USD,
+        )
+        return _TTS_BUDGET_DEFAULT_USD
+    if value > _TTS_BUDGET_MAX_USD:
+        logger.error(
+            "TTS_DAILY_BUDGET_USD=%r is above the $%.0f ceiling; clamped",
+            raw,
+            _TTS_BUDGET_MAX_USD,
+        )
+        return _TTS_BUDGET_MAX_USD
+    return value
 
 
 class Config:
@@ -449,10 +488,17 @@ class Config:
         # takes over. Values: "auto" | "gemini" | "elevenlabs" | "openai".
         self.tts_provider: str = os.getenv("TTS_PROVIDER", "auto").strip().lower()
 
+        # Daily TTS spend ceiling in USD (upper-bound estimate, every provider
+        # attempt counted — voice/safety.py). Reaching it turns voice off in
+        # all topics until local midnight.
+        self.tts_daily_budget_usd: float = _parse_tts_budget(
+            os.getenv("TTS_DAILY_BUDGET_USD", "")
+        )
+
         # Gemini TTS (preferred — expressive, audio tags, human-like)
         self.gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
         self.gemini_tts_model: str = os.getenv(
-            "GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview"
+            "GEMINI_TTS_MODEL", "gemini-3.8-flash-tts"
         )
         self.gemini_tts_voice: str = os.getenv("GEMINI_TTS_VOICE", "Sulafat")
         # Temperature controls expressiveness (0.0=monotone, 2.0=wild).

@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable, Iterator
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, TypeVar
 
 import aiofiles
 
@@ -52,10 +52,12 @@ from .utils import (
     same_dir,
     schedule_async_json_write,
 )
-from .voice.safety import BudgetEvent, VoiceBudget
+from .voice.safety import Reservation, VoiceBudget
 from .worktrees import WorktreeMeta
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # After typing a message + Enter: how long to let the TUI settle before
 # checking that the input box emptied, and how many extra Enters to press
@@ -380,7 +382,6 @@ class SessionManager:
             "reaction_ack_enabled": self.reaction_ack_enabled,
             "table_style": self.table_style,
             "voice_announced_sessions": sorted(self.voice_announced_sessions),
-            "voice_budget": self.voice_budget.to_dict(),
             "live_dashboard_message_ids": dict(self.live_dashboard_message_ids),
             "thread_directory_memory": {
                 str(uid): {str(tid): d for tid, d in dirs.items()}
@@ -572,7 +573,9 @@ class SessionManager:
                 self.voice_announced_sessions = set(
                     state.get("voice_announced_sessions", [])
                 )
-                self.voice_budget = VoiceBudget.from_dict(state.get("voice_budget"))
+                self.voice_budget = VoiceBudget.from_dict(
+                    state.get("voice_budget"), config.tts_daily_budget_usd
+                )
                 self.live_dashboard_message_ids = {
                     str(k): int(v)
                     for k, v in state.get("live_dashboard_message_ids", {}).items()
@@ -639,7 +642,9 @@ class SessionManager:
                 self.reaction_ack_enabled = config.reaction_ack_default
                 self.table_style = config.table_style_default
                 self.voice_announced_sessions = set()
-                self.voice_budget = VoiceBudget()
+                self.voice_budget = VoiceBudget(
+                    daily_limit_usd=config.tts_daily_budget_usd
+                )
                 self.live_dashboard_message_ids = {}
                 self.worktree_meta = {}
 
@@ -1096,29 +1101,56 @@ class SessionManager:
         session_id = ws.session_id if ws else ""
         return bool(session_id) and session_id in self.voice_announced_sessions
 
-    # --- Voice budget (global daily TTS char ceiling) ---
+    # --- Voice spend ledger (voice/safety.py; SpendLedger protocol) ---
 
-    def voice_budget_can_spend(self, chars: int) -> bool:
-        """True if recording ``chars`` would stay within today's TTS budget.
+    # The ledger lives in its own file, NOT state.json: every operation is a
+    # read-modify-write under an exclusive flock, written synchronously
+    # (fsync) before returning. That keeps ONE budget across processes (a
+    # stale bot left running beside a new one shares it instead of getting
+    # its own) and a crash right after reserve() can't lose the charge.
+    # state.json's async writer offers neither. Any I/O error propagates —
+    # out of tts_reserve that means the call is refused (fail closed).
 
-        Reads-and-rolls: triggers a date-rollover reset if needed but does
-        not record the spend. Caller pairs this with ``voice_budget_record``
-        after a successful synth (never before — failed synth must not bill
-        the budget).
+    def _ledger_path(self) -> Path:
+        return config.config_dir / "voice_ledger.json"
+
+    def _with_ledger(self, op: Callable[[VoiceBudget], _T]) -> _T:
+        path = self._ledger_path()
+        lock_path = path.with_suffix(".lock")
+        with open(lock_path, "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                # First run on the file: carry the legacy state.json ledger.
+                data = self.voice_budget.to_dict()
+            budget = VoiceBudget.from_dict(data, config.tts_daily_budget_usd)
+            try:
+                return op(budget)
+            finally:
+                # Also on SpendDenied — a breaker trip must be persisted.
+                atomic_write_json(path, budget.to_dict())
+                self.voice_budget = budget
+
+    def tts_reserve(self, cost_usd: float, chars: int) -> Reservation:
+        """Reserve a TTS attempt's worst-case cost; raises SpendDenied.
+
+        On disk before the HTTP call goes out (see _with_ledger).
         """
-        return self.voice_budget.can_spend(chars)
+        return self._with_ledger(lambda b: b.reserve(cost_usd, chars, time.time()))
 
-    def voice_budget_record(self, chars: int) -> BudgetEvent:
-        """Record TTS spend; persist; return what crossed.
+    def tts_settle(
+        self, reservation: Reservation, actual_usd: float | None, ok: bool
+    ) -> None:
+        """Close a reservation with the real cost / failure."""
+        self._with_ledger(lambda b: b.settle(reservation, actual_usd, ok))
 
-        State is persisted on every call (cheap — one schedule_async_json_write
-        per assistant text segment, well under polling/status churn rates).
-        Returns a BudgetEvent so the caller can post a one-shot 80%-warning
-        or exhaustion notice.
-        """
-        event = self.voice_budget.record(chars)
-        self._save_state()
-        return event
+    def voice_budget_take_80pct_warning(self) -> bool:
+        return self._with_ledger(lambda b: b.take_80pct_warning())
+
+    def voice_budget_clear_trip(self) -> None:
+        """User re-enabled voice: re-arm a tripped spend breaker."""
+        self._with_ledger(lambda b: b.clear_trip())
 
     def voice_budget_disable_all(self) -> list[tuple[int, int]]:
         """Clear voice mode in every topic; return the disabled topics.

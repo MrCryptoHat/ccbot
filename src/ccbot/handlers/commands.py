@@ -484,6 +484,9 @@ async def voice_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     enabled = session_manager.toggle_voice_mode(user.id, thread_id)
     if enabled:
+        # Turning voice on is the user's explicit "I've looked, go again"
+        # after a safety stop. The daily spending limit is NOT reset.
+        session_manager.voice_budget_clear_trip()
         await safe_reply(update.message, tr("commands.voice_on"))
     else:
         await safe_reply(update.message, tr("commands.voice_off"))

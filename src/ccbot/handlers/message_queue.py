@@ -43,11 +43,17 @@ from ..rate_limiter import stream_context
 from ..screenshot import text_to_image
 from ..session import session_manager
 from ..voice import (
-    BudgetEvent,
+    SpendDenied,
     is_fresh_for_voice,
     split_voice_segments,
     strip_output_tags,
     synthesize_speech,
+)
+from ..voice.safety import (
+    DENY_BUDGET,
+    MAX_CALLS_PER_HOUR,
+    MAX_CALLS_PER_MINUTE,
+    MAX_CONSECUTIVE_FAILURES,
 )
 from .message_sender import (
     NO_LINK_PREVIEW,
@@ -107,6 +113,10 @@ class MessageTask:
     # How many times this task was requeued after a RetryAfter (flood
     # control) — bounds the retry loop, see _requeue_content_task.
     flood_requeues: int = 0
+    # Audio already synthesized (and paid for) for the FIRST voice segment of
+    # ``parts`` whose send hit RetryAfter/NetworkError — the requeued task
+    # sends it instead of paying for the same text again. Never merged.
+    voice_audio_cache: bytes | None = None
 
 
 # Per-topic message queues and worker tasks, keyed by (user_id, thread_id_or_0).
@@ -214,6 +224,10 @@ def _can_merge_tasks(base: MessageTask, candidate: MessageTask) -> bool:
     # two diff tasks share content_type "diff" — guard explicitly.)
     if base.image_data or candidate.image_data:
         return False
+    # Paid-for audio belongs to this task's first segment; merging would
+    # shift what "first segment" means.
+    if base.voice_audio_cache is not None or candidate.voice_audio_cache is not None:
+        return False
     return True
 
 
@@ -277,6 +291,9 @@ async def _merge_content_tasks(
             content_type=first.content_type,
             thread_id=first.thread_id,
             voice_mode=first.voice_mode,
+            # Merged tasks were never requeued except possibly ``first`` —
+            # keep its count, or merging would re-arm the requeue bound.
+            flood_requeues=first.flood_requeues,
         ),
         merge_count,
     )
@@ -621,26 +638,26 @@ async def _send_task_images(bot: Bot, chat_id: int, task: MessageTask) -> None:
     )
 
 
-async def _notify_budget_warning(bot: Bot, event: BudgetEvent) -> None:
-    """Post a one-shot 80%-of-daily-limit notice to the General notifications topic.
+def _usd(x: float) -> str:
+    return f"${x:.2f}"
+
+
+async def _notify_budget_warning(bot: Bot) -> None:
+    """Post a one-shot 80%-of-daily-budget notice to the notifications chat.
 
     Quietly returns when ``NOTIFICATIONS_CHAT_ID`` is unset — the budget
-    still works, the user just doesn't get the heads-up. HTML parse mode
-    numbers don't need escaping.
+    still works, the user just doesn't get the heads-up.
     """
     from ..config import config
 
     chat_id = config.notifications_chat_id
     if chat_id is None:
         return
-    used = event.chars_used
-    limit = event.daily_limit
-    remaining = max(0, limit - used)
+    budget = session_manager.voice_budget
     text = tr(
         "mq.voice_budget_warning",
-        used=f"{used:,}".replace(",", " "),
-        limit=f"{limit:,}".replace(",", " "),
-        remaining=f"{remaining:,}".replace(",", " "),
+        used=_usd(budget.spent_usd),
+        limit=_usd(budget.daily_limit_usd),
     )
     try:
         await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
@@ -648,19 +665,41 @@ async def _notify_budget_warning(bot: Bot, event: BudgetEvent) -> None:
         logger.warning("voice budget 80%% notice failed: %s", e)
 
 
-async def _notify_budget_exhausted(bot: Bot) -> None:
-    """Disable voice in every topic and notify each + the General topic.
+async def _stop_voice_everywhere(bot: Bot, reason: str) -> None:
+    """The spend ledger refused or tripped: voice off in every topic + notify.
 
-    Called once when ``record()`` reports ``crossed_exhausted``. Also
-    safe to call from the pre-check path as a fallback if a parallel
-    synth race left voice_mode_topics partially populated past
-    exhaustion — disable_all is idempotent (clears whatever's there
-    and returns the list).
+    ``reason`` is a voice.safety DENY_*/TRIP_* value. Idempotent: once
+    ``voice_mode_topics`` is empty there is nothing to disable and nobody is
+    re-notified (tasks already queued in voice mode just fall back to text).
     """
     from ..config import config
 
+    if not session_manager.voice_mode_topics:
+        return
+    budget = session_manager.voice_budget
+    if reason == DENY_BUDGET:
+        per_topic_text = tr("mq.voice_exhausted_topic")
+        summary = tr(
+            "mq.voice_exhausted_summary",
+            used=_usd(budget.spent_usd),
+            limit=_usd(budget.daily_limit_usd),
+        )
+    else:
+        why = tr(
+            f"mq.voice_trip_{budget.tripped or reason}",
+            per_min=MAX_CALLS_PER_MINUTE,
+            per_hour=MAX_CALLS_PER_HOUR,
+            failures=MAX_CONSECUTIVE_FAILURES,
+        )
+        per_topic_text = tr("mq.voice_tripped_topic", why=why)
+        summary = tr(
+            "mq.voice_tripped_summary",
+            why=why,
+            used=_usd(budget.spent_usd),
+            calls=budget.calls,
+        )
+
     disabled = session_manager.voice_budget_disable_all()
-    per_topic_text = tr("mq.voice_exhausted_topic")
     for uid, tid in disabled:
         try:
             chat_id = session_manager.resolve_chat_id(uid, tid)
@@ -671,34 +710,15 @@ async def _notify_budget_exhausted(bot: Bot) -> None:
             )
         except Exception as e:
             logger.warning(
-                "voice exhaustion notice failed (user=%d thread=%d): %s",
-                uid,
-                tid,
-                e,
+                "voice stop notice failed (user=%d thread=%d): %s", uid, tid, e
             )
 
     chat_id = config.notifications_chat_id
     if chat_id is not None:
-        budget = session_manager.voice_budget
-        summary = tr(
-            "mq.voice_exhausted_summary",
-            used=f"{budget.chars_used:,}".replace(",", " "),
-            limit=f"{budget.daily_limit:,}".replace(",", " "),
-        )
         try:
             await bot.send_message(chat_id=chat_id, text=summary, parse_mode="HTML")
         except Exception as e:
-            logger.warning("voice exhaustion summary failed: %s", e)
-
-
-async def _ensure_voice_disabled_for_exhausted_budget(bot: Bot) -> None:
-    """Pre-check path: budget already exhausted, but a topic may still
-    have ``voice_mode_topics`` populated (race between parallel synths
-    crossing the line). Idempotent — does nothing if already cleared
-    AND already notified.
-    """
-    if session_manager.voice_mode_topics:
-        await _notify_budget_exhausted(bot)
+            logger.warning("voice stop summary failed: %s", e)
 
 
 async def _send_table_image(
@@ -972,6 +992,9 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
         if segments:
             send_kw = _send_kwargs(task.thread_id)
             seg_idx = 0
+            inflight_audio: bytes | None = None
+            cached_audio = task.voice_audio_cache
+            task.voice_audio_cache = None
             try:
                 for seg_idx, (kind, chunk) in enumerate(segments):
                     if kind == "chat":
@@ -982,56 +1005,69 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                             **send_kw,  # type: ignore[arg-type]
                         )
                         continue
-                    # Layer 3: daily budget pre-check. If exhausted, fall
-                    # back to text without calling Gemini. ``can_spend``
-                    # rolls the date over when needed but doesn't record —
-                    # record() runs only after a successful synth.
-                    chunk_chars = len(chunk)
-                    if not session_manager.voice_budget_can_spend(chunk_chars):
-                        logger.warning(
-                            "Voice budget exhausted; falling back to text "
-                            "(chunk=%dch, used=%d/%d)",
-                            chunk_chars,
-                            session_manager.voice_budget.chars_used,
-                            session_manager.voice_budget.daily_limit,
-                        )
-                        await _ensure_voice_disabled_for_exhausted_budget(bot)
-                        await send_with_fallback(
-                            bot,
-                            chat_id,
-                            strip_output_tags(chunk),
-                            **send_kw,  # type: ignore[arg-type]
-                        )
-                        continue
+                    # Every TTS attempt is paid through the spend ledger
+                    # (voice/safety.py): reserved at worst case BEFORE the
+                    # call, refused when over budget or when the rate /
+                    # failure breaker tripped. A refusal or failure falls
+                    # back to text; never retried here.
+                    if seg_idx == 0 and cached_audio is not None:
+                        # Requeued after a flood ban: this segment's audio
+                        # was already paid for.
+                        audio_data, cached_audio = cached_audio, None
+                    else:
+                        try:
+                            audio_data = await synthesize_speech(chunk, session_manager)
+                        except SpendDenied as denied:
+                            logger.warning(
+                                "TTS refused by spend guard (%s); text fallback "
+                                "(chunk=%dch, spent=$%.4f/$%.2f)",
+                                denied.reason,
+                                len(chunk),
+                                session_manager.voice_budget.spent_usd,
+                                session_manager.voice_budget.daily_limit_usd,
+                            )
+                            await _stop_voice_everywhere(bot, denied.reason)
+                            await send_with_fallback(
+                                bot,
+                                chat_id,
+                                strip_output_tags(chunk),
+                                **send_kw,  # type: ignore[arg-type]
+                            )
+                            continue
+                        except Exception as e:
+                            logger.warning(
+                                "TTS failed for segment, falling back to text: %s", e
+                            )
+                            # The failure itself may have tripped the breaker.
+                            if session_manager.voice_budget.tripped:
+                                await _stop_voice_everywhere(
+                                    bot, session_manager.voice_budget.tripped
+                                )
+                            await send_with_fallback(
+                                bot,
+                                chat_id,
+                                strip_output_tags(chunk),
+                                **send_kw,  # type: ignore[arg-type]
+                            )
+                            continue
+                    # The notice fires before the voice send: if that send
+                    # raises RetryAfter, the one-shot flag is already spent.
                     try:
-                        audio_data = await synthesize_speech(chunk)
-                        # Bill the budget at SYNTH time, not send time (the
-                        # safety.py contract): the provider has charged for
-                        # this call regardless of whether the Telegram send
-                        # below succeeds. Recording after send left a flood
-                        # RetryAfter re-synth (up to MAX_FLOOD_REQUEUES per
-                        # segment) invisible to the daily ceiling.
-                        event = session_manager.voice_budget_record(chunk_chars)
-                        logger.info(
-                            "TTS billed: chunk=%dch, daily=%d/%d",
-                            chunk_chars,
-                            event.chars_used,
-                            event.daily_limit,
-                        )
-                        # Threshold notices fire before the voice send:
-                        # record() flips its one-shot flags, so if they ran
-                        # after a send that raises RetryAfter they'd be
-                        # swallowed for the rest of the day.
-                        if event.crossed_80pct:
-                            await _notify_budget_warning(bot, event)
-                        if event.crossed_exhausted:
-                            await _notify_budget_exhausted(bot)
+                        warn = session_manager.voice_budget_take_80pct_warning()
+                    except OSError as e:
+                        logger.warning("voice ledger unreadable for 80%% check: %s", e)
+                        warn = False
+                    if warn:
+                        await _notify_budget_warning(bot)
+                    inflight_audio = audio_data
+                    try:
                         await send_voice(
                             bot,
                             chat_id,
                             audio_data,
                             **send_kw,  # type: ignore[arg-type]
                         )
+                        inflight_audio = None
                     except (RetryAfter, NetworkError):
                         # Incl. BadRequest (a NetworkError subclass) — the
                         # outer clauses sort them out. The point here is to
@@ -1040,8 +1076,10 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                         # active flood ban.
                         raise
                     except Exception as e:
+                        inflight_audio = None
                         logger.warning(
-                            "TTS failed for segment, falling back to text: %s", e
+                            "Voice send failed for segment, falling back to text: %s",
+                            e,
                         )
                         await send_with_fallback(
                             bot,
@@ -1059,6 +1097,9 @@ async def _process_content_task(bot: Bot, user_id: int, task: MessageTask) -> No
                 # their [chat] wrapper back so split_voice_segments
                 # re-parses them identically on retry.
                 remaining = segments[seg_idx:]
+                # The in-flight segment (now first) was synthesized and paid
+                # for; the retry sends this audio instead of buying it again.
+                task.voice_audio_cache = inflight_audio
                 task.parts = [
                     "\n\n".join(
                         c if k == "voice" else f"[chat]{c}[/chat]" for k, c in remaining

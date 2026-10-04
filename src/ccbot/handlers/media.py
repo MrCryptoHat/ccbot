@@ -7,6 +7,7 @@ at 20 MB) with a clear message instead of a silent failure, and flags
 compressed archives so the agent knows to unpack them.
 """
 
+from datetime import timedelta
 import logging
 import time
 from pathlib import Path
@@ -394,6 +395,9 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await safe_reply(update.message, tr("media.file_sent", name=original_name))
 
 
+MAX_VOICE_TRANSCRIBE_SEC = 15 * 60
+
+
 async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle voice messages: transcribe via OpenAI and forward text to Claude Code."""
     # A photo/voice message means the user moved on from a pending ➕
@@ -426,6 +430,18 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     wid, err = await _validate_media_context(update, user.id, thread_id)
     if err or not wid:
+        return
+
+    # Transcription is billed per minute and Telegram allows hours-long
+    # voice notes; a dictated message is never that long.
+    duration = update.message.voice.duration  # int or timedelta (PTB ≥ 22)
+    if isinstance(duration, timedelta):
+        duration = duration.total_seconds()
+    if duration > MAX_VOICE_TRANSCRIBE_SEC:
+        await safe_reply(
+            update.message,
+            tr("media.voice_too_long", minutes=MAX_VOICE_TRANSCRIBE_SEC // 60),
+        )
         return
 
     # Download voice as in-memory bytes

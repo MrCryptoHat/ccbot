@@ -345,3 +345,125 @@ class TestSendImageBlock:
         mock_rich, mock_png = await self._run("plain grid", "rich", rich_result=555)
         mock_rich.assert_not_called()
         mock_png.assert_called_once()
+
+
+class TestVoiceSpendGuard:
+    """A ledger refusal in the voice path: text fallback, voice off everywhere."""
+
+    def _task(self) -> MessageTask:
+        return MessageTask(
+            task_type="content",
+            window_id="@1",
+            parts=["привет, это ответ"],
+            content_type="text",
+            thread_id=7,
+            voice_mode=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_denial_falls_back_to_text_and_disables_voice(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from ccbot.handlers import message_queue as mq
+        from ccbot.voice.safety import TRIP_RATE_MINUTE, SpendDenied, VoiceBudget
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        budget = VoiceBudget(tripped=TRIP_RATE_MINUTE)
+        with (
+            patch.object(mq, "session_manager") as sm,
+            patch.object(
+                mq, "synthesize_speech", AsyncMock(side_effect=SpendDenied("tripped"))
+            ),
+            patch.object(mq, "send_voice", AsyncMock()) as send_voice,
+            patch.object(mq, "send_with_fallback", AsyncMock()) as send_text,
+            patch.object(mq, "_emit_links", AsyncMock()),
+            patch.object(mq, "_send_task_images", AsyncMock()),
+        ):
+            sm.resolve_chat_id.return_value = -100
+            sm.voice_budget = budget
+            sm.voice_mode_topics = {"1:7"}
+            sm.voice_budget_disable_all.return_value = [(1, 7)]
+            await mq._process_content_task(bot, 1, self._task())
+
+        send_voice.assert_not_awaited()
+        send_text.assert_awaited_once()
+        assert send_text.await_args.args[2] == "привет, это ответ"
+        sm.voice_budget_disable_all.assert_called_once()
+        # The topic is told why voice stopped.
+        notice = bot.send_message.await_args_list[0].kwargs["text"]
+        assert "safety stop" in notice
+
+
+class TestVoiceRetryDoesNotRepay:
+    """A flood ban on send_voice must not pay for the same audio again."""
+
+    @pytest.mark.asyncio
+    async def test_requeued_segment_reuses_paid_audio(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from telegram.error import RetryAfter
+
+        from ccbot.handlers import message_queue as mq
+
+        task = MessageTask(
+            task_type="content",
+            window_id="@1",
+            parts=["первый кусок"],
+            content_type="text",
+            thread_id=7,
+            voice_mode=True,
+        )
+        synth = AsyncMock(return_value=b"OGG")
+        send_voice = AsyncMock(side_effect=[RetryAfter(5), None])
+        with (
+            patch.object(mq, "session_manager") as sm,
+            patch.object(mq, "synthesize_speech", synth),
+            patch.object(mq, "send_voice", send_voice),
+            patch.object(mq, "send_with_fallback", AsyncMock()),
+            patch.object(mq, "_emit_links", AsyncMock()),
+            patch.object(mq, "_send_task_images", AsyncMock()),
+        ):
+            sm.resolve_chat_id.return_value = -100
+            sm.voice_budget_take_80pct_warning.return_value = False
+            with pytest.raises(RetryAfter):
+                await mq._process_content_task(MagicMock(), 1, task)
+            assert task.voice_audio_cache == b"OGG"
+            await mq._process_content_task(MagicMock(), 1, task)
+
+        synth.assert_awaited_once()
+        assert send_voice.await_count == 2
+        assert send_voice.await_args_list[1].args[2] == b"OGG"
+
+    def test_task_with_paid_audio_is_not_merged(self):
+        a = MessageTask(
+            task_type="content", window_id="@1", parts=["a"], content_type="text"
+        )
+        b = MessageTask(
+            task_type="content",
+            window_id="@1",
+            parts=["b"],
+            content_type="text",
+            voice_audio_cache=b"x",
+        )
+        assert _can_merge_tasks(a, b) is False
+        assert _can_merge_tasks(b, a) is False
+
+    @pytest.mark.asyncio
+    async def test_merge_keeps_flood_requeue_count(self):
+        from ccbot.handlers.message_queue import _merge_content_tasks
+
+        def t(parts, n=0):
+            return MessageTask(
+                task_type="content",
+                window_id="@1",
+                parts=parts,
+                content_type="text",
+                flood_requeues=n,
+            )
+
+        q: asyncio.Queue[MessageTask] = asyncio.Queue()
+        q.put_nowait(t(["b"]))
+        merged, count = await _merge_content_tasks(q, t(["a"], n=2), asyncio.Lock())
+        assert count == 1
+        assert merged.flood_requeues == 2
