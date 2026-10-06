@@ -72,6 +72,7 @@ from .directory_browser import (
     STATE_SELECTING_SESSION,
     build_session_picker,
     clear_browse_state,
+    clear_session_picker_state,
 )
 from .message_sender import PARSE_MODE, safe_reply
 from ..screenshot import text_to_image
@@ -2078,7 +2079,22 @@ async def _auto_bind_to_directory(
     try:
         await safe_reply(msg, text, reply_markup=keyboard)
     except Exception as e:
-        logger.debug("auto-bind session picker reply failed: %s", e)
+        # The picker never reached the chat, so the state above describes a
+        # widget nobody can see: every following message bounced with «use the
+        # picker above» and the topic had no way out. Drop it — the next
+        # message re-resolves the folder and draws the picker again.
+        logger.warning(
+            "Auto-bind: session picker not delivered for %s (thread=%d): %s",
+            shown,
+            thread_id,
+            e,
+        )
+        if context.user_data is not None:
+            clear_session_picker_state(context.user_data)
+            context.user_data.pop("_selected_path", None)
+            context.user_data.pop("_pending_thread_id", None)
+            context.user_data.pop("_pending_thread_text", None)
+        return False
     logger.info(
         "Auto-bind: showed session picker for %s (%d sessions, user=%d, thread=%d)",
         shown,

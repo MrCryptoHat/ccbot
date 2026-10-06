@@ -167,6 +167,27 @@ async def test_existing_sessions_show_picker(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_undelivered_picker_leaves_no_state(tmp_path: Path):
+    """The picker send failed (network) → no picker state survives. Otherwise
+    every later message bounces with «use the picker above» at a picker that
+    was never drawn, and the topic is stuck until the bot restarts."""
+    d = tmp_path / "editor"
+    d.mkdir()
+    sm, tm = _autobind_mocks([SimpleNamespace(session_id=NEWEST)])
+    ctx = SimpleNamespace(user_data={}, bot=SimpleNamespace())
+    with (
+        patch.object(cmd, "session_manager", sm),
+        patch.object(cmd, "tmux_manager", tm),
+        patch.object(cmd, "safe_reply", new=AsyncMock(side_effect=OSError("down"))),
+        patch.object(cmd, "build_session_picker", return_value=("pick", None)),
+    ):
+        result = await cmd._auto_bind_to_directory(1, 42, d, SimpleNamespace(), ctx)
+
+    assert result is False
+    assert ctx.user_data == {}
+
+
+@pytest.mark.asyncio
 async def test_never_bound_topic_no_sessions_shows_picker(tmp_path: Path):
     """A NEVER-bound topic with a fresh (empty) folder gets the picker, not a
     silent default-runtime window — the empty picker's «New session — <agent>»
