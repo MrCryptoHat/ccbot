@@ -359,6 +359,49 @@ class TestParseEntries:
         assert tool_result_entries[0].tool_use_id == "t1"
         assert not pending
 
+    def _with_model(self, entry: dict, model: str) -> dict:
+        entry["message"]["model"] = model
+        return entry
+
+    def test_claude_progress_note_in_thinking_is_text(
+        self, make_jsonl_entry, make_thinking_block
+    ):
+        """Claude 5.x writes short user-facing notes into a thinking block
+        (its real reasoning arrives empty); the pane shows them as ● lines,
+        so they must reach the chat."""
+        entry = self._with_model(
+            make_jsonl_entry("assistant", [make_thinking_block("Нашёл причину бага.")]),
+            "claude-opus-5-5",
+        )
+        result, _ = TranscriptParser.parse_entries([entry])
+        assert len(result) == 1
+        assert result[0].content_type == "text"
+        assert result[0].text == "Нашёл причину бага."
+        assert EXPQUOTE_START not in result[0].text
+
+    def test_claude_empty_thinking_stays_hidden(
+        self, make_jsonl_entry, make_thinking_block
+    ):
+        entry = self._with_model(
+            make_jsonl_entry("assistant", [make_thinking_block("")]),
+            "claude-opus-5-5",
+        )
+        result, _ = TranscriptParser.parse_entries([entry])
+        assert [r.content_type for r in result] == ["thinking"]
+
+    def test_non_claude_reasoning_stays_thinking(
+        self, make_jsonl_entry, make_thinking_block
+    ):
+        """GLM (via a proxy) puts real chain-of-thought there — never chat."""
+        entry = self._with_model(
+            make_jsonl_entry(
+                "assistant", [make_thinking_block("The user wants me to...")]
+            ),
+            "glm-5.3",
+        )
+        result, _ = TranscriptParser.parse_entries([entry])
+        assert result[0].content_type == "thinking"
+
     def test_thinking_block(self, make_jsonl_entry, make_thinking_block):
         entries = [
             make_jsonl_entry("assistant", [make_thinking_block("reasoning here")])

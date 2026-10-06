@@ -343,6 +343,12 @@ class TranscriptParser:
         """Extract timestamp from message data."""
         return data.get("timestamp")
 
+    @staticmethod
+    def _is_claude_model(message: dict) -> bool:
+        """True when the assistant message came from an Anthropic Claude model."""
+        model = message.get("model")
+        return isinstance(model, str) and model.startswith("claude-")
+
     EXPANDABLE_QUOTE_START = "\x02EXPQUOTE_START\x02"
     EXPANDABLE_QUOTE_END = "\x02EXPQUOTE_END\x02"
 
@@ -629,7 +635,25 @@ class TranscriptParser:
 
                     elif btype == "thinking":
                         thinking_text = block.get("thinking", "")
-                        if thinking_text:
+                        if thinking_text.strip() and cls._is_claude_model(message):
+                            # Claude 5.x models never return their reasoning
+                            # in plaintext (those blocks arrive empty, signed).
+                            # A non-empty one is a short progress note meant
+                            # for the user — Claude Code draws it as a normal
+                            # ● line — so it's delivered as text, not hidden
+                            # as thinking. Other models (GLM via a proxy)
+                            # put real chain-of-thought here: stays thinking.
+                            result.append(
+                                ParsedEntry(
+                                    role="assistant",
+                                    text=thinking_text.strip(),
+                                    content_type="text",
+                                    timestamp=entry_timestamp,
+                                    precedes_interactive_prompt=precedes_ask,
+                                )
+                            )
+                            has_text = True
+                        elif thinking_text:
                             quoted = cls._format_expandable_quote(thinking_text)
                             result.append(
                                 ParsedEntry(
