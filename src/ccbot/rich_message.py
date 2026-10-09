@@ -259,6 +259,68 @@ def normalize_tables(markdown: str) -> str:
     return "\n".join(out)
 
 
+# A line that opens (or is) a markdown block construct rather than paragraph
+# text: heading, list item, quote, table row, fence, thematic break / setext
+# underline, or anything indented (list continuation, indented code).
+_BLOCK_LINE_RE = re.compile(
+    r"^(?:[ \t]|#{1,6}(?:[ \t]|$)|[-*+][ \t]|\d{1,9}[.)](?:[ \t]|$)|>|\||```|~~~"
+    r"|[-*_=](?:[ \t]*[-*_=]){2,}[ \t]*$)"
+)
+
+
+def _is_prose_line(line: str, next_line: str | None) -> bool:
+    if not line.strip() or _BLOCK_LINE_RE.match(line):
+        return False
+    # The header row of a pipe-less table (`a | b` above `--- | ---`).
+    return next_line is None or not _TABLE_DELIM_RE.match(next_line)
+
+
+def normalize_line_breaks(markdown: str) -> str:
+    """Keep the line and paragraph breaks of prose as the agent wrote them.
+
+    Telegram's rich parser is CommonMark here, and its client draws that
+    literally: a single newline inside a paragraph collapses into a space, and
+    consecutive paragraphs are separate blocks drawn with **no gap** between
+    them (verified live — a sectioned reply arrived as one dense wall, while
+    the MarkdownV2 path of the same text keeps its blank lines). A hard break
+    (trailing backslash) survives as a real ``\\n`` (also verified), and a run
+    of hard-broken lines — blank ones included — comes back as ONE paragraph
+    whose text holds ``\\n\\n``: the exact rendering of the MarkdownV2 path.
+
+    So every newline between two prose lines becomes a hard break. Block
+    constructs (headings, lists, quotes, tables, fences) are left alone —
+    a hard break there would fold them into the paragraph.
+    """
+    lines = markdown.split("\n")
+    out: list[str | None] = list(lines)  # None = a dropped blank line
+    in_fence = False
+    prev_prose: int | None = None  # index of the last prose line in this run
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+            prev_prose = None
+            continue
+        if in_fence:
+            continue
+        if not line.strip():
+            continue
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        if not _is_prose_line(line, nxt):
+            prev_prose = None
+            continue
+        if prev_prose is not None:
+            prose = lines[prev_prose].rstrip()
+            if not prose.endswith("\\"):
+                prose += "\\"
+            if i - prev_prose > 1:
+                prose += "\n\\"  # the blank gap, kept as ONE hard-broken line
+                for j in range(prev_prose + 1, i):
+                    out[j] = None
+            out[prev_prose] = prose
+        prev_prose = i
+    return "\n".join(x for x in out if x is not None)
+
+
 def flatten_rich_message(rich: Any) -> str:
     """RichMessage dict (from ``message.api_kwargs``) → markdown text."""
     if not isinstance(rich, dict):

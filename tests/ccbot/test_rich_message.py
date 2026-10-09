@@ -6,7 +6,12 @@ rich_message_filter can catch what filters.TEXT never will (text is None).
 Plus the outbound is_rich_safe gate (what may go through sendRichMessage).
 """
 
-from ccbot.rich_message import flatten_rich_message, is_rich_safe, normalize_tables
+from ccbot.rich_message import (
+    flatten_rich_message,
+    is_rich_safe,
+    normalize_line_breaks,
+    normalize_tables,
+)
 
 
 def _msg(*blocks) -> dict:
@@ -247,3 +252,41 @@ class TestNormalizeTables:
         for delim in ("| :--- | ---: |", "|:-:|:-:|", "--- | ---"):
             md = "caption\n| a | b |\n" + delim
             assert normalize_tables(md) == "caption\n\n| a | b |\n" + delim
+
+
+class TestNormalizeLineBreaks:
+    """Telegram's rich client draws paragraphs with no gap and folds single
+    newlines into spaces; hard breaks keep the text laid out as written.
+    """
+
+    def test_paragraphs_become_one_hard_broken_run(self):
+        md = "**Head**\n\npara one.\n\n\npara two."
+        assert normalize_line_breaks(md) == "**Head**\\\n\\\npara one.\\\n\\\npara two."
+
+    def test_single_newline_kept(self):
+        assert normalize_line_breaks("• one\n• two") == "• one\\\n• two"
+
+    def test_existing_hard_break_not_doubled(self):
+        assert normalize_line_breaks("a\\\nb") == "a\\\nb"
+
+    def test_block_constructs_untouched(self):
+        for md in (
+            "## Title\n\nprose",
+            "prose\n\n- item\n- item",
+            "prose\n1. first",
+            "> quote\n\nprose",
+            "prose\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+            "caption\na | b\n--- | ---",
+            "prose\n\n---\n\nprose",
+            "- item\n  continuation",
+        ):
+            out = normalize_line_breaks(md)
+            assert out.count("\\") == md.count("\\"), md
+
+    def test_code_fence_untouched(self):
+        md = "before\n\n```\nx = 1\n\ny = 2\n```\n\nafter"
+        assert normalize_line_breaks(md) == md
+
+    def test_prose_runs_split_by_a_block(self):
+        md = "a\nb\n\n## H\n\nc\n\nd"
+        assert normalize_line_breaks(md) == "a\\\nb\n\n## H\n\nc\\\n\\\nd"
