@@ -1154,20 +1154,21 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
         )
 
         # Rich-first (Bot API 10.2): exactly where the legacy pipeline
-        # degrades — a table/box-art became a PNG (table_texts), long code
-        # became a file attachment (code_files), or the reply split into
-        # [i/N] pages — carry the ORIGINAL markdown alongside; the queue
-        # worker tries one native sendRichMessage and falls back to the
-        # legacy parts on any failure. Plain short replies keep the proven
-        # MarkdownV2 path untouched, as do texts is_rich_safe rejects
-        # (Telegram accepts but MANGLES those — no error to fall back on).
+        # degrades — a table/box-art became a PNG (table_texts) or long code
+        # became a file attachment (code_files) — carry the ORIGINAL markdown
+        # alongside; the queue worker tries one native sendRichMessage and
+        # falls back to the legacy parts on any failure. Plain prose keeps
+        # the proven MarkdownV2 path even when it splits into [i/N] pages:
+        # the rich client lays prose out worse (operator's call — a split
+        # reply that reads right beats one dense message), as do texts
+        # is_rich_safe rejects (Telegram accepts but MANGLES those).
         rich_markdown = ""
         if (
             config.rich_messages_enabled
             and msg.content_type == "text"
             and msg.role == "assistant"
             and len(msg.text) <= RICH_MESSAGE_MAX_CHARS
-            and (table_texts or code_files or len(parts) > 1)
+            and (table_texts or code_files)
             and is_rich_safe(msg.text)
             # /tables=image: extracted tables/box-art must arrive as PNGs, so
             # a message carrying any skips whole-message rich (which would
