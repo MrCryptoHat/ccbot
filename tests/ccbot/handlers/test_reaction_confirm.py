@@ -32,6 +32,22 @@ def test_decide_enter_on_permission(sample_pane_permission):
     assert rc.decide_confirm_action(sample_pane_permission) == ("confirm", ("Enter",))
 
 
+def test_decide_manual_on_widget_without_blind_confirm():
+    # HeldPeerMessage declares no confirm_keys: delivering a held message is
+    # the user's explicit choice, never a side effect of a 👍.
+    pane = (
+        "────────────────────────────────────────\n"
+        " Held message from another session\n"
+        "\n"
+        " Message body (this is what will be delivered):\n"
+        "  │ hello\n"
+        "\n"
+        " ❯ Deny — drop it and tell the sender it was declined\n"
+        "   Deliver this message to Claude\n"
+    )
+    assert rc.decide_confirm_action(pane) == ("manual", ())
+
+
 def test_decide_type_yes_when_idle(sample_pane_no_ui):
     # No interactive UI, not working → idle agent waiting for input.
     assert rc.decide_confirm_action(sample_pane_no_ui) == ("type_yes", ())

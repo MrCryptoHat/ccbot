@@ -87,6 +87,8 @@ def decide_confirm_action(
         option is dangerous declares a safe route instead (GrokApproval
         preselects permanent always-approve; its blind confirm is Down →
         «Yes, proceed» → Enter).
+      - ``("manual", ())``   — a live widget that declares no blind confirm
+        (empty ``confirm_keys``); the user must tap its buttons.
       - ``("type_yes", ())`` — agent idle waiting for input; type «yes».
       - ``("skip", ())``     — agent busy or pane unavailable; don't touch it.
 
@@ -99,7 +101,7 @@ def decide_confirm_action(
         return "skip", ()
     ui = extract_interactive_content(pane_text)
     if ui is not None:
-        return "confirm", ui.confirm_keys
+        return ("confirm", ui.confirm_keys) if ui.confirm_keys else ("manual", ())
     if not get_runtime(runtime).is_working(pane_text):
         return "type_yes", ()
     return "skip", ()
@@ -208,6 +210,9 @@ async def _do_confirm(
                 break
         if ok:
             await _notice(tr("rconf.confirmed"))
+        return
+    if action == "manual":
+        await _notice(tr("rconf.needs_tap"))
         return
     if action == "type_yes":
         # Agent-directed text, not UI chrome — typed into the agent's pane as

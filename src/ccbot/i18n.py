@@ -373,6 +373,7 @@ STRINGS.update(
         # -- rconf --
         "rconf.agent_busy": "👍 — but the agent is busy right now, not sending anything. Reply with a word when it's free.",
         "rconf.confirmed": "👍 — confirmed",
+        "rconf.needs_tap": "👍 — this question needs a real choice. Pick an answer with the buttons under the screenshot.",
         "rconf.sent_yes": "👍 — sent «yes» to the agent",
         # -- agentdel --
         "agentdel.confirm_tmux": "🗑 Delete agent «{name}»?\n\nThe agent stops and the topic — with every message in it — is gone for good. Files in the folder stay; the agent's own history survives, so a new agent in that folder can pick it up with «⏪ Resume».",

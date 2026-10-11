@@ -78,7 +78,8 @@ class UIPattern:
     #: data — GrokApproval preselects «Yes, and don't ask again» (permanent
     #: always-approve), so its blind confirm is Down (→ «Yes, proceed») then
     #: Enter. Modeled here, not in reaction_confirm, so a new hazardous menu
-    #: is one field, not a new call-site branch.
+    #: is one field, not a new call-site branch. Empty = no blind confirm at
+    #: all: a 👍 leaves the widget for the user's explicit tap.
     confirm_keys: tuple[str, ...] = ("Enter",)
     #: ``is_login`` screens that print only a one-time CODE, keeping the URL
     #: behind a mouse-only "click here": the sign-in URL built from that code
@@ -232,6 +233,32 @@ UI_PATTERNS: list[UIPattern] = [
         bottom=(re.compile(r"Enter to confirm"),),
         min_gap=1,
         tail_only=True,
+    ),
+    UIPattern(
+        # Cross-session message gate (Claude Code 2.1.296): a message from
+        # another session whose permission mode differs is HELD until the user
+        # picks «Deny — drop it…» (preselected) or «Deliver this message to
+        # Claude». Unnumbered rows (hideIndexes), so ChoiceMenu can't see it;
+        # unmatched, the topic kept accepting text that piled up behind a
+        # dialog nobody in Telegram knew about. «Deliver» is always the last
+        # option row; the footer alternates cover a future footer line.
+        #
+        # tail_only: the title is plain prose, and an answer about this very
+        # widget quotes it. Roomy window — the message preview sits between
+        # title and options.
+        name="HeldPeerMessage",
+        top=(re.compile(r"^\s*Held message from another session"),),
+        bottom=(
+            re.compile(r"Deliver this message to Claude"),
+            re.compile(r"Enter to confirm"),
+            re.compile(r"[Ee]sc to cancel"),
+        ),
+        tail_only=True,
+        tail_window=30,
+        # Delivering lets an untrusted session's text into this one — the
+        # decision the gate exists for. A 👍 can land on ANY agent message in
+        # the topic, so it must not make it: buttons only.
+        confirm_keys=(),
     ),
     UIPattern(
         name="Settings",

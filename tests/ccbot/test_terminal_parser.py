@@ -1266,6 +1266,69 @@ class TestClaudeTrustUnnumbered:
         assert is_interactive_ui(pane) is False
 
 
+# ── Held cross-session message (HeldPeerMessage) ────────────────────────
+
+# Rebuilt from a 2.1.296 screenshot; sender id, name and body are synthetic.
+_HELD_PEER = (
+    "● Sent the note to the other session.\n"
+    "\n"
+    "  Held peer message — from bridge:session_0000 (peer claims name: peer);\n"
+    "  preview: «status update» — not delivered to Claude (1 held).\n"
+    "\n"
+    "────────────────────────────────────────\n"
+    " Held message from another session\n"
+    "\n"
+    " Another Claude session sent a message: from bridge:session_0000 (peer claims\n"
+    " name: peer)\n"
+    "\n"
+    " The sending session's permission mode class doesn't match this session's, so\n"
+    " it wasn't delivered automatically.\n"
+    "\n"
+    " Message body (this is what will be delivered):\n"
+    "\n"
+    "  │ status update: review is in the repo\n"
+    "  │ …[1 line, 120 chars total — full body will be delivered on approve]\n"
+    "\n"
+    " ❯ Deny — drop it and tell the sender it was declined\n"
+    "   Deliver this message to Claude\n"
+)
+
+
+class TestHeldPeerMessage:
+    """A cross-session message held for approval replaces the input box; the
+    topic must see it as a dialog, or typed text piles up behind it."""
+
+    def test_widget_detected(self):
+        res = extract_interactive_content(_HELD_PEER)
+        assert res is not None
+        assert res.name == "HeldPeerMessage"
+        assert "Message body" in res.content
+        assert is_interactive_ui(_HELD_PEER) is True
+
+    def test_detected_with_cursor_on_deliver(self):
+        moved = _HELD_PEER.replace(" ❯ Deny", "   Deny").replace(
+            "   Deliver", " ❯ Deliver"
+        )
+        res = extract_interactive_content(moved)
+        assert res is not None
+        assert res.name == "HeldPeerMessage"
+
+    def test_no_blind_confirm(self):
+        # Delivering is the trust decision itself — a 👍 must not make it.
+        res = extract_interactive_content(_HELD_PEER)
+        assert res is not None
+        assert res.confirm_keys == ()
+
+    def test_quoted_widget_is_not_a_widget(self):
+        pane = _pane(
+            "  Claude Code showed «Held message from another session»:",
+            "",
+            "  ❯ Deny — drop it and tell the sender it was declined",
+            "    Deliver this message to Claude",
+        )
+        assert is_interactive_ui(pane) is False
+
+
 # ── Unsent text left in Claude Code's input box ─────────────────────────
 
 _SEP = "─" * 60
