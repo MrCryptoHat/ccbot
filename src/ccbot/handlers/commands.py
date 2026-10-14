@@ -407,6 +407,10 @@ async def bind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     agents don't have a "directory" — they're long-lived containers —
     so this is the deliberate entry point. Adds ``docker:<name>`` to
     thread_bindings and names the topic after the agent.
+
+    ``/bind <agent>/<slug>`` (or the topic spelling ``<agent>-<slug>``)
+    reattaches a known sub-agent ``docker:<agent>/<slug>`` — the only UI
+    way back for a ➕ topic that lost its binding.
     """
     user = effective_user(update)
     if not user or not is_user_allowed(user.id):
@@ -432,6 +436,36 @@ async def bind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await safe_reply(update.message, tr("commands.docker_disabled"))
         return
     agent = config.get_docker_agent(agent_name)
+    sub_binding = None if agent else session_manager.find_sub_agent_binding(agent_name)
+    if sub_binding:
+        # A sub-agent (➕) — reattach the topic to it, e.g. after it lost its
+        # binding. One sub serves one topic: a second binding would mirror
+        # every reply into both.
+        owner = next(
+            (
+                (uid, tid)
+                for uid, tid, value in session_manager.iter_thread_bindings()
+                if value == sub_binding
+            ),
+            None,
+        )
+        display = session_manager.get_display_name(sub_binding)
+        if owner and owner != (user.id, thread_id):
+            await safe_reply(update.message, tr("commands.bind_taken", name=display))
+            return
+        # No window_name: a sub's display name is ccbot's own, already stored.
+        session_manager.bind_thread(user.id, thread_id, sub_binding)
+        if update.effective_chat and update.effective_chat.id != user.id:
+            session_manager.set_group_chat_id(
+                user.id, thread_id, update.effective_chat.id
+            )
+        await safe_reply(
+            update.message,
+            tr("commands.bind_done", name=display),
+            reply_markup=menu_keyboard(),
+        )
+        session_manager.mark_menu_shown(user.id, thread_id)
+        return
     if not agent:
         available = ", ".join(a.name for a in config.docker_agents) or tr(
             "commands.none_paren"

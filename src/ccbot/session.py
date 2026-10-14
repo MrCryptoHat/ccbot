@@ -431,6 +431,39 @@ class SessionManager:
             return None
         return agent, sub
 
+    def find_sub_agent_binding(self, name: str) -> str | None:
+        """``<agent>/<slug>`` or ``<agent>-<slug>`` → its known sub-agent binding.
+
+        The way back for a sub-agent topic that lost its binding: /bind only
+        knew configured agents, so ``docker:<agent>/<slug>`` was unreachable
+        from the UI. Accepts both the binding spelling and the topic/display
+        spelling (``assistant-notes``). Only a sub-agent ccbot already knows
+        (a ``window_states`` row — kept through an involuntary unbind, dropped
+        by teardown) resolves: ccbot is the only thing that creates siblings,
+        so an arbitrary slug must not conjure one.
+        """
+        lname = name.strip().lower()
+        candidates: list[tuple[DockerAgentConfig, str]] = []
+        if "/" in lname:
+            agent_part, _, slug = lname.partition("/")
+            agent = config.get_docker_agent(agent_part)
+            if agent:
+                candidates.append((agent, slug))
+        else:
+            # Longest agent name first: with agents "a" and "a-b", "a-b-x"
+            # is a sub of "a-b", not sub "b-x" of "a".
+            for agent in sorted(
+                config.docker_agents, key=lambda a: len(a.name), reverse=True
+            ):
+                prefix = agent.name.lower() + "-"
+                if lname.startswith(prefix):
+                    candidates.append((agent, lname[len(prefix) :]))
+        for agent, slug in candidates:
+            binding = f"{DOCKER_PREFIX}{agent.name}/{slug}"
+            if self.split_docker_binding(binding) and binding in self.window_states:
+                return binding
+        return None
+
     def resolve_docker_target(self, value: str) -> "DockerTarget | None":
         """Resolve a docker binding to its container + in-container tmux session.
 

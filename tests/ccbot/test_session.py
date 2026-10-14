@@ -1389,6 +1389,25 @@ class TestDockerSubAgents:
     def test_split_non_docker(self) -> None:
         assert SessionManager.split_docker_binding("@12") is None
 
+    def test_find_sub_binding_both_spellings(self, mgr: SessionManager, agent) -> None:
+        # /bind takes the binding spelling and the topic spelling alike.
+        mgr.window_states["docker:assistant/notes"] = WindowState()
+        for name in ("assistant/notes", "assistant-notes", "Assistant-Notes"):
+            assert mgr.find_sub_agent_binding(name) == "docker:assistant/notes"
+
+    def test_find_sub_binding_unknown_slug(self, mgr: SessionManager, agent) -> None:
+        # ccbot is the only creator of siblings — a slug it never made (or
+        # already tore down) must not conjure a binding.
+        assert mgr.find_sub_agent_binding("assistant-notes") is None
+        assert mgr.find_sub_agent_binding("assistant/notes") is None
+        assert mgr.find_sub_agent_binding("nosuch-notes") is None
+
+    def test_find_sub_binding_rejects_bad_slug(
+        self, mgr: SessionManager, agent
+    ) -> None:
+        mgr.window_states["docker:assistant/A B"] = WindowState()
+        assert mgr.find_sub_agent_binding("assistant/A B") is None
+
     def test_is_sub_agent(self, mgr: SessionManager) -> None:
         assert mgr.is_docker_sub_agent("docker:assistant/fitness") is True
         assert mgr.is_docker_sub_agent("docker:assistant") is False

@@ -445,15 +445,19 @@ async def _forward_text_to_agent(
         container_alive = bool(
             target and await docker_driver.is_container_alive(target.agent.container)
         )
+        # A down container is NOT a stale binding — a docker agent outlives
+        # its container's restarts (OOM, healthcheck restart), so the topic
+        # keeps its binding and the user just retries. Unbinding here
+        # stranded sub-agent topics for good: /bind only knew configured
+        # agents, and the next message opened the HOST directory browser.
         if not container_alive:
             logger.info(
-                "Stale binding: docker agent %s not running, unbinding "
+                "Docker agent %s: container not running, message not delivered "
                 "(user=%d, thread=%d)",
                 agent_name,
                 user_id,
                 thread_id,
             )
-            session_manager.unbind_thread(user_id, thread_id)
             await safe_reply(
                 update.message,
                 i18n.tr("bot.docker_agent_down", name=agent_name),

@@ -74,10 +74,68 @@ class TestBindCanonicalName:
             mock_cfg.docker_agents_enabled = True
             mock_cfg.get_docker_agent.return_value = None
             mock_cfg.docker_agents = []
+            mock_sm.find_sub_agent_binding.return_value = None
 
             await bind_command(update, context)
 
             mock_sm.bind_thread.assert_not_called()
+
+    def _sub_update(self, name: str):
+        update = MagicMock()
+        update.effective_user.id = 1
+        update.message = MagicMock()
+        update.effective_chat.id = -100123
+        context = MagicMock()
+        context.args = [name]
+        return update, context
+
+    @pytest.mark.asyncio
+    async def test_bind_known_sub_agent(self):
+        """/bind assistant-notes reattaches docker:assistant/notes, keeping
+        its ccbot-owned display name (no window_name override)."""
+        update, context = self._sub_update("assistant-notes")
+        with (
+            patch("ccbot.handlers.commands.is_user_allowed", return_value=True),
+            patch("ccbot.handlers.commands.get_thread_id", return_value=42),
+            patch("ccbot.handlers.commands.config") as mock_cfg,
+            patch("ccbot.handlers.commands.session_manager") as mock_sm,
+            patch("ccbot.handlers.commands.safe_reply", new=AsyncMock()),
+        ):
+            mock_cfg.docker_agents_enabled = True
+            mock_cfg.get_docker_agent.return_value = None
+            mock_sm.find_sub_agent_binding.return_value = "docker:assistant/notes"
+            mock_sm.iter_thread_bindings.return_value = iter([])
+
+            await bind_command(update, context)
+
+            mock_sm.bind_thread.assert_called_once_with(1, 42, "docker:assistant/notes")
+
+    @pytest.mark.asyncio
+    async def test_bind_sub_agent_taken_by_other_topic(self):
+        """One sub serves one topic — a second binding would mirror replies."""
+        update, context = self._sub_update("assistant/notes")
+        reply = AsyncMock()
+        with (
+            patch("ccbot.handlers.commands.is_user_allowed", return_value=True),
+            patch("ccbot.handlers.commands.get_thread_id", return_value=42),
+            patch("ccbot.handlers.commands.config") as mock_cfg,
+            patch("ccbot.handlers.commands.session_manager") as mock_sm,
+            patch("ccbot.handlers.commands.safe_reply", new=reply),
+        ):
+            mock_cfg.docker_agents_enabled = True
+            mock_cfg.get_docker_agent.return_value = None
+            mock_sm.find_sub_agent_binding.return_value = "docker:assistant/notes"
+            mock_sm.iter_thread_bindings.return_value = iter(
+                [(1, 77, "docker:assistant/notes")]
+            )
+            mock_sm.get_display_name.return_value = "assistant-notes"
+
+            await bind_command(update, context)
+
+            mock_sm.bind_thread.assert_not_called()
+            assert reply.call_args.args[1] == tr(
+                "commands.bind_taken", name="assistant-notes"
+            )
 
 
 class TestStartCommandGroupHints:
