@@ -13,6 +13,12 @@ A plugin is any ``ccbot.<name>`` module that optionally exposes:
   - ``register_handlers(app)``      add PTB handlers
   - ``async on_startup(app)``       start servers / background tasks
   - ``async on_shutdown()``         cleanup
+  - ``async on_agent_retired(binding)``
+                                    an agent session is gone for good (a
+                                    docker sub-agent torn down with its
+                                    topic) — drop whatever the plugin keeps
+                                    for it. NOT fired for a stop/sleep/crash
+                                    the session can come back from.
   - ``status_sections() -> tuple[list[str], list[str]]``
                                     (/status section blocks, warning labels).
                                     Called from the /status builder's WORKER
@@ -145,6 +151,21 @@ async def on_shutdown() -> None:
                 await fn()
             except Exception:
                 logger.exception("plugin %s on_shutdown failed", mod.__name__)
+
+
+async def on_agent_retired(binding: str) -> None:
+    """Tell every loaded plugin that ``binding``'s agent is gone for good.
+
+    Best-effort per plugin, like ``on_shutdown``: a failing plugin is logged
+    and never blocks the teardown that fired it.
+    """
+    for mod in loaded():
+        fn = getattr(mod, "on_agent_retired", None)
+        if fn is not None:
+            try:
+                await fn(binding)
+            except Exception:
+                logger.exception("plugin %s on_agent_retired failed", mod.__name__)
 
 
 def status_sections() -> tuple[list[str], list[str]]:

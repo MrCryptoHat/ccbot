@@ -308,10 +308,16 @@ class TestTeardown:
         sm = MagicMock()
         sm.is_docker_sub_agent.return_value = True
         sm.kill_agent = AsyncMock(return_value=True)
-        with patch("ccbot.handlers.siblings.session_manager", sm):
+        retired = AsyncMock()
+        with (
+            patch("ccbot.handlers.siblings.session_manager", sm),
+            patch("ccbot.plugins.on_agent_retired", retired),
+        ):
             assert await teardown_sibling(100, 42, "docker:assistant/notes") is True
         sm.kill_agent.assert_awaited_once_with("docker:assistant/notes")
         sm.forget_binding.assert_called_once_with("docker:assistant/notes")
+        # Gone for good → plugins drop what they hold for it.
+        retired.assert_awaited_once_with("docker:assistant/notes")
 
     @pytest.mark.asyncio
     async def test_main_docker_binding_is_left_alone(self) -> None:
@@ -320,7 +326,12 @@ class TestTeardown:
         sm = MagicMock()
         sm.is_docker_sub_agent.return_value = False
         sm.kill_agent = AsyncMock(return_value=True)
-        with patch("ccbot.handlers.siblings.session_manager", sm):
+        retired = AsyncMock()
+        with (
+            patch("ccbot.handlers.siblings.session_manager", sm),
+            patch("ccbot.plugins.on_agent_retired", retired),
+        ):
             assert await teardown_sibling(100, 42, "docker:assistant") is False
         sm.kill_agent.assert_not_awaited()
         sm.forget_binding.assert_not_called()
+        retired.assert_not_awaited()

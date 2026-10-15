@@ -35,6 +35,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 
+from .. import plugins
 from ..i18n import tr
 from ..session import session_manager
 from ..worktrees import dedup_slug, slugify
@@ -441,6 +442,9 @@ async def teardown_sibling(user_id: int, thread_id: int, wid: str) -> bool:
         return False
     killed = await session_manager.kill_agent(wid)
     session_manager.forget_binding(wid)
+    # Gone for good — plugins drop what they hold for it (e.g. external
+    # subscriptions that would otherwise keep routing to a dead session).
+    await plugins.on_agent_retired(wid)
     logger.info(
         "Sibling agent %s torn down with its topic (thread=%d, killed=%s)",
         wid,
