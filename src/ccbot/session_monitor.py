@@ -53,6 +53,15 @@ class SessionInfo:
     file_path: Path
 
 
+def _opens_quiet_turn(text: str) -> bool:
+    """A user prompt opening a quiet turn must reach the bot even with
+    ``show_user_messages`` off — it's how the bot learns the turn is quiet
+    (handlers/quiet_turn.py; the prompt itself is never shown)."""
+    from .handlers.quiet_turn import QUIET_TURN_MARKER
+
+    return text.lstrip().startswith(QUIET_TURN_MARKER)
+
+
 @dataclass
 class NewMessage:
     """A new message detected by the monitor."""
@@ -376,7 +385,11 @@ class SessionMonitor:
         for entry in parsed_entries:
             if not entry.text and not entry.image_data:
                 continue
-            if entry.role == "user" and not config.show_user_messages:
+            if (
+                entry.role == "user"
+                and not config.show_user_messages
+                and not _opens_quiet_turn(entry.text)
+            ):
                 continue
             msgs.append(
                 NewMessage(

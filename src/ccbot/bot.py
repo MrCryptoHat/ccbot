@@ -126,6 +126,7 @@ from .handlers.message_sender import (
 from .handlers.diff_view import capture_and_send as capture_and_send_diffs
 from .runtimes import get_runtime
 from .handlers.provisioning import wait_for_topic
+from .handlers import quiet_turn
 from .handlers.reaction_confirm import handle_message_reaction
 from .handlers.task_pin import (
     pin_task_message,
@@ -960,6 +961,16 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
             )
             continue
 
+        # A turn the chat's user didn't start shows them only its outcome:
+        # everything is held until it ends (handlers/quiet_turn.py) — and no
+        # typing heartbeat either, which would announce activity they can't see.
+        if quiet_turn.opens_quiet_turn(msg):
+            quiet_turn.start(wid)
+            continue
+        if quiet_turn.is_quiet(wid):
+            quiet_turn.hold(wid, msg)
+            continue
+
         # Any inbound event means Claude is mid-turn — refresh the generation
         # flag so the typing heartbeat stays alive during long tool phases.
         session_manager.mark_generating(wid)
@@ -1253,6 +1264,9 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
                     await capture_and_send_diffs(bot, user_id, wid, thread_id)
 
             await _bump_read_offset_to_eof(user_id, wid)
+
+
+quiet_turn.set_deliver(handle_new_message)
 
 
 # --- App lifecycle ---

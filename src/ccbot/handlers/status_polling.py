@@ -45,6 +45,7 @@ from ..terminal_parser import (
     is_interactive_ui,
 )
 from ..tmux_manager import tmux_manager
+from . import quiet_turn
 from .agent_restart import (
     ReviveError,
     docker_revive_options,
@@ -551,6 +552,10 @@ async def status_poll_loop(bot: Bot) -> None:
             if now - last_version_check >= RUNTIME_VERSION_CHECK_INTERVAL:
                 last_version_check = now
                 await _check_runtime_versions(bot)
+
+            # Quiet turns (handlers/quiet_turn.py): deliver the outcome of
+            # those that ended — cheap, only bindings in one are captured.
+            await quiet_turn.poll(bot)
 
             # Worktree topics: probe ALL of them on a short interval so a
             # hard-deleted worktree agent is reclaimed in seconds (they're few;

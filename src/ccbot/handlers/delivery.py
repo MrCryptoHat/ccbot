@@ -32,6 +32,7 @@ from ..voice import build_on_directive, off_directive
 from .ask_question_router import try_route_to_text_option
 from .interactive_ui import handle_interactive_ui
 from .message_sender import safe_reply, safe_send
+from . import quiet_turn
 from .reaction_emit import arm as arm_reaction_ack
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ async def deliver_user_text(
       - ``("sent", "")``            — delivered via send_to_window
       - ``("error", message)``      — send failed; detail is user-facing
     """
+    # The user is talking to this agent now: a quiet turn it was in must not
+    # hold back the reply to them.
+    quiet_turn.release(wid)
     routed, route_reason = await try_route_to_text_option(wid, text)
     if routed:
         return "routed", ""
