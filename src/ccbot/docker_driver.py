@@ -103,14 +103,16 @@ class DockerDriver:
         """
         return f"={self._target(session)}"
 
-    def _pane_target(self, session: str | None) -> str:
+    def _pane_target(self, session: str | None, window: str | None = None) -> str:
         """tmux *pane* target (send-keys / capture-pane), exact-matched.
 
         Pane targets need the trailing colon: ``=name`` alone is rejected as a
         pane spec ("can't find pane"), ``=name:`` resolves to that session's
-        active pane.
+        active pane. ``window`` picks a named window instead of the active one
+        (``=name:=window``, exact too) — for a container whose session holds
+        one agent per window, e.g. one running its own ccbot.
         """
-        return f"={self._target(session)}:"
+        return f"={self._target(session)}:" + (f"={window}" if window else "")
 
     @staticmethod
     async def _run(
@@ -191,14 +193,18 @@ class DockerDriver:
         return out.strip() == b"true"
 
     async def _send_literal(
-        self, container: str, chars: str, session: str | None = None
+        self,
+        container: str,
+        chars: str,
+        session: str | None = None,
+        window: str | None = None,
     ) -> bool:
         """Send literal text (no key interpretation) to the tmux pane."""
         argv = self._exec_prefix(container) + [
             "tmux",
             "send-keys",
             "-t",
-            self._pane_target(session),
+            self._pane_target(session, window),
             "-l",
             # `--` so text starting with "-" isn't eaten as tmux flags.
             "--",
@@ -215,14 +221,18 @@ class DockerDriver:
         return True
 
     async def _send_key(
-        self, container: str, key: str, session: str | None = None
+        self,
+        container: str,
+        key: str,
+        session: str | None = None,
+        window: str | None = None,
     ) -> bool:
         """Send a named key (Enter, Escape, Up, …) to the tmux pane."""
         argv = self._exec_prefix(container) + [
             "tmux",
             "send-keys",
             "-t",
-            self._pane_target(session),
+            self._pane_target(session, window),
             key,
         ]
         rc, _, stderr = await self._run(argv)
@@ -243,6 +253,7 @@ class DockerDriver:
         enter: bool = True,
         literal: bool = True,
         session: str | None = None,
+        window: str | None = None,
     ) -> bool:
         """Send text to the agent's tmux pane inside ``container``.
 
@@ -253,31 +264,39 @@ class DockerDriver:
         """
         if literal and enter:
             if text.startswith("!"):
-                if not await self._send_literal(container, "!", session):
+                if not await self._send_literal(container, "!", session, window):
                     return False
                 rest = text[1:]
                 if rest:
                     await asyncio.sleep(1.0)
-                    if not await self._send_chunked_literal(container, rest, session):
+                    if not await self._send_chunked_literal(
+                        container, rest, session, window
+                    ):
                         return False
             else:
-                if not await self._send_chunked_literal(container, text, session):
+                if not await self._send_chunked_literal(
+                    container, text, session, window
+                ):
                     return False
             delay = 1.5 if len(text) > _CHUNK_SIZE else 0.5
             await asyncio.sleep(delay)
-            return await self._send_key(container, "Enter", session)
+            return await self._send_key(container, "Enter", session, window)
 
         # Special-key or no-Enter paths.
         if literal:
-            return await self._send_literal(container, text, session)
-        return await self._send_key(container, text, session)
+            return await self._send_literal(container, text, session, window)
+        return await self._send_key(container, text, session, window)
 
     async def _send_chunked_literal(
-        self, container: str, text: str, session: str | None = None
+        self,
+        container: str,
+        text: str,
+        session: str | None = None,
+        window: str | None = None,
     ) -> bool:
         for i in range(0, len(text), _CHUNK_SIZE):
             chunk = text[i : i + _CHUNK_SIZE]
-            if not await self._send_literal(container, chunk, session):
+            if not await self._send_literal(container, chunk, session, window):
                 return False
             if i + _CHUNK_SIZE < len(text):
                 await asyncio.sleep(0.1)
@@ -448,6 +467,7 @@ class DockerDriver:
         with_ansi: bool = False,
         scrollback_lines: int = 0,
         session: str | None = None,
+        window: str | None = None,
     ) -> str | None:
         """Return text of the agent's tmux pane, or None on error.
 
@@ -459,7 +479,7 @@ class DockerDriver:
             "capture-pane",
             "-p",
             "-t",
-            self._pane_target(session),
+            self._pane_target(session, window),
         ]
         if with_ansi:
             argv.insert(-2, "-e")

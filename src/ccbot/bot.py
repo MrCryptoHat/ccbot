@@ -894,6 +894,21 @@ async def _create_and_bind_window(
 
 # --- Streaming response / notifications ---
 
+# The agent's "nothing for the human" turn end. A ccbot protocol marker like
+# `(send file: …)`, but deliberately NOT in hook._AGENT_BRIEF: an agent told
+# it may stay silent could start swallowing replies its user is waiting for.
+# Only a prompt that isn't the user's own (a mail wake) asks for it.
+NO_REPLY_MARKER = "(no reply)"
+
+
+def is_no_reply(msg: NewMessage) -> bool:
+    """An assistant text that is exactly the marker — and nothing else."""
+    return (
+        msg.role == "assistant"
+        and msg.content_type == "text"
+        and msg.text.strip() == NO_REPLY_MARKER
+    )
+
 
 async def _bump_read_offset_to_eof(user_id: int, wid: str) -> None:
     """Mark this binding's JSONL as delivered up to its current end for ``user_id``.
@@ -948,6 +963,15 @@ async def handle_new_message(msg: NewMessage, bot: Bot) -> None:
         # Any inbound event means Claude is mid-turn — refresh the generation
         # flag so the typing heartbeat stays alive during long tool phases.
         session_manager.mark_generating(wid)
+
+        # A reply that is only the no-reply marker is the agent saying
+        # "nothing for the human here" — e.g. after a turn someone other
+        # than the chat's user started. Relaying it would ping them for no
+        # reason, so the chat gets nothing.
+        if is_no_reply(msg):
+            logger.info("No-reply turn end in session %s, not relayed", msg.session_id)
+            await _bump_read_offset_to_eof(user_id, wid)
+            continue
 
         # Handle interactive tools specially - capture terminal and send UI
         if msg.tool_name in INTERACTIVE_TOOL_NAMES and msg.content_type == "tool_use":

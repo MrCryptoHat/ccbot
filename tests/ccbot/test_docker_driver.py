@@ -247,6 +247,23 @@ class TestCapturePane:
         assert "-p" in tmux_args
 
 
+class TestNamedWindow:
+    """``window=`` addresses one window of a session (a container running its
+    own ccbot keeps one agent per window), exact-matched like the session."""
+
+    async def test_capture_and_send_target_the_window(self, driver_with_spy) -> None:
+        driver, calls = driver_with_spy
+        await driver.capture_pane("ctn", session="ccbot", window="worker")
+        await driver.send_keys("ctn", "hi", session="ccbot", window="worker")
+        targets = [a[a.index("-t") + 1] for a in calls]
+        assert targets and all(t == "=ccbot:=worker" for t in targets)
+
+    async def test_no_window_keeps_active_pane(self, driver_with_spy) -> None:
+        driver, calls = driver_with_spy
+        await driver.capture_pane("ctn", session="ccbot")
+        assert calls[0][calls[0].index("-t") + 1] == "=ccbot:"
+
+
 class TestIsContainerAlive:
     async def test_true_on_running(self, monkeypatch) -> None:
         driver = DockerDriver()
