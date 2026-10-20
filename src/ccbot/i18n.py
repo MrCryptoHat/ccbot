@@ -341,7 +341,7 @@ STRINGS.update(
         "links.header": "🔗 Links",
         "links.overflow": "… and {extra} more",
         # -- media --
-        "media.unsupported": "⚠ Stickers, video and other media can't be forwarded to the agent. Text, photos, voice messages and files work.",
+        "media.unsupported": "⚠ Stickers and other media can't be forwarded to the agent. Text, photos, videos, voice messages and files work.",
         "media.use_topic": "❌ Please use a named topic. Create a new topic to start a session.",
         "media.no_binding": "❌ No session bound to this topic. Send a text message first to set one up, then re-send the file.",
         "media.window_gone": "❌ Window '{name}' no longer exists. Binding removed.\nSend a message to start a new session.",
@@ -349,6 +349,8 @@ STRINGS.update(
         "media.image_send_failed": "❌ Failed to send the image to the agent.",
         "media.image_echo": "👀 {agent} is looking at this image",
         "media.file_sent": "📎 File '{name}' sent to the agent.",
+        "media.video_sent": "🎬 Video sent to the agent — as {frames} stills, plus what's said in it.",
+        "media.video_too_big": "❌ Video too large (~{mb} MB). Telegram only lets a bot download files up to 20 MB — trim it or send a shorter clip.",
         "media.album_sent": "📎 {n} attachments sent to the agent in one message.",
         "media.blocked_widget": "⚠ The agent is waiting for an answer in a dialog (the photo with buttons above). The file is saved — answer the question, then send it again.",
         "media.voice_too_long": "⚠ Voice messages over {minutes} minutes aren't transcribed — please split it into shorter ones.",

@@ -23,6 +23,10 @@ A paste over 4096 chars is split by the Telegram *client* into several messages,
 
 Telegram sends an album as one message per item sharing a `media_group_id`; forwarded one by one, the first item started a turn and the rest queued as separate prompts, the caption riding on one of them. The photo/document handlers instead open a slot per item **before** downloading and close it after (a slow download holds the album, isn't cut off), and once every slot is closed and `QUIET_SEC` passes the album goes out as ONE prompt: captions first, then every attachment line, in `message_id` order, one ack. Only messages with a `media_group_id` wait — a single photo/file has zero added latency (same reasoning as coalescing). A `native_image_input` runtime (Codex) keeps per-image delivery: its composer attaches one image per submit.
 
+## Inbound video (`video.py`, `handlers/media.video_handler`)
+
+Agent CLIs can't play video and a docker agent's container has no ffmpeg, so the BOT cuts it up on the host: up to `video.MAX_FRAMES` stills spread over the clip (saved beside the video, under the agent-visible inbox for docker bindings) plus the audio track through the voice transcriber. The agent gets the video path, one `(video frame at m:ss: …)` line per still and a `(said in the video: "…")` line. Covers videos, round video notes, videos inside albums and a video sent as a file (`video/*` mime). Every step degrades to fewer lines, never to a lost message: no ffmpeg → the file alone, no key / silent clip → a line saying so.
+
 ## Message Queue Architecture
 
 Per-topic message queues + worker pattern for all send tasks. Queue key is `(user_id, thread_id_or_0)`, so each Telegram topic gets its own worker task; a heavy stream in topic A cannot delay deliveries in the user's other topics.

@@ -1,7 +1,8 @@
-"""Media handlers — photo, document, and voice message processing.
+"""Media handlers — photo, document, video and voice message processing.
 
 Downloads media and forwards file paths or transcribed text to Claude
-Code via tmux.
+Code via tmux. A video is handed over as stills plus its speech as text
+(``video``): the agent can't play it, and its sandbox has no ffmpeg.
 Rejects oversized files up front (Telegram caps bot `getFile` downloads
 at 20 MB) with a clear message instead of a silent failure, and flags
 compressed archives so the agent knows to unpack them.
@@ -10,7 +11,7 @@ compressed archives so the agent knows to unpack them.
 from datetime import timedelta
 import logging
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -31,6 +32,7 @@ from ..terminal_parser import is_interactive_ui
 from ..tmux_manager import tmux_manager
 from ..transcribe import transcribe_voice
 from ..utils import ccbot_dir
+from .. import video
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +411,9 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         tg_file = await doc.get_file()
         await tg_file.download_to_drive(host_path)
-        if is_archive:
+        if (doc.mime_type or "").startswith("video/"):
+            attach_line, _ = await _video_attach(host_path, marker_path)
+        elif is_archive:
             attach_line = (
                 f"(archive attached: {marker_path} — it's a compressed archive: "
                 "unpack it first (e.g. `unzip` / `tar -xf`), then work with the "
@@ -569,3 +573,130 @@ async def voice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await report_delivery_failure(
         context.bot, update.message, user.id, thread_id, wid, detail
     )
+
+
+async def _video_attach(host_path: Path, marker_path: str) -> tuple[str, int]:
+    """The lines that hand a saved video to the agent: the file, its stills
+    (cut on the bot's side) and what's said in it. Returns (text, frames)."""
+    if not video.available():
+        return (
+            f"(video attached: {marker_path} — the bot couldn't cut it into "
+            "stills here; ask me what's in it if you need to know)",
+            0,
+        )
+    duration, has_audio = await video.probe(host_path)
+    frames = await video.extract_frames(host_path, duration)
+    marker_dir = PurePosixPath(marker_path).parent
+    lines = [
+        f"(video attached: {marker_path} — {video.fmt_time(duration)} long. "
+        "You can't play video, so the bot cut it into the stills below"
+        + (" and turned its speech into text" if has_audio else "")
+        + ".)"
+    ]
+    lines += [
+        f"(video frame at {video.fmt_time(t)}: {marker_dir / f.name})"
+        for t, f in frames
+    ]
+    if not has_audio:
+        lines.append("(the video has no sound)")
+    elif duration > MAX_VOICE_TRANSCRIBE_SEC:
+        lines.append("(the video is too long to transcribe its sound)")
+    elif not config.deepgram_api_key and not config.openai_api_key:
+        lines.append("(its sound wasn't transcribed: no transcription key)")
+    else:
+        lines.append(await _video_speech(host_path))
+    return "\n".join(lines), len(frames)
+
+
+async def _video_speech(host_path: Path) -> str:
+    audio = await video.extract_audio(host_path)
+    if not audio:
+        return "(the video's sound couldn't be read)"
+    try:
+        text = await transcribe_voice(audio)
+    except ValueError:
+        return "(no speech in the video)"
+    except Exception as e:
+        logger.warning("Video transcription failed: %s", e)
+        return "(the video's sound couldn't be transcribed)"
+    return f'(said in the video: "{text}")'
+
+
+async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle a video or a round video note: download, cut into stills plus
+    speech-as-text, forward to the agent (as part of its album, if any)."""
+    cancel_pending_naming(context.user_data, get_thread_id(update))
+    user = effective_user(update)
+    if not user or not is_user_allowed(user.id):
+        if update.message:
+            await safe_reply(
+                update.message,
+                not_authorized_text(user.id if user else None),
+            )
+        return
+
+    if not update.message:
+        return
+    clip = update.message.video or update.message.video_note
+    if clip is None:
+        return
+
+    chat = update.message.chat
+    thread_id = get_thread_id(update)
+    if chat.type in ("group", "supergroup") and thread_id is not None:
+        session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+
+    wid, err = await _validate_media_context(update, user.id, thread_id)
+    if err or not wid:
+        return
+
+    if clip.file_size and clip.file_size > _TG_DOWNLOAD_LIMIT_BYTES:
+        mb = round(clip.file_size / 1024 / 1024)
+        await safe_reply(update.message, tr("media.video_too_big", mb=mb))
+        return
+
+    filename = f"{int(time.time())}_{clip.file_unique_id}.mp4"
+    host_path, marker_path = _inbound_save_path(wid, filename, _FILES_DIR)
+    caption = update.message.caption or ""
+    message_id = update.message.message_id
+    await update.message.chat.send_action(ChatAction.TYPING)
+
+    album_key = _album_key(update, user.id, thread_id)
+    if album_key:
+        album.open_item(album_key, message_id)
+    attach: str | None = None
+    frames = 0
+    try:
+        tg_file = await clip.get_file()
+        await tg_file.download_to_drive(host_path)
+        attach, frames = await _video_attach(host_path, marker_path)
+    except TelegramError as e:
+        logger.warning("Failed to download video: %s", e)
+        await safe_reply(update.message, tr("media.download_failed") + f" ({e})")
+        if not album_key:
+            return
+    finally:
+        if album_key:
+            album.close_item(
+                album_key,
+                message_id,
+                update=update,
+                caption=caption,
+                attach=attach,
+                deliver=_album_deliverer(context.bot, user.id, thread_id, wid),
+            )
+    if album_key or attach is None:
+        return
+
+    text_to_send = f"{caption}\n\n{attach}" if caption else attach
+    status, detail = await _deliver_media_text(
+        update, user.id, thread_id, wid, text_to_send
+    )
+    if status == "blocked":
+        return
+    if status == "error":
+        await report_delivery_failure(
+            context.bot, update.message, user.id, thread_id, wid, detail
+        )
+        return
+    await safe_reply(update.message, tr("media.video_sent", frames=frames))

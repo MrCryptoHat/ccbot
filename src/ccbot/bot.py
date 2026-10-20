@@ -107,6 +107,7 @@ from .handlers.interactive_ui import (
 from .handlers.media import (
     document_handler,
     photo_handler,
+    video_handler,
     voice_handler,
 )
 from .rich_message import flatten_rich_message, is_rich_safe
@@ -1525,6 +1526,9 @@ def create_bot() -> Application:
     application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.Document.ALL, document_handler))
     application.add_handler(MessageHandler(filters.VOICE, voice_handler))
+    application.add_handler(
+        MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, video_handler)
+    )
     # Bot API 10.1 rich messages (client-composed tables/headings): PTB doesn't
     # parse them, message.text is None — MUST precede the unsupported catch-all
     # or they bounce with «stickers can't be forwarded».
