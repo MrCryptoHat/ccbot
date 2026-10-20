@@ -349,6 +349,7 @@ STRINGS.update(
         "media.image_send_failed": "❌ Failed to send the image to the agent.",
         "media.image_echo": "👀 {agent} is looking at this image",
         "media.file_sent": "📎 File '{name}' sent to the agent.",
+        "media.album_sent": "📎 {n} attachments sent to the agent in one message.",
         "media.blocked_widget": "⚠ The agent is waiting for an answer in a dialog (the photo with buttons above). The file is saved — answer the question, then send it again.",
         "media.voice_too_long": "⚠ Voice messages over {minutes} minutes aren't transcribed — please split it into shorter ones.",
         "media.voice_needs_key": "⚠ Voice transcription requires an API key.\nSet `DEEPGRAM_API_KEY` or `OPENAI_API_KEY` in your `.env` file and restart the bot.",

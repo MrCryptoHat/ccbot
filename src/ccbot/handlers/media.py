@@ -17,7 +17,7 @@ from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from . import effective_user, get_thread_id, is_user_allowed, not_authorized_text
+from . import album, effective_user, get_thread_id, is_user_allowed, not_authorized_text
 from .delivery import deliver_user_text, report_delivery_failure
 from .siblings import cancel_pending_naming
 from .message_sender import safe_reply, send_photo
@@ -212,6 +212,36 @@ async def _deliver_media_text(
     return "error", detail
 
 
+def _album_key(
+    update: Update, user_id: int, thread_id: int | None
+) -> album.AlbumKey | None:
+    """The album this message belongs to, or None for a single photo/file."""
+    group = update.message.media_group_id if update.message else None
+    return (user_id, thread_id or 0, group) if group else None
+
+
+def _album_deliverer(
+    bot, user_id: int, thread_id: int | None, wid: str
+) -> album.DeliverCallback:
+    """How a gathered album goes out: one message through the same pipeline
+    as a single file, one ack for the lot."""
+
+    async def deliver(text: str, update: Update, count: int) -> None:
+        status, detail = await _deliver_media_text(
+            update, user_id, thread_id, wid, text
+        )
+        if status == "blocked" or not update.message:
+            return
+        if status == "error":
+            await report_delivery_failure(
+                bot, update.message, user_id, thread_id, wid, detail
+            )
+            return
+        await safe_reply(update.message, tr("media.album_sent", n=count))
+
+    return deliver
+
+
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle photos sent by the user: download and forward path to Claude Code."""
     # A photo/voice message means the user moved on from a pending ➕
@@ -239,18 +269,40 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if err or not wid:
         return
 
-    # Download the highest-resolution photo
-    photo = update.message.photo[-1]
-    tg_file = await photo.get_file()
-
-    filename = f"{int(time.time())}_{photo.file_unique_id}.jpg"
-    host_path, marker_path = _inbound_save_path(wid, filename, _IMAGES_DIR)
-    await tg_file.download_to_drive(host_path)
-
-    caption = update.message.caption or ""
-    await update.message.chat.send_action(ChatAction.TYPING)
-
     runtime = get_runtime(session_manager.window_runtime(wid))
+    caption = update.message.caption or ""
+    message_id = update.message.message_id
+    # An album item waits for the rest of the album and goes out with it.
+    # Not for a native-image runtime: its composer attaches one image at a time.
+    album_key = (
+        None if runtime.native_image_input else _album_key(update, user.id, thread_id)
+    )
+    if album_key:
+        album.open_item(album_key, message_id)
+    attach = None
+    try:
+        # Download the highest-resolution photo
+        photo = update.message.photo[-1]
+        tg_file = await photo.get_file()
+
+        filename = f"{int(time.time())}_{photo.file_unique_id}.jpg"
+        host_path, marker_path = _inbound_save_path(wid, filename, _IMAGES_DIR)
+        await tg_file.download_to_drive(host_path)
+        attach = runtime.image_marker(marker_path)
+    finally:
+        if album_key:
+            album.close_item(
+                album_key,
+                message_id,
+                update=update,
+                caption=caption,
+                attach=attach,
+                deliver=_album_deliverer(context.bot, user.id, thread_id, wid),
+            )
+    await update.message.chat.send_action(ChatAction.TYPING)
+    if album_key:
+        return
+
     if runtime.native_image_input:
         # Runtime with native multimodal input (Codex): attach via its composer
         # (a CLIENT-side file read → works even for a path outside the sandbox
@@ -345,10 +397,26 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     original_name = _safe_filename_component(raw_name) or f"file_{doc.file_unique_id}"
     filename = f"{int(time.time())}_{original_name}"
     host_path, marker_path = _inbound_save_path(wid, filename, _FILES_DIR)
+    is_archive = _is_archive(original_name)
+    caption = update.message.caption or ""
+    message_id = update.message.message_id
 
+    # An album item waits for the rest of the album and goes out with it.
+    album_key = _album_key(update, user.id, thread_id)
+    if album_key:
+        album.open_item(album_key, message_id)
+    attach_line = None
     try:
         tg_file = await doc.get_file()
         await tg_file.download_to_drive(host_path)
+        if is_archive:
+            attach_line = (
+                f"(archive attached: {marker_path} — it's a compressed archive: "
+                "unpack it first (e.g. `unzip` / `tar -xf`), then work with the "
+                "contents. Ask me if it's not clear what I want done with it.)"
+            )
+        else:
+            attach_line = f"(file attached: {marker_path})"
     except TelegramError as e:
         logger.warning("Failed to download document %r: %s", original_name, e)
         too_big = "too big" in str(e).lower()
@@ -357,19 +425,21 @@ async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             tr("media.download_failed")
             + (tr("media.download_failed_too_big") if too_big else f" ({e})"),
         )
+        if not album_key:
+            return
+    finally:
+        if album_key:
+            album.close_item(
+                album_key,
+                message_id,
+                update=update,
+                caption=caption,
+                attach=attach_line,
+                deliver=_album_deliverer(context.bot, user.id, thread_id, wid),
+            )
+    if album_key or attach_line is None:
         return
 
-    is_archive = _is_archive(original_name)
-    if is_archive:
-        attach_line = (
-            f"(archive attached: {marker_path} — it's a compressed archive: "
-            "unpack it first (e.g. `unzip` / `tar -xf`), then work with the "
-            "contents. Ask me if it's not clear what I want done with it.)"
-        )
-    else:
-        attach_line = f"(file attached: {marker_path})"
-
-    caption = update.message.caption or ""
     text_to_send = f"{caption}\n\n{attach_line}" if caption else attach_line
 
     await update.message.chat.send_action(ChatAction.TYPING)

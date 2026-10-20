@@ -19,6 +19,10 @@ The queue, merging, rate-limiting, and voice-mode logic below are **transport-ag
 
 A paste over 4096 chars is split by the Telegram *client* into several messages, each its own Update (and, under `concurrent_updates`, its own handler). Delivered one by one the agent takes the first as a turn and the rest pile into Claude Code's input queue as separate prompts — it reads only a slice. `coalesce_text` buffers near-ceiling fragments per `(user, thread)` and forwards the reassembled text as one send (message_id order — concurrent handlers arrive scrambled; no separator — the client splits on a raw char boundary). `text_handler`'s bound path runs `_forward_text_to_agent` through it. Trigger is **length** (`NEAR_CEILING`), not a blanket debounce, so ordinary short messages pass through with zero added latency; an all-full-width paste (length an exact multiple of the split size, no short tail) flushes on `FLUSH_TIMEOUT`. Don't switch it to a universal debounce — that adds latency to *every* message (the deliberately-rejected alternative).
 
+## Inbound albums — several photos/files in one message (`handlers/album.py`)
+
+Telegram sends an album as one message per item sharing a `media_group_id`; forwarded one by one, the first item started a turn and the rest queued as separate prompts, the caption riding on one of them. The photo/document handlers instead open a slot per item **before** downloading and close it after (a slow download holds the album, isn't cut off), and once every slot is closed and `QUIET_SEC` passes the album goes out as ONE prompt: captions first, then every attachment line, in `message_id` order, one ack. Only messages with a `media_group_id` wait — a single photo/file has zero added latency (same reasoning as coalescing). A `native_image_input` runtime (Codex) keeps per-image delivery: its composer attaches one image per submit.
+
 ## Message Queue Architecture
 
 Per-topic message queues + worker pattern for all send tasks. Queue key is `(user_id, thread_id_or_0)`, so each Telegram topic gets its own worker task; a heavy stream in topic A cannot delay deliveries in the user's other topics.
