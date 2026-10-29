@@ -29,12 +29,14 @@ show the guard, so it would silently destroy unmerged work (CLAUDE.md «never
 silently destroy»). `handle_deleted_worktree_topic` is the seam — it runs the
 guard and only tears down when clean.
 
-## Deletion detection — every worktree topic, every ~10 s
+## Deletion detection — a fast round-robin of its own
 
 Why the probe is `reopen_forum_topic` and not `unpin`: topic-architecture.md,
-«Topic lifecycle». What's worktree-specific: worktree topics are probed **every
-`WT_TOPIC_CHECK_INTERVAL` (~10 s)**, all of them (not round-robin, unlike plain
-bound topics), so a natively-deleted agent reclaims in seconds.
+«Topic lifecycle». What's worktree-specific: worktree topics get their own
+round-robin, **one topic per `WT_TOPIC_CHECK_INTERVAL` (~10 s)**, so a
+natively-deleted agent reclaims in N×10 s. Never probe them all per tick: every
+probe spends the supergroup's flood budget, and 6 worktree topics × every 10 s
+kept the chat under a rolling 429 that froze every send in the bot (2026-10-29).
 
 ## State, naming, layout — the non-obvious bits
 

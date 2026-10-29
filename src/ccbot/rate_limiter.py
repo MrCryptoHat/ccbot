@@ -29,21 +29,22 @@ The bot's outbound traffic has three shapes with different needs:
   own ``except`` logs it and moves on — we never enter the retry path, so a
   stray background 429 can no longer freeze the whole bot.
 
-  Two per-chat governors sit on top of the shared lane, both scoped to
-  *content* endpoints (message sends/edits — the calls Telegram counts against
-  its ~20 msg/min-per-chat flood budget; chat-management probes and
-  ``sendChatAction`` are exempt so e.g. the worktree deletion probe keeps its
-  cadence):
+  Two per-chat governors sit on top of the shared lane:
 
-  - **Spacing** — background content sends into one chat sleep until they are
-    ``_BG_CHAT_MIN_INTERVAL`` apart. Stream's 12/min + background's ≤3/min
-    stays well under the ~20/min ceiling, so a tick-rate dashboard can no longer
-    earn the whole chat a flood ban (which froze interactive sends too — the
-    2026-07-18 browser_live incident).
-  - **429 cooldown** — a ``RetryAfter`` from a background call arms a per-chat
-    cooldown for its duration (+slack); until it expires, further background
-    content sends to that chat raise ``RetryAfter`` locally without touching
-    the API, instead of hammering a banned chat every tick.
+  - **Spacing** (*content* endpoints only — message sends/edits;
+    chat-management probes and ``sendChatAction`` are exempt so e.g. the
+    worktree deletion probe keeps its cadence) — background content sends into
+    one chat sleep until they are ``_BG_CHAT_MIN_INTERVAL`` apart. Stream's
+    12/min + background's ≤3/min stays well under the ~20/min ceiling, so a
+    tick-rate dashboard can no longer earn the whole chat a flood ban (which
+    froze interactive sends too — the 2026-07-18 browser_live incident).
+  - **429 cooldown** (*every* endpoint) — a ``RetryAfter`` from ANY class
+    arms a per-chat cooldown for its duration (+slack); until it expires,
+    every background call to that chat raises ``RetryAfter`` locally without
+    touching the API. Telegram bans the chat, not a method: probes exempted
+    from the cooldown kept firing into a banned chat and re-earned the ban
+    every few seconds — a rolling freeze of every send in the bot
+    (2026-10-29, six worktree topics probed every 10 s).
 
 ``stream_context()`` and ``background_context()`` (set by the queue worker and
 by background tasks respectively) flag the class via ``ContextVar``s, which
@@ -103,10 +104,11 @@ _BG_BAN_SLACK = 2.0  # seconds
 
 
 def _is_content_endpoint(endpoint: str) -> bool:
-    """True for endpoints that create or edit a chat message — the calls
-    Telegram counts against its per-chat flood budget. Chat-management calls
-    (``reopenForumTopic`` probes, pins) and ``sendChatAction`` (typing) have
-    their own, much laxer buckets and must not be paced down with content."""
+    """True for endpoints that create or edit a chat message — the ones the
+    per-chat spacing paces. Chat-management calls (``reopenForumTopic``
+    probes, pins) and ``sendChatAction`` (typing) skip the spacing so a probe
+    keeps its cadence — but NOT the ban cooldown: they still spend the chat's
+    flood budget, and a burst of them earns the whole chat a 429."""
     if endpoint == "sendChatAction":
         return False
     return endpoint.startswith(("send", "edit", "copy", "forward"))
@@ -209,11 +211,47 @@ class CcbotRateLimiter(AIORateLimiter):
         if until > self._bg_chat_banned_until.get(chat_id, 0.0):
             self._bg_chat_banned_until[chat_id] = until
             logger.warning(
-                "Background send hit a flood ban (chat=%s) — cooling that chat's "
-                "background content down for %.0fs",
+                "Chat %s is under a flood ban — holding its background traffic "
+                "for %.0fs",
                 chat_id,
                 retry_in,
             )
+
+    def _watch_429(
+        self,
+        callback: Callable[..., Coroutine[Any, Any, bool | JSONDict | list[JSONDict]]],
+        endpoint: str,
+        traffic: str,
+        data: dict[str, Any],
+    ) -> Callable[..., Coroutine[Any, Any, bool | JSONDict | list[JSONDict]]]:
+        """Wrap ``callback`` so every 429 is logged and holds the chat's
+        background traffic.
+
+        The log names endpoint, class and topic — PTB's own «Rate limit hit»
+        names none of them, so a rolling flood ban gave no hint which traffic
+        earned it. The cooldown is armed whichever class hit the ban: Telegram
+        bans the CHAT, not a method (a reopenForumTopic 429 and a stream
+        sendMessage 429 come back with the same retry window), so a probe fired
+        into a chat a stream send just got banned in only extends the ban.
+        """
+        chat_id = data.get("chat_id")
+
+        async def call(*args: Any, **kwargs: Any) -> bool | JSONDict | list[JSONDict]:
+            try:
+                return await callback(*args, **kwargs)
+            except RetryAfter as e:
+                logger.warning(
+                    "429 on %s (%s, thread=%s): retry after %.0fs",
+                    endpoint,
+                    traffic,
+                    data.get("message_thread_id"),
+                    _retry_after_seconds(e),
+                )
+                if chat_id is not None:
+                    self._arm_background_cooldown(chat_id, e)
+                raise
+
+        return call
 
     async def process_request(
         self,
@@ -224,22 +262,31 @@ class CcbotRateLimiter(AIORateLimiter):
         data: dict[str, Any],
         rate_limit_args: int | None,
     ) -> bool | JSONDict | list[JSONDict]:
+        traffic = (
+            "background"
+            if _IS_BACKGROUND.get()
+            else "stream"
+            if _IS_STREAM.get()
+            else "interactive"
+        )
+        callback = self._watch_429(callback, endpoint, traffic, data)
+
         if _IS_BACKGROUND.get():
-            # Per-chat content governor first (spacing + ban cooldown), then the
-            # slow shared lane, then issue directly: no buckets, no retry loop —
-            # a 429 here surfaces to the caller's except instead of arming
-            # _retry_after_event and freezing every other send.
+            # Ban cooldown first (any endpoint — the ban is the chat's), then
+            # per-chat spacing for content, then the slow shared lane, then
+            # issue directly: no buckets, no retry loop — a 429 here surfaces
+            # to the caller's except instead of arming _retry_after_event and
+            # freezing every other send.
             chat_id = data.get("chat_id")
-            content = chat_id is not None and _is_content_endpoint(endpoint)
-            if content:
-                await self._await_background_chat_slot(chat_id)
+            if chat_id is not None:
+                self._check_background_cooldown(chat_id)
+                if _is_content_endpoint(endpoint):
+                    await self._await_background_chat_slot(chat_id)
             await self._await_background_slot()
-            try:
-                return await callback(*args, **kwargs)
-            except RetryAfter as e:
-                if content:
-                    self._arm_background_cooldown(chat_id, e)
-                raise
+            if chat_id is not None:
+                # A ban may have been armed while we queued in the lane.
+                self._check_background_cooldown(chat_id)
+            return await callback(*args, **kwargs)
 
         if _IS_STREAM.get():
             # Stream traffic (text + status sends + status edits) all counts

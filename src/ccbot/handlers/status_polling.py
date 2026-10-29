@@ -73,9 +73,12 @@ STATUS_POLL_INTERVAL = 1.0  # seconds - faster response (rate limiting at send l
 # Only a backstop for idle topics — an active topic's deletion is caught
 # immediately when a send to it bounces with Topic_id_invalid (queue worker).
 TOPIC_CHECK_INTERVAL = 180.0  # seconds
-# Worktree topics are few and their deletion should reclaim the worktree fast —
-# probe ALL of them on this short interval (not round-robin), so a hard-deleted
-# worktree agent is cleaned up in ~seconds instead of N*TOPIC_CHECK_INTERVAL.
+# Worktree topics get their own, much faster round-robin — one worktree topic
+# per this interval — so a hard-deleted worktree agent is reclaimed in
+# N*WT_TOPIC_CHECK_INTERVAL instead of N*TOPIC_CHECK_INTERVAL. ONE per tick,
+# never all of them: every probe spends the supergroup's flood budget, and
+# six worktree topics probed every 10 s (36 calls/min) kept the whole chat
+# under a rolling 429 that froze every send in the bot (2026-10-29).
 WT_TOPIC_CHECK_INTERVAL = 10.0  # seconds
 
 # Agent health check interval
@@ -535,6 +538,7 @@ async def status_poll_loop(bot: Bot) -> None:
         time.monotonic() - RUNTIME_VERSION_CHECK_INTERVAL + _FIRST_VERSION_CHECK_DELAY
     )
     topic_probe_pos = 0
+    wt_probe_pos = 0
     while True:
         try:
             # Periodic topic-existence probe — ONE topic per cycle, round-robin
@@ -557,14 +561,19 @@ async def status_poll_loop(bot: Bot) -> None:
             # those that ended — cheap, only bindings in one are captured.
             await quiet_turn.poll(bot)
 
-            # Worktree topics: probe ALL of them on a short interval so a
-            # hard-deleted worktree agent is reclaimed in seconds (they're few;
-            # the probe is a no-op unpin in the background lane).
+            # Worktree topics: their own faster round-robin, one per tick (see
+            # WT_TOPIC_CHECK_INTERVAL for why never all at once).
             if now - last_wt_check >= WT_TOPIC_CHECK_INTERVAL:
                 last_wt_check = now
-                for uid, tid, w in list(session_manager.iter_thread_bindings()):
-                    if session_manager.get_worktree_meta(uid, tid) is not None:
-                        await _probe_topic_alive(bot, uid, tid, w)
+                wt_bindings = [
+                    (uid, tid, w)
+                    for uid, tid, w in session_manager.iter_thread_bindings()
+                    if session_manager.get_worktree_meta(uid, tid) is not None
+                ]
+                if wt_bindings:
+                    wt_probe_pos %= len(wt_bindings)
+                    await _probe_topic_alive(bot, *wt_bindings[wt_probe_pos])
+                    wt_probe_pos += 1
 
             # Fan out status updates across all bound topics in parallel.
             # Each _poll_one_binding does its own tmux capture (I/O-bound,

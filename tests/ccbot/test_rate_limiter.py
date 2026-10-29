@@ -4,7 +4,8 @@
   supergroup) — the per-chat governor; all stream traffic, incl. status edits.
 * interactive (default) → skips every bucket (user is waiting).
 * background → per-chat content governor (spacing between message sends/edits
-  into one chat + flood-ban cooldown; probes and sendChatAction exempt), then
+  into one chat, probes and sendChatAction exempt; flood-ban cooldown for
+  every endpoint, armed by a 429 from any class), then
   one shared slow lane, then a direct API call (no buckets, no PTB retry loop,
   so a 429 here doesn't arm the global RetryAfter pause).
 """
@@ -354,7 +355,7 @@ async def test_background_429_arms_a_chat_cooldown(monkeypatch: pytest.MonkeyPat
 async def test_background_cooldown_is_scoped_to_the_banned_chat(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A cooldown on chat A doesn't block content to chat B, nor probes to A."""
+    """A cooldown on chat A doesn't block background traffic to chat B."""
     from telegram.error import RetryAfter
 
     monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
@@ -367,8 +368,76 @@ async def test_background_cooldown_is_scoped_to_the_banned_chat(
         await _bg_request(limiter, banned, endpoint="sendPhoto", chat_id=-1)
 
     await _bg_request(limiter, ok, endpoint="sendPhoto", chat_id=-2)
-    await _bg_request(limiter, ok, endpoint="reopenForumTopic", chat_id=-1)
+    await _bg_request(limiter, ok, endpoint="reopenForumTopic", chat_id=-2)
     assert ok.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_banned_chat_holds_probes_too(monkeypatch: pytest.MonkeyPatch):
+    """Telegram bans the chat, not a method: once a 429 lands, a probe into that
+    chat raises locally instead of re-earning the ban — exempting probes kept
+    six worktree probes every 10 s firing into a banned chat, a rolling freeze
+    of every send in the bot."""
+    from telegram.error import RetryAfter
+
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    limiter = _limiter()
+    probe = AsyncMock(side_effect=RetryAfter(30))
+
+    with pytest.raises(RetryAfter):
+        await _bg_request(limiter, probe, endpoint="reopenForumTopic", chat_id=-1)
+    with pytest.raises(RetryAfter):
+        await _bg_request(limiter, probe, endpoint="reopenForumTopic", chat_id=-1)
+    assert probe.await_count == 1  # the second probe never reached the API
+
+
+@pytest.mark.asyncio
+async def test_stream_429_holds_background_traffic_to_that_chat(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A ban earned by a stream send holds the chat's background probes too —
+    they would only extend the ban the stream is waiting out."""
+    from telegram.error import RetryAfter
+
+    monkeypatch.setattr("ccbot.rate_limiter._BG_MIN_INTERVAL", 0.0)
+    limiter = _limiter()
+    stream_send = AsyncMock(side_effect=RetryAfter(30))
+    probe = AsyncMock(return_value={"ok": True})
+
+    with stream_context(), pytest.raises(RetryAfter):
+        await limiter.process_request(
+            callback=stream_send,
+            args=(),
+            kwargs={},
+            endpoint="sendMessage",
+            data={"chat_id": -1, "message_thread_id": 7},
+            rate_limit_args=None,
+        )
+    with pytest.raises(RetryAfter):
+        await _bg_request(limiter, probe, endpoint="reopenForumTopic", chat_id=-1)
+    probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_429_log_names_endpoint_class_and_topic(
+    caplog: pytest.LogCaptureFixture,
+):
+    """PTB's own «Rate limit hit» names nothing; ours says which call earned it."""
+    from telegram.error import RetryAfter
+
+    limiter = _limiter()
+    callback = AsyncMock(side_effect=RetryAfter(12))
+
+    with caplog.at_level("WARNING"), stream_context(), pytest.raises(RetryAfter):
+        await limiter.process_request(
+            callback=callback,
+            args=(),
+            kwargs={},
+            endpoint="sendPhoto",
+            data={"chat_id": -1, "message_thread_id": 42},
+            rate_limit_args=None,
+        )
+    assert "429 on sendPhoto (stream, thread=42): retry after 12s" in caplog.text
 
 
 @pytest.mark.asyncio
